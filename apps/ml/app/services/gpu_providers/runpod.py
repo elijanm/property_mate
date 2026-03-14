@@ -117,8 +117,9 @@ query($input: PodFilter!) {
   pod(input: $input) {
     id
     desiredStatus
+    lastStatusChange
     runtime {
-      container { status }
+      uptimeInSeconds
     }
   }
 }
@@ -147,9 +148,29 @@ class RunPodProvider(BaseGpuProvider):
                 headers={"Content-Type": "application/json"},
                 json={"query": query, "variables": variables},
             )
-            resp.raise_for_status()
+            if not resp.is_success:
+                # Read body before raising so we log the actual RunPod error message
+                try:
+                    err_body = resp.json()
+                except Exception:
+                    err_body = resp.text
+                logger.error(
+                    "runpod_gql_http_error",
+                    status=resp.status_code,
+                    body=err_body,
+                    query=query[:120],
+                    variables={k: ("..." if k in ("BOOT_B64", "TRAINER_CODE_B64", "TRAINING_DATA_B64") else v)
+                               for k, v in (variables.get("input", {}).get("env") and
+                                            {e["key"]: e["value"] for e in variables["input"]["env"]}
+                                            or variables).items()
+                               } if "input" in variables else variables,
+                )
+                raise RuntimeError(
+                    f"RunPod API {resp.status_code}: {err_body}"
+                )
             body = resp.json()
         if "errors" in body:
+            logger.error("runpod_gql_errors", errors=body["errors"])
             raise RuntimeError(f"RunPod GraphQL error: {body['errors']}")
         return body["data"]
 
@@ -196,8 +217,8 @@ class RunPodProvider(BaseGpuProvider):
                 "value": base64.b64encode(injected_data).decode(),
             })
 
-        from app.services.gpu_providers.gpu_catalog import GPU_OPTIONS
-        resolved_gpu = gpu_type_id or GPU_OPTIONS[0]["id"]
+        from app.services.gpu_providers.gpu_catalog import _STATIC
+        resolved_gpu = gpu_type_id or _STATIC[0]["id"]
 
         variables = {
             "input": {
@@ -227,22 +248,29 @@ class RunPodProvider(BaseGpuProvider):
         data = await self._gql(_POD_STATUS, {"input": {"podId": handle.remote_id}})
         pod  = data.get("pod") or {}
 
-        desired   = pod.get("desiredStatus", "")
-        runtime   = pod.get("runtime")
-        container = ((runtime or {}).get("container") or {})
-        c_status  = container.get("status", "")
+        desired = (pod.get("desiredStatus") or "").upper()
+        runtime = pod.get("runtime")
 
-        # Container exited — training finished
-        if c_status == "EXITED":
-            return RemoteJobStatus(state="completed")
+        logger.debug(
+            "runpod_pod_status",
+            pod_id=handle.remote_id,
+            desired=desired,
+            has_runtime=runtime is not None,
+        )
 
-        # Pod has no runtime and desired state says it's done
-        if runtime is None and desired in ("EXITED", "TERMINATED", ""):
-            return RemoteJobStatus(state="completed")
-
+        # Terminal failure states
         if desired in ("FAILED", "DEAD"):
-            return RemoteJobStatus(state="failed", error="Pod entered failed/dead state")
+            return RemoteJobStatus(state="failed", error=f"Pod entered state: {desired}")
 
+        # Pod has exited — training finished (runtime disappears when pod stops)
+        if desired in ("EXITED", "TERMINATED"):
+            return RemoteJobStatus(state="completed")
+
+        # Pod was deleted externally or never properly started
+        if pod == {} or (runtime is None and desired == ""):
+            return RemoteJobStatus(state="completed")
+
+        # Still running
         return RemoteJobStatus(state="running")
 
     async def get_result(self, handle: RemoteJobHandle) -> RemoteTrainingResult:

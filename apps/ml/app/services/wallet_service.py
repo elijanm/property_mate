@@ -72,27 +72,16 @@ async def release_and_charge(wallet: Wallet, job_id: str, actual_cost: float) ->
     actual = round(min(actual_cost, reserved_amount), 10)
     overage = round(reserved_amount - actual, 10)
 
-    # Release reserved hold; refund overage back to balance
-    wallet.reserved = round(wallet.reserved - reserved_amount, 10)
+    # 1. Debit actual cost from reserved bucket (no balance change yet)
+    wallet.reserved = max(0.0, round(wallet.reserved - reserved_amount, 10))
+    # 2. Refund unused portion back to spendable balance
     wallet.balance = round(wallet.balance + overage, 10)
     wallet.updated_at = utc_now()
     await wallet.save()
 
-    # Record release transaction (overage refund)
-    if overage > 0:
-        release_tx = WalletTransaction(
-            org_id=wallet.org_id,
-            user_email=wallet.user_email,
-            type="release",
-            amount=overage,
-            balance_after=wallet.balance,
-            reserved_after=wallet.reserved,
-            description=f"GPU reservation refund for job {job_id}",
-            job_id=job_id,
-        )
-        await release_tx.insert()
+    short_id = job_id[:8]
 
-    # Record debit transaction (actual cost)
+    # Record debit transaction (actual cost charged)
     if actual > 0:
         debit_tx = WalletTransaction(
             org_id=wallet.org_id,
@@ -101,10 +90,36 @@ async def release_and_charge(wallet: Wallet, job_id: str, actual_cost: float) ->
             amount=actual,
             balance_after=wallet.balance,
             reserved_after=wallet.reserved,
-            description=f"GPU training charge for job {job_id}",
+            description=(
+                f"GPU charge — ${actual:.4f} used of ${reserved_amount:.4f} reserved · job {short_id}"
+            ),
             job_id=job_id,
         )
         await debit_tx.insert()
+
+    # Record release transaction (unused reservation refunded) — always write when
+    # there was a reservation, so the user can see the refund even if overage == 0.
+    if reserved_amount > 0:
+        if overage > 0:
+            refund_desc = (
+                f"Unused GPU time refunded — reserved ${reserved_amount:.4f}, "
+                f"used ${actual:.4f}, refund ${overage:.4f} · job {short_id}"
+            )
+        else:
+            refund_desc = (
+                f"GPU job completed — fully consumed reservation ${reserved_amount:.4f} · job {short_id}"
+            )
+        release_tx = WalletTransaction(
+            org_id=wallet.org_id,
+            user_email=wallet.user_email,
+            type="release",
+            amount=overage,          # 0.0 when fully consumed — visible as $0.00 refund
+            balance_after=wallet.balance,
+            reserved_after=wallet.reserved,
+            description=refund_desc,
+            job_id=job_id,
+        )
+        await release_tx.insert()
 
     return actual
 
@@ -162,6 +177,54 @@ async def consume_local_time(wallet: Wallet, elapsed_seconds: float) -> None:
     wallet.local_used_seconds = round(wallet.local_used_seconds + elapsed_seconds, 2)
     wallet.updated_at = utc_now()
     await wallet.save()
+
+
+async def admin_credit(
+    user_email: str,
+    org_id: str,
+    amount_usd: float,
+    performed_by: str,
+    note: str = "",
+) -> tuple:
+    """
+    Admin recharges a user's wallet with `amount_usd`.
+    Records a WalletTransaction (credit) and a PlatformLedger entry.
+    Returns (wallet, ledger_entry).
+    """
+    from app.models.platform_ledger import PlatformLedger
+
+    wallet = await get_or_create(user_email, org_id)
+    await credit(
+        wallet=wallet,
+        amount=amount_usd,
+        reference=f"admin:{performed_by}",
+        description=f"Admin recharge by {performed_by}" + (f" — {note}" if note else ""),
+    )
+
+    # Find the transaction we just wrote so we can cross-reference it
+    tx = await WalletTransaction.find_one(
+        WalletTransaction.user_email == user_email,
+        WalletTransaction.type == "credit",
+        WalletTransaction.reference == f"admin:{performed_by}",
+        sort=[("-created_at", 1)],
+    )
+
+    ledger = PlatformLedger(
+        amount_usd=round(amount_usd, 4),
+        recipient_email=user_email,
+        performed_by=performed_by,
+        note=note,
+        wallet_tx_id=str(tx.id) if tx else "",
+    )
+    await ledger.insert()
+
+    logger.info(
+        "admin_wallet_recharged",
+        recipient=user_email,
+        amount_usd=amount_usd,
+        admin=performed_by,
+    )
+    return wallet, ledger
 
 
 async def purchase_local_hours(wallet: Wallet, hours: float) -> None:

@@ -311,6 +311,11 @@ async def delete_job(job_id: str, user=Depends(require_roles("engineer", "admin"
         raise HTTPException(status_code=404, detail="Job not found")
     if user.role != "admin" and job.owner_email != user.email:
         raise HTTPException(status_code=404, detail="Job not found")
+    # Release reserved funds before deleting (record would be gone otherwise)
+    if job.owner_email and job.status in ("queued", "running"):
+        w = await wallet_service.get_or_create(job.owner_email, job.org_id)
+        if w.reserved > 0:
+            await wallet_service.release_and_charge(w, str(job.id), actual_cost=0.0)
     await job.delete()
     return {"deleted": True}
 
@@ -331,6 +336,16 @@ async def delete_all_jobs(
     if user.role != "admin":
         filters.append(TrainingJob.owner_email == user.email)
 
+    jobs = await TrainingJob.find(*filters).to_list()
+    # Release reserved funds for any active jobs before deleting
+    for j in jobs:
+        if j.owner_email and j.status in ("queued", "running"):
+            try:
+                w = await wallet_service.get_or_create(j.owner_email, j.org_id)
+                if w.reserved > 0:
+                    await wallet_service.release_and_charge(w, str(j.id), actual_cost=0.0)
+            except Exception:
+                pass
     result = await TrainingJob.find(*filters).delete()
     return {"deleted": result.deleted_count if result else 0}
 
@@ -347,10 +362,32 @@ async def cancel_job(job_id: str, user=Depends(require_roles("engineer", "admin"
         raise HTTPException(status_code=404, detail="Job not found")
     if user.role != "admin" and job.owner_email != user.email:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.status not in ("queued",):
+    if job.status not in ("queued", "running"):
         raise HTTPException(status_code=400, detail=f"Cannot cancel job in status '{job.status}'")
+
+    # Revoke Celery task if it has one
     if job.celery_task_id:
-        from app.core.celery_app import celery_app
-        celery_app.control.revoke(job.celery_task_id, terminate=True)
+        try:
+            from app.core.celery_app import celery_app
+            celery_app.control.revoke(job.celery_task_id, terminate=True)
+        except Exception:
+            pass
+
+    # Terminate cloud pod if already dispatched
+    if job.remote_job_id and job.gpu_provider:
+        try:
+            from app.services.gpu_dispatch_service import _get_provider
+            provider = _get_provider(job.gpu_provider or "runpod")
+            handle = type("H", (), {"remote_id": job.remote_job_id, "extra": {}})()
+            await provider.cancel(handle)
+        except Exception:
+            pass
+
     await job.set({"status": "cancelled", "finished_at": utc_now(), "updated_at": utc_now()})
+
+    # Release any reserved wallet funds
+    if job.owner_email:
+        w = await wallet_service.get_or_create(job.owner_email, job.org_id)
+        if w.reserved > 0:
+            await wallet_service.release_and_charge(w, str(job.id), actual_cost=0.0)
     return {"cancelled": True}

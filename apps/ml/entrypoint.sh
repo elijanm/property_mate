@@ -31,6 +31,22 @@ if [ ! -S "$CLAMD_SOCKET" ]; then
     echo "[entrypoint] WARNING: ClamAV daemon did not start — file scanning will use code analysis only"
 fi
 
+# ── Seed built-in sample trainers into the plugin volume (if missing) ─────────
+# The volume persists across rebuilds, so new sample files added to the image
+# must be copied in explicitly on startup.
+TRAINER_DIR="${TRAINER_PLUGIN_DIR:-/app/trainers}"
+IMAGE_TRAINER_SRC="/app/trainers_builtin"
+if [ -d "$IMAGE_TRAINER_SRC" ]; then
+    for f in "$IMAGE_TRAINER_SRC"/sample_*.py; do
+        [ -f "$f" ] || continue
+        dest="$TRAINER_DIR/$(basename "$f")"
+        if [ ! -f "$dest" ]; then
+            cp "$f" "$dest"
+            echo "[entrypoint] Seeded sample trainer: $(basename "$f")"
+        fi
+    done
+fi
+
 # ── Start ML service ──────────────────────────────────────────────────────────
 echo "[entrypoint] Starting PMS ML Service..."
 exec "$@"

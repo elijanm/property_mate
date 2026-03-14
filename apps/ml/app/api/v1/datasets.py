@@ -22,6 +22,11 @@ class FieldIn(BaseModel):
     description_presets: List[str] = []
     description_required: bool = False
     order: int = 0
+    repeatable: bool = False
+    max_repeats: int = 0
+    validation_model: Optional[str] = None
+    validation_labels: List[str] = []
+    validation_message: str = ""
 
 
 class DatasetCreateRequest(BaseModel):
@@ -48,6 +53,7 @@ class DatasetUpdateRequest(BaseModel):
 class InviteRequest(BaseModel):
     email: str
     name: str = ""
+    message: str = ""
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -86,7 +92,7 @@ async def delete_dataset(dataset_id: str, user: MLUser = RequireEngineer):
 
 @router.post("/{dataset_id}/invite", status_code=201)
 async def invite_collector(dataset_id: str, body: InviteRequest, user: MLUser = RequireEngineer):
-    collector = await svc.invite_collector(user.org_id, dataset_id, body.email, body.name)
+    collector = await svc.invite_collector(user.org_id, dataset_id, body.email, body.name, body.message)
     return _collector_dict(collector)
 
 
@@ -106,9 +112,11 @@ async def get_entries(
     dataset_id: str,
     field_id: Optional[str] = None,
     collector_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     user: MLUser = RequireEngineer,
 ):
-    return await svc.get_entries(user.org_id, dataset_id, field_id, collector_id)
+    return await svc.get_entries(user.org_id, dataset_id, field_id, collector_id, date_from, date_to)
 
 
 # ── Serialisers ────────────────────────────────────────────────────────────────

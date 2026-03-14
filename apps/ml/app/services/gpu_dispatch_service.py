@@ -58,6 +58,60 @@ def _get_trainer_source(trainer_name: str) -> str:
     raise FileNotFoundError(f"Trainer source file not found for {trainer_name!r}")
 
 
+async def _release_reserved(job: TrainingJob) -> None:
+    """
+    Release any reserved wallet funds for a failed/cancelled job (charge $0).
+    Safe to call multiple times — no-ops if nothing is reserved.
+    """
+    if not job.owner_email:
+        return
+    try:
+        from app.services import wallet_service
+        wallet = await wallet_service.get_or_create(job.owner_email, job.org_id)
+        if wallet.reserved > 0:
+            await wallet_service.release_and_charge(wallet, str(job.id), actual_cost=0.0)
+            logger.info("wallet_reservation_released", job_id=str(job.id), owner=job.owner_email)
+    except Exception as exc:
+        logger.warning("wallet_release_failed", job_id=str(job.id), error=str(exc))
+
+
+async def resume_interrupted_gpu_jobs() -> None:
+    """
+    Called once at service startup. Finds all cloud GPU jobs that were left in
+    'queued' or 'running' state (service was restarted mid-execution) and:
+      - running + remote_job_id set  → re-enqueue polling so they complete normally
+      - queued / running without remote_job_id → mark failed + release reservation
+    """
+    try:
+        stuck = await TrainingJob.find(
+            {"compute_type": "cloud_gpu", "status": {"$in": ["queued", "running"]}},
+        ).to_list()
+        if not stuck:
+            return
+        logger.info("cloud_gpu_resuming_interrupted_jobs", count=len(stuck))
+        for job in stuck:
+            if job.remote_job_id:
+                # Re-enqueue polling via Celery so it runs in the worker
+                try:
+                    from app.tasks.train_task import train_model_task
+                    train_model_task.apply_async(args=[str(job.id)], countdown=2)
+                    logger.info("cloud_gpu_reenqueued", job_id=str(job.id), remote_id=job.remote_job_id)
+                except Exception as exc:
+                    logger.warning("cloud_gpu_reenqueue_failed", job_id=str(job.id), error=str(exc))
+            else:
+                # Never reached the provider — safe to fail immediately
+                await job.set({
+                    "status": "failed",
+                    "error": "Job interrupted before dispatch (service restarted)",
+                    "finished_at": utc_now(),
+                    "updated_at": utc_now(),
+                })
+                await _release_reserved(job)
+                logger.info("cloud_gpu_interrupted_released", job_id=str(job.id))
+    except Exception as exc:
+        logger.warning("cloud_gpu_resume_failed", error=str(exc))
+
+
 async def run_cloud_training(job: TrainingJob, injected_data: Optional[bytes] = None) -> None:
     """
     Dispatch a training job to a cloud GPU provider.
@@ -70,48 +124,71 @@ async def run_cloud_training(job: TrainingJob, injected_data: Optional[bytes] = 
         provider = _get_provider(provider_name)
     except ValueError as exc:
         await job.set({"status": "failed", "error": str(exc), "finished_at": utc_now(), "updated_at": utc_now()})
+        await _release_reserved(job)
         return
 
-    # Get trainer source
-    try:
-        trainer_code = _get_trainer_source(job.trainer_name)
-    except FileNotFoundError as exc:
-        await job.set({"status": "failed", "error": str(exc), "finished_at": utc_now(), "updated_at": utc_now()})
-        return
-
-    await job.set({
-        "status": "running",
-        "started_at": utc_now(),
-        "updated_at": utc_now(),
-        "log_lines": [f"[cloud_gpu] Dispatching to {provider_name} · gpu={job.gpu_type_id or 'default'}…"],
-    })
-
-    # Dispatch
-    try:
-        handle = await provider.dispatch(
-            trainer_name=job.trainer_name,
-            trainer_code=trainer_code,
-            config=job.training_config.get("extra") or {},
-            injected_data=injected_data,
-            org_id=job.org_id,
-            job_id=job_id,
-            gpu_type_id=job.gpu_type_id,
+    # ── Resume path: job already dispatched (service was restarted mid-poll) ──
+    if job.remote_job_id:
+        logger.info("cloud_gpu_resuming_poll", job_id=job_id, remote_id=job.remote_job_id)
+        result_prefix = (
+            f"{job.org_id}/cloud_training/{job_id}" if job.org_id else f"cloud_training/{job_id}"
         )
-    except Exception as exc:
+        handle = type("H", (), {
+            "provider": provider_name,
+            "remote_id": job.remote_job_id,
+            "extra": {"result_prefix": result_prefix},
+        })()
         await job.set({
-            "status": "failed",
-            "error": f"Dispatch failed: {exc}",
-            "finished_at": utc_now(),
+            "log_lines": [
+                f"[cloud_gpu] Resuming poll for remote_id={job.remote_job_id} after service restart"
+            ],
             "updated_at": utc_now(),
         })
-        return
+        # Jump straight to the poll loop below
+    else:
+        # Get trainer source
+        try:
+            trainer_code = _get_trainer_source(job.trainer_name)
+        except FileNotFoundError as exc:
+            await job.set({"status": "failed", "error": str(exc), "finished_at": utc_now(), "updated_at": utc_now()})
+            await _release_reserved(job)
+            return
 
-    # Store remote job id
-    await job.set({
-        "remote_job_id": handle.remote_id,
-        "log_lines": [f"[cloud_gpu] Job dispatched to {provider_name} · remote_id={handle.remote_id}"],
-        "updated_at": utc_now(),
-    })
+        await job.set({
+            "status": "running",
+            "started_at": utc_now(),
+            "updated_at": utc_now(),
+            "log_lines": [f"[cloud_gpu] Dispatching to {provider_name} · gpu={job.gpu_type_id or 'default'}…"],
+        })
+
+        try:
+            handle = await provider.dispatch(
+                trainer_name=job.trainer_name,
+                trainer_code=trainer_code,
+                config=job.training_config.get("extra") or {},
+                injected_data=injected_data,
+                org_id=job.org_id,
+                job_id=job_id,
+                gpu_type_id=job.gpu_type_id,
+            )
+        except Exception as exc:
+            err_msg = str(exc)
+            logger.error("cloud_gpu_dispatch_failed", job_id=job_id, provider=provider_name, error=err_msg)
+            await job.set({
+                "status": "failed",
+                "error": f"Dispatch failed: {err_msg}",
+                "log_lines": [f"[cloud_gpu] Dispatch failed: {err_msg}"],
+                "finished_at": utc_now(),
+                "updated_at": utc_now(),
+            })
+            await _release_reserved(job)
+            return
+
+        await job.set({
+            "remote_job_id": handle.remote_id,
+            "log_lines": [f"[cloud_gpu] Job dispatched to {provider_name} · remote_id={handle.remote_id}"],
+            "updated_at": utc_now(),
+        })
 
     # Poll until done
     max_polls = 720   # 1h at 5s interval
@@ -141,6 +218,7 @@ async def run_cloud_training(job: TrainingJob, injected_data: Optional[bytes] = 
             "finished_at": utc_now(),
             "updated_at": utc_now(),
         })
+        await _release_reserved(job)
         return
 
     # Fetch result
@@ -153,6 +231,7 @@ async def run_cloud_training(job: TrainingJob, injected_data: Optional[bytes] = 
             "finished_at": utc_now(),
             "updated_at": utc_now(),
         })
+        await _release_reserved(job)
         return
 
     # Store model in MLflow

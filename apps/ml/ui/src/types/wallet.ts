@@ -23,6 +23,31 @@ export interface WalletTransaction {
   created_at: string
 }
 
+export interface PlatformLedgerEntry {
+  id: string
+  amount_usd: number
+  recipient_email: string
+  performed_by: string
+  note: string
+  wallet_tx_id: string
+  created_at: string
+}
+
+export interface AdminLedgerResponse {
+  items: PlatformLedgerEntry[]
+  total: number
+  total_spent_usd: number
+  page: number
+  page_size: number
+}
+
+export interface AdminUserSummary {
+  email: string
+  full_name: string
+  org_id: string
+  role: string
+}
+
 export interface LocalQuota {
   quota_seconds: number
   used_seconds: number

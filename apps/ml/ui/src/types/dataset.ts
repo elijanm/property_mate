@@ -14,6 +14,12 @@ export interface DatasetField {
   description_presets: string[]
   description_required: boolean
   order: number
+  repeatable: boolean
+  max_repeats: number  // 0 = unlimited
+  // Model validation
+  validation_model: string | null
+  validation_labels: string[]
+  validation_message: string
 }
 
 export interface DatasetProfile {

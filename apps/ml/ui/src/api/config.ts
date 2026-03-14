@@ -57,7 +57,9 @@ export interface DeviceInfo {
 }
 
 export const configApi = {
-  get:       ()                              => client.get<TrainingConfig>('/config').then(r => r.data),
-  update:    (data: Partial<TrainingConfig>) => client.patch<TrainingConfig>('/config', data).then(r => r.data),
-  getDevice: ()                              => client.get<DeviceInfo>('/config/device').then(r => r.data),
+  get:          ()                              => client.get<TrainingConfig>('/config').then(r => r.data),
+  update:       (data: Partial<TrainingConfig>) => client.patch<TrainingConfig>('/config', data).then(r => r.data),
+  getDevice:    ()                              => client.get<DeviceInfo>('/config/device').then(r => r.data),
+  getUiConfig:  ()                              => client.get<{ nav_layout: number }>('/config/ui').then(r => r.data),
+  updateConfig: (data: Record<string, unknown>) => client.patch('/config', data).then(r => r.data),
 }

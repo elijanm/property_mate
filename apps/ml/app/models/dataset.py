@@ -22,6 +22,13 @@ class DatasetField(BaseModel):
     description_presets: List[str] = []           # e.g. ["Healthy","Sick","Injured"]
     description_required: bool = False
     order: int = 0
+    # Repeat settings
+    repeatable: bool = False                      # can be submitted multiple times
+    max_repeats: int = 0                          # 0 = unlimited; N = cap at N submissions
+    # Model validation
+    validation_model: Optional[str] = None        # trainer_name of deployed model to run on upload
+    validation_labels: List[str] = []             # accepted prediction labels; empty = accept any
+    validation_message: str = ""                  # rejection message shown to collector
 
 
 class DatasetProfile(Document):

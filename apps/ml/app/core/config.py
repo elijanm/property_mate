@@ -89,7 +89,8 @@ class Settings(BaseSettings):
     # Email (Resend)
     RESEND_API_KEY: str = ""
     EMAIL_FROM: str = "MLDock.io <noreply@mldock.io>"
-    APP_BASE_URL: str = "http://localhost:8030"   # public URL for activation links
+    APP_BASE_URL: str = "http://localhost:8030"   # backend public base URL (API callbacks, webhooks)
+    FRONTEND_BASE_URL: str = "http://localhost:5200"  # ML UI public URL (email links: collect, activate)
 
     # Paystack (wallet top-up)
     PAYSTACK_SECRET_KEY: str = ""

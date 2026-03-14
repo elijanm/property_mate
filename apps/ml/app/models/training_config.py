@@ -50,4 +50,8 @@ class TrainingConfig(Document):
 
     # ── Freeform overrides ────────────────────────────────────────────────────
     extra: Dict[str, Any] = {}
+
+    # ── UI preferences ────────────────────────────────────────────────────────────
+    nav_layout: int = 3   # 1 = grouped flat, 2 = collapsible groups, 3 = icon rail + flyout
+
     updated_at: datetime = Field(default_factory=utc_now)

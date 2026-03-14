@@ -27,7 +27,7 @@ async def send_email(to: str, subject: str, html: str) -> None:
 
 def _welcome_html(full_name: str, email: str, otp: str, token: str) -> str:
     name = full_name or email.split("@")[0]
-    activate_url = f"{settings.APP_BASE_URL}/verify?token={token}"
+    activate_url = f"{settings.FRONTEND_BASE_URL}/verify?token={token}"
     return f"""
 <!DOCTYPE html>
 <html>

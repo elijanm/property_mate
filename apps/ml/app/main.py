@@ -10,6 +10,7 @@ from app.api.router import api_router
 from app.services.registry_service import scan_and_register_plugins
 from app.services.scheduler_service import start_scheduler, stop_scheduler
 from app.services.auth_service import ensure_admin_exists, ensure_sample_model_deployed
+from app.services.gpu_dispatch_service import resume_interrupted_gpu_jobs
 from app.middleware.request_logger import RequestLoggerMiddleware
 
 logger = structlog.get_logger(__name__)
@@ -24,6 +25,7 @@ async def lifespan(app: FastAPI):
     await start_scheduler()
     await ensure_admin_exists()
     await ensure_sample_model_deployed()
+    await resume_interrupted_gpu_jobs()
     yield
     # Shutdown
     await stop_scheduler()

@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from app.dependencies.auth import require_roles
+from app.dependencies.auth import require_roles, get_current_user
 from app.models.training_config import TrainingConfig as TrainingConfigDoc
 from app.utils.datetime import utc_now
 
@@ -21,6 +21,7 @@ class UpdateConfigRequest(BaseModel):
     early_stopping: Optional[bool] = None
     early_stopping_patience: Optional[int] = None
     extra: Optional[Dict[str, Any]] = None
+    nav_layout: Optional[int] = None
 
 
 @router.get("", dependencies=[_admin])
@@ -64,8 +65,18 @@ async def update_config(body: UpdateConfigRequest):
         val = getattr(body, field, None)
         if val is not None:
             updates[field] = val
+    if body.nav_layout is not None:
+        cfg.nav_layout = body.nav_layout
+        updates["nav_layout"] = body.nav_layout
     await cfg.set(updates)
     return cfg.model_dump()
+
+
+@router.get("/ui", dependencies=[Depends(get_current_user)])
+async def get_ui_config():
+    cfg = await TrainingConfigDoc.find_one(TrainingConfigDoc.key == "global")
+    nav_layout = cfg.nav_layout if cfg else 3
+    return {"nav_layout": nav_layout}
 
 
 @router.get("/device", dependencies=[_admin])

@@ -2,12 +2,21 @@
 import uuid
 from typing import Optional, List
 from fastapi import UploadFile, HTTPException
+from beanie import PydanticObjectId
 import structlog
 
 from app.models.dataset import DatasetProfile, DatasetCollector, DatasetEntry, DatasetField
 from app.utils.s3_url import generate_presigned_url
 from app.utils.datetime import utc_now
 from app.core.config import settings
+
+
+def _oid(value: str) -> PydanticObjectId:
+    """Convert string to PydanticObjectId; raise 404 on invalid format."""
+    try:
+        return PydanticObjectId(value)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Invalid ID format")
 
 logger = structlog.get_logger(__name__)
 
@@ -32,7 +41,7 @@ async def create_dataset(org_id: str, data: dict, created_by: str) -> DatasetPro
 
 async def get_dataset(org_id: str, dataset_id: str) -> DatasetProfile:
     profile = await DatasetProfile.find_one(
-        DatasetProfile.id == dataset_id,
+        DatasetProfile.id == _oid(dataset_id),
         DatasetProfile.org_id == org_id,
         DatasetProfile.deleted_at == None,
     )
@@ -61,7 +70,7 @@ async def delete_dataset(org_id: str, dataset_id: str) -> None:
 
 # ── Collectors ─────────────────────────────────────────────────────────────────
 
-async def invite_collector(org_id: str, dataset_id: str, email: str, name: str = "") -> DatasetCollector:
+async def invite_collector(org_id: str, dataset_id: str, email: str, name: str = "", message: str = "") -> DatasetCollector:
     await get_dataset(org_id, dataset_id)
 
     existing = await DatasetCollector.find_one(
@@ -70,8 +79,7 @@ async def invite_collector(org_id: str, dataset_id: str, email: str, name: str =
         DatasetCollector.deleted_at == None,
     )
     if existing:
-        # Re-send invite
-        await _send_invite_email(existing)
+        await _send_invite_email(existing, message=message)
         return existing
 
     collector = DatasetCollector(
@@ -81,7 +89,7 @@ async def invite_collector(org_id: str, dataset_id: str, email: str, name: str =
         name=name or email.split("@")[0],
     )
     await collector.insert()
-    await _send_invite_email(collector)
+    await _send_invite_email(collector, message=message)
     logger.info("collector_invited", collector_id=str(collector.id), email=email, dataset_id=dataset_id)
     return collector
 
@@ -112,13 +120,28 @@ async def get_entries(
     dataset_id: str,
     field_id: Optional[str] = None,
     collector_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> List[dict]:
+    from datetime import datetime, timezone
     await get_dataset(org_id, dataset_id)
     filters = [DatasetEntry.dataset_id == dataset_id]
     if field_id:
         filters.append(DatasetEntry.field_id == field_id)
     if collector_id:
         filters.append(DatasetEntry.collector_id == collector_id)
+    if date_from:
+        try:
+            dt = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
+            filters.append(DatasetEntry.captured_at >= dt)
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            dt = datetime.fromisoformat(date_to).replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+            filters.append(DatasetEntry.captured_at <= dt)
+        except ValueError:
+            pass
     entries = await DatasetEntry.find(*filters).sort(-DatasetEntry.captured_at).to_list()
     return [_entry_to_dict(e) for e in entries]
 
@@ -138,7 +161,7 @@ async def get_collector_by_token(token: str) -> DatasetCollector:
 async def get_form_definition(token: str) -> dict:
     collector = await get_collector_by_token(token)
     profile = await DatasetProfile.find_one(
-        DatasetProfile.id == collector.dataset_id,
+        DatasetProfile.id == _oid(collector.dataset_id),
         DatasetProfile.deleted_at == None,
     )
     if not profile:
@@ -181,7 +204,7 @@ async def submit_entry(
     description: Optional[str],
 ) -> dict:
     collector = await get_collector_by_token(token)
-    profile = await DatasetProfile.find_one(DatasetProfile.id == collector.dataset_id)
+    profile = await DatasetProfile.find_one(DatasetProfile.id == _oid(collector.dataset_id))
     if not profile or profile.status == "closed":
         raise HTTPException(status_code=410, detail="Dataset is closed")
 
@@ -194,16 +217,23 @@ async def submit_entry(
 
     file_key = None
     file_mime = None
+    content = None
     if file and file.filename:
         content = await file.read()
+        mime = file.content_type or "application/octet-stream"
+
+        # ── Model validation ──────────────────────────────────────────────────
+        if field.validation_model and content:
+            await _validate_with_model(field, content, mime)
+
         ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "bin"
         s3_key = (
             f"{profile.org_id}/datasets/{str(profile.id)}"
             f"/entries/{str(collector.id)}/{field_id}/{uuid.uuid4()}.{ext}"
         )
-        await _upload_to_s3(s3_key, content, file.content_type or "application/octet-stream")
+        await _upload_to_s3(s3_key, content, mime)
         file_key = s3_key
-        file_mime = file.content_type
+        file_mime = mime
 
     entry = DatasetEntry(
         org_id=profile.org_id,
@@ -246,7 +276,7 @@ async def get_collector_entries(token: str) -> List[dict]:
 
 async def get_collector_points(token: str) -> dict:
     collector = await get_collector_by_token(token)
-    profile = await DatasetProfile.find_one(DatasetProfile.id == collector.dataset_id)
+    profile = await DatasetProfile.find_one(DatasetProfile.id == _oid(collector.dataset_id))
     return {
         "points_earned": collector.points_earned,
         "entry_count": collector.entry_count,
@@ -263,6 +293,78 @@ def _entry_to_dict(entry: DatasetEntry) -> dict:
     if entry.file_key:
         d["file_url"] = generate_presigned_url(entry.file_key)
     return d
+
+
+async def _validate_with_model(field, content: bytes, mime: str) -> None:
+    """Run the field's validation model on the uploaded file and reject if the
+    top predicted label is not in field.validation_labels."""
+    import base64
+    from app.services.inference_service import predict
+
+    b64 = base64.b64encode(content).decode()
+    inputs: dict = {"file_b64": b64, "file_name": "upload", "mime_type": mime}
+    if mime.startswith("image/"):
+        inputs["image_b64"] = b64
+
+    try:
+        result, _ = await predict(
+            trainer_name=field.validation_model,
+            inputs=inputs,
+            org_id="",
+        )
+    except Exception as exc:
+        logger.warning(
+            "dataset_validation_model_error",
+            trainer=field.validation_model,
+            error=str(exc),
+        )
+        # If the model itself errors, let the submission through rather than
+        # blocking the collector — log and continue.
+        return
+
+    # Extract the top label from the prediction result.
+    # Handles common output shapes: str, {"label": ...}, {"class": ...},
+    # {"prediction": ...}, {"top": [{"label": ...}]}, list of dicts.
+    label: Optional[str] = None
+    if isinstance(result, str):
+        label = result
+    elif isinstance(result, dict):
+        label = (
+            result.get("label") or result.get("class") or
+            result.get("prediction") or result.get("predicted_class")
+        )
+        if label is None and "top" in result:
+            top = result["top"]
+            if isinstance(top, list) and top:
+                label = top[0].get("label") or top[0].get("class")
+        if label is not None:
+            label = str(label)
+    elif isinstance(result, list) and result:
+        first = result[0]
+        label = str(first.get("label") or first.get("class") or first) if isinstance(first, dict) else str(first)
+
+    if not field.validation_labels:
+        # No expected labels configured — model runs but always accepts
+        return
+
+    if label is None:
+        logger.warning("dataset_validation_no_label", trainer=field.validation_model, result=result)
+        return
+
+    label_lower = label.lower().strip()
+    accepted = [l.lower().strip() for l in field.validation_labels]
+    if label_lower not in accepted:
+        rejection = field.validation_message or (
+            f"This image was identified as '{label}'. "
+            f"Expected: {', '.join(field.validation_labels)}. Please re-capture."
+        )
+        logger.info(
+            "dataset_entry_rejected",
+            trainer=field.validation_model,
+            predicted=label,
+            expected=field.validation_labels,
+        )
+        raise HTTPException(status_code=422, detail=rejection)
 
 
 async def _upload_to_s3(key: str, content: bytes, content_type: str) -> None:
@@ -283,12 +385,12 @@ async def _upload_to_s3(key: str, content: bytes, content_type: str) -> None:
         )
 
 
-async def _send_invite_email(collector: DatasetCollector) -> None:
+async def _send_invite_email(collector: DatasetCollector, message: str = "") -> None:
     from app.core.email import send_email
-    profile = await DatasetProfile.find_one(DatasetProfile.id == collector.dataset_id)
+    profile = await DatasetProfile.find_one(DatasetProfile.id == _oid(collector.dataset_id))
     if not profile:
         return
-    collect_url = f"{settings.APP_BASE_URL}/collect/{collector.token}"
+    collect_url = f"{settings.FRONTEND_BASE_URL}/collect/{collector.token}"
     html = _invite_html(
         name=collector.name,
         dataset_name=profile.name,
@@ -296,6 +398,7 @@ async def _send_invite_email(collector: DatasetCollector) -> None:
         collect_url=collect_url,
         points_enabled=profile.points_enabled,
         points_info=profile.points_redemption_info,
+        custom_message=message,
     )
     await send_email(
         to=collector.email,
@@ -305,7 +408,8 @@ async def _send_invite_email(collector: DatasetCollector) -> None:
 
 
 def _invite_html(name: str, dataset_name: str, dataset_description: str,
-                 collect_url: str, points_enabled: bool, points_info: str) -> str:
+                 collect_url: str, points_enabled: bool, points_info: str,
+                 custom_message: str = "") -> str:
     points_block = ""
     if points_enabled and points_info:
         points_block = f"""
@@ -316,6 +420,12 @@ def _invite_html(name: str, dataset_name: str, dataset_description: str,
     desc_block = (
         f'<p style="color:#9ca3af;font-size:14px;line-height:1.6;margin:0 0 20px;">{dataset_description}</p>'
         if dataset_description else ""
+    )
+    message_block = (
+        f'<div style="background:#1e293b;border-left:3px solid #6366f1;border-radius:8px;padding:12px 16px;margin-bottom:20px;">'
+        f'<p style="margin:0;color:#cbd5e1;font-size:13px;line-height:1.7;white-space:pre-line;">{custom_message}</p>'
+        f'</div>'
+        if custom_message.strip() else ""
     )
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -339,6 +449,7 @@ def _invite_html(name: str, dataset_name: str, dataset_description: str,
       <p style="margin:0;color:#fff;font-weight:600;font-size:16px;">📦 {dataset_name}</p>
     </div>
     {desc_block}
+    {message_block}
     {points_block}
     <a href="{collect_url}" style="display:block;text-align:center;background:#6366f1;color:#fff;font-weight:600;font-size:15px;padding:14px;border-radius:10px;text-decoration:none;margin-bottom:16px;">
       Start Contributing →

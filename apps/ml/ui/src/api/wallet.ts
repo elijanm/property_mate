@@ -1,5 +1,5 @@
 import client from './client'
-import type { Wallet, WalletTransaction, LocalQuota } from '@/types/wallet'
+import type { Wallet, WalletTransaction, LocalQuota, AdminLedgerResponse, AdminUserSummary, PlatformLedgerEntry } from '@/types/wallet'
 
 export const walletApi = {
   get: () =>
@@ -28,4 +28,20 @@ export const walletApi = {
 
   purchaseLocalHours: (hours: number) =>
     client.post<Wallet>('/wallet/local-quota/purchase', { hours }).then(r => r.data),
+
+  // ── Admin ────────────────────────────────────────────────────────────────
+  adminRecharge: (userEmail: string, amountUsd: number, note: string) =>
+    client
+      .post<{ wallet: Wallet; ledger_entry: PlatformLedgerEntry }>('/wallet/admin/recharge', {
+        user_email: userEmail,
+        amount_usd: amountUsd,
+        note,
+      })
+      .then(r => r.data),
+
+  adminLedger: (page = 1) =>
+    client.get<AdminLedgerResponse>('/wallet/admin/ledger', { params: { page } }).then(r => r.data),
+
+  adminListUsers: () =>
+    client.get<AdminUserSummary[]>('/wallet/admin/users').then(r => r.data),
 }

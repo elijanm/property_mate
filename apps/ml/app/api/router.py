@@ -1,9 +1,10 @@
 from fastapi import APIRouter
 from app.api.v1 import trainers, training, inference, evaluation, models, config, feedback, sse, security, monitoring
 from app.api.v1 import auth, api_keys, ab_tests, alert_rules, batch, audit, experiments, explain, users, wallet, admin
-from app.api.v1 import datasets, collect
+from app.api.v1 import datasets, collect, editor
 
 api_router = APIRouter(prefix="/api/v1")
+api_router.include_router(editor.router)
 api_router.include_router(trainers.router)
 api_router.include_router(training.router)
 api_router.include_router(inference.router)

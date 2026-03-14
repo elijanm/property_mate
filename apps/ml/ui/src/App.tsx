@@ -24,6 +24,7 @@ import UsersPage from './components/UsersPage'
 import WalletPage from './pages/WalletPage'
 import AdminAnalyticsPage from './pages/AdminAnalyticsPage'
 import DatasetPage from './pages/DatasetPage'
+import CodeEditorPage from './pages/CodeEditorPage'
 import CollectPage from './pages/CollectPage'
 import { walletApi } from './api/wallet'
 import type { Wallet as WalletData } from './types/wallet'
@@ -41,38 +42,78 @@ import {
   Brain, RefreshCw, Cpu, LayoutGrid, BookOpen,
   Upload, Play, Settings, List, Activity, Shield,
   FlaskConical, Bell, Key, Layers, ClipboardList, GitCompare,
-  LogOut, User, Loader2, Users, Wallet, BarChart2, Database,
+  LogOut, User, Loader2, Users, Wallet, BarChart2, Database, Code2,
+  ChevronRight, ChevronDown,
 } from 'lucide-react'
 import Logo from './components/Logo'
 import clsx from 'clsx'
 
-type Page = 'models' | 'trainers' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets'
+type Page = 'models' | 'trainers' | 'editor' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets'
 
-const NAV: { id: Page; label: string; icon: React.ReactNode }[] = [
-  { id: 'models',      label: 'Models',       icon: <LayoutGrid size={14} /> },
-  { id: 'trainers',    label: 'Trainers',     icon: <Brain size={14} /> },
-  { id: 'deploy',      label: 'Deploy',       icon: <Upload size={14} /> },
-  { id: 'training',    label: 'Training',     icon: <Play size={14} /> },
-  { id: 'jobs',        label: 'Jobs',         icon: <Cpu size={14} /> },
-  { id: 'logs',        label: 'Inferences',   icon: <List size={14} /> },
-  { id: 'monitoring',  label: 'Monitoring',   icon: <Activity size={14} /> },
-  { id: 'security',    label: 'Security',     icon: <Shield size={14} /> },
-  { id: 'ab-tests',    label: 'A/B Tests',    icon: <FlaskConical size={14} /> },
-  { id: 'alerts',      label: 'Alert Rules',  icon: <Bell size={14} /> },
-  { id: 'api-keys',    label: 'API Keys',     icon: <Key size={14} /> },
-  { id: 'batch',       label: 'Batch',        icon: <Layers size={14} /> },
-  { id: 'experiments', label: 'Experiments',  icon: <GitCompare size={14} /> },
-  { id: 'audit',       label: 'Audit Log',    icon: <ClipboardList size={14} /> },
-  { id: 'users',       label: 'Users',        icon: <Users size={14} /> },
-  { id: 'analytics',   label: 'Analytics',    icon: <BarChart2 size={14} /> },
-  { id: 'datasets',    label: 'Datasets',     icon: <Database size={14} /> },
-  { id: 'wallet',      label: 'Wallet',       icon: <Wallet size={14} /> },
-  { id: 'config',      label: 'Config',       icon: <Settings size={14} /> },
+type NavGroup = {
+  id: string
+  label: string
+  icon: React.ReactNode  // for rail mode
+  items: { id: Page; label: string; icon: React.ReactNode }[]
+}
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    id: 'build',
+    label: 'Build',
+    icon: <Code2 size={16} />,
+    items: [
+      { id: 'datasets',    label: 'Datasets',     icon: <Database size={14} /> },
+      { id: 'editor',      label: 'Code Editor',  icon: <Code2 size={14} /> },
+      { id: 'trainers',    label: 'Trainers',     icon: <Brain size={14} /> },
+      { id: 'experiments', label: 'Experiments',  icon: <GitCompare size={14} /> },
+    ],
+  },
+  {
+    id: 'deploy',
+    label: 'Deploy',
+    icon: <Upload size={16} />,
+    items: [
+      { id: 'models',   label: 'Models',  icon: <LayoutGrid size={14} /> },
+      { id: 'deploy',   label: 'Deploy',  icon: <Upload size={14} /> },
+      { id: 'batch',    label: 'Batch',   icon: <Layers size={14} /> },
+    ],
+  },
+  {
+    id: 'observe',
+    label: 'Observe',
+    icon: <Activity size={16} />,
+    items: [
+      { id: 'training',   label: 'Training',    icon: <Play size={14} /> },
+      { id: 'jobs',       label: 'Jobs',         icon: <Cpu size={14} /> },
+      { id: 'logs',       label: 'Inferences',   icon: <List size={14} /> },
+      { id: 'monitoring', label: 'Monitoring',   icon: <Activity size={14} /> },
+      { id: 'ab-tests',   label: 'A/B Tests',    icon: <FlaskConical size={14} /> },
+      { id: 'alerts',     label: 'Alert Rules',  icon: <Bell size={14} /> },
+    ],
+  },
+  {
+    id: 'admin',
+    label: 'Admin',
+    icon: <Shield size={16} />,
+    items: [
+      { id: 'users',     label: 'Users',     icon: <Users size={14} /> },
+      { id: 'security',  label: 'Security',  icon: <Shield size={14} /> },
+      { id: 'audit',     label: 'Audit Log', icon: <ClipboardList size={14} /> },
+      { id: 'analytics', label: 'Analytics', icon: <BarChart2 size={14} /> },
+      { id: 'api-keys',  label: 'API Keys',  icon: <Key size={14} /> },
+      { id: 'config',    label: 'Config',    icon: <Settings size={14} /> },
+    ],
+  },
 ]
+
+// Keep the old NAV for any legacy use - derive it from groups
+const NAV = NAV_GROUPS.flatMap(g => g.items)
 
 const PAGE_TITLE: Record<Page, string> = {
   models:      'Model Deployments',
   trainers:    'Trainer Plugins',
+  editor:      'Code Editor',
   deploy:      'Deploy Model',
   training:    'Training',
   jobs:        'All Jobs',
@@ -116,6 +157,9 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false)
   const [page, setPage] = useState<Page>('models')
   const [wallet, setWallet] = useState<WalletData | null>(null)
+  const [navLayout, setNavLayout] = useState<1 | 2 | 3>(3)
+  const [railActiveGroup, setRailActiveGroup] = useState<string>('build')
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set(['admin']))
 
   const refreshWallet = useCallback(() => {
     walletApi.get().then(setWallet).catch(() => {})
@@ -132,6 +176,12 @@ export default function App() {
 
   useEffect(() => { load() }, [])
   useEffect(() => { if (user) refreshWallet() }, [user, refreshWallet])
+  useEffect(() => {
+    if (!user) return
+    import('./api/config').then(m => {
+      m.configApi.getUiConfig().then(d => setNavLayout(d.nav_layout as 1 | 2 | 3)).catch(() => {})
+    })
+  }, [user])
 
   const handleDeleteDeployment = async (id: string) => {
     await trainersApi.deleteDeployment(id)
@@ -142,6 +192,9 @@ export default function App() {
   const navigate = (p: Page) => {
     setPage(p)
     setSelected(null)
+    // sync rail active group to the group containing the page
+    const group = NAV_GROUPS.find(g => g.items.some(i => i.id === p))
+    if (group) setRailActiveGroup(group.id)
     if (p === 'wallet') refreshWallet()
     trackPageView(`/${p}`)
   }
@@ -270,23 +323,119 @@ export default function App() {
   return (
     <div className="flex h-screen overflow-hidden bg-gray-950">
       {/* Sidebar */}
-      <aside className="w-52 flex-shrink-0 border-r border-gray-800 flex flex-col">
+      <aside className={clsx(
+        'flex-shrink-0 border-r border-gray-800 flex flex-col',
+        navLayout === 3 ? 'w-56' : 'w-52'
+      )}>
         {/* Logo */}
         <div className="px-4 py-4 border-b border-gray-800">
           <Logo size="sm" tld={true} />
         </div>
 
-        {/* Nav */}
-        <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
-          {NAV.filter(item => !['users', 'audit', 'security', 'config', 'analytics'].includes(item.id) || user?.role === 'admin').map(item => (
-            <button key={item.id} onClick={() => navigate(item.id)}
-              className={clsx('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors',
-                page === item.id && !selected ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200'
-              )}>
-              {item.icon} {item.label}
-            </button>
-          ))}
-        </nav>
+        {/* Nav — layout 1: grouped flat */}
+        {navLayout === 1 && (
+          <nav className="flex-1 p-3 overflow-y-auto space-y-4">
+            {NAV_GROUPS.filter(g => g.id !== 'admin' || user?.role === 'admin').map(group => (
+              <div key={group.id}>
+                <div className="px-3 pb-1 text-[10px] font-semibold text-gray-600 uppercase tracking-wider">
+                  {group.label}
+                </div>
+                <div className="space-y-0.5">
+                  {group.items.map(item => (
+                    <button key={item.id} onClick={() => navigate(item.id)}
+                      className={clsx('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors',
+                        page === item.id && !selected ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200'
+                      )}>
+                      {item.icon} {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </nav>
+        )}
+
+        {/* Nav — layout 2: collapsible groups */}
+        {navLayout === 2 && (
+          <nav className="flex-1 p-3 overflow-y-auto space-y-1">
+            {NAV_GROUPS.filter(g => g.id !== 'admin' || user?.role === 'admin').map(group => {
+              const isCollapsed = collapsedGroups.has(group.id)
+              const hasActive = group.items.some(i => i.id === page)
+              return (
+                <div key={group.id}>
+                  <button
+                    onClick={() => setCollapsedGroups(prev => {
+                      const next = new Set(prev)
+                      next.has(group.id) ? next.delete(group.id) : next.add(group.id)
+                      return next
+                    })}
+                    className={clsx(
+                      'w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-colors',
+                      hasActive ? 'text-brand-400' : 'text-gray-500 hover:text-gray-300'
+                    )}
+                  >
+                    {isCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
+                    {group.label}
+                  </button>
+                  {!isCollapsed && (
+                    <div className="space-y-0.5 mt-0.5 mb-1">
+                      {group.items.map(item => (
+                        <button key={item.id} onClick={() => navigate(item.id)}
+                          className={clsx('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors',
+                            page === item.id && !selected ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200'
+                          )}>
+                          {item.icon} {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </nav>
+        )}
+
+        {/* Nav — layout 3: icon rail + flyout panel */}
+        {navLayout === 3 && (
+          <div className="flex flex-1 min-h-0">
+            {/* Rail */}
+            <div className="w-12 flex-shrink-0 flex flex-col items-center py-2 gap-1 border-r border-gray-800">
+              {NAV_GROUPS.filter(g => g.id !== 'admin' || user?.role === 'admin').map(group => {
+                const isActive = railActiveGroup === group.id
+                const hasPageActive = group.items.some(i => i.id === page)
+                return (
+                  <button
+                    key={group.id}
+                    onClick={() => setRailActiveGroup(group.id)}
+                    title={group.label}
+                    className={clsx(
+                      'w-9 h-9 flex flex-col items-center justify-center rounded-lg transition-colors gap-0.5',
+                      isActive
+                        ? 'bg-gray-800 text-white'
+                        : hasPageActive
+                        ? 'text-brand-400 hover:bg-gray-900'
+                        : 'text-gray-600 hover:bg-gray-900 hover:text-gray-300'
+                    )}
+                  >
+                    {group.icon}
+                    <span className="text-[8px] leading-none">{group.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+            {/* Flyout items */}
+            <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+              {(NAV_GROUPS.find(g => g.id === railActiveGroup)?.items ?? []).map(item => (
+                <button key={item.id} onClick={() => navigate(item.id)}
+                  className={clsx('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors',
+                    page === item.id && !selected ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200'
+                  )}>
+                  {item.icon} {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Live feed */}
         <div className="border-t border-gray-800 h-56 overflow-hidden flex-shrink-0">
@@ -328,6 +477,31 @@ export default function App() {
             className="flex items-center gap-1.5 text-[11px] text-gray-500 hover:text-brand-400 transition-colors">
             <BookOpen size={11} /> Plugin Developer Guide
           </a>
+          {user?.role === 'admin' && (
+            <div className="space-y-1">
+              <div className="text-[10px] text-gray-600 uppercase tracking-wider">Nav Layout</div>
+              <div className="flex gap-1">
+                {([1, 2, 3] as const).map(n => (
+                  <button
+                    key={n}
+                    onClick={() => {
+                      setNavLayout(n)
+                      import('./api/config').then(m => m.configApi.updateConfig({ nav_layout: n }).catch(() => {}))
+                    }}
+                    title={n === 1 ? 'Grouped flat' : n === 2 ? 'Collapsible groups' : 'Icon rail'}
+                    className={clsx(
+                      'flex-1 py-1 text-[10px] rounded border transition-colors',
+                      navLayout === n
+                        ? 'bg-brand-900/50 border-brand-600 text-brand-300'
+                        : 'bg-gray-900 border-gray-800 text-gray-500 hover:text-gray-300 hover:border-gray-700'
+                    )}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex items-center gap-1.5 text-[10px] text-gray-700">
             <Cpu size={10} /> PMS ML Service · port 8030
           </div>
@@ -388,9 +562,11 @@ export default function App() {
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto">
+        <div className={clsx('flex-1 min-h-0', page === 'editor' && !selected ? 'overflow-hidden flex flex-col' : 'overflow-y-auto')}>
           {selected ? (
             <ModelWorkspace deployment={selected} onClose={() => setSelected(null)} />
+          ) : page === 'editor' ? (
+            <CodeEditorPage />
           ) : (
             <div className="p-6">
               {page === 'models' && (

@@ -2,38 +2,57 @@
  * CollectPage — public mobile-first data collection form.
  * Accessed via unique link: /collect/<token>
  * No authentication required.
+ *
+ * Supports repeatable fields: a field marked `repeatable` can be submitted
+ * multiple times (infinite or up to `max_repeats`).
  */
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Camera, Upload, CheckCircle2, ChevronLeft, ChevronRight, Loader2, X, Star, Gift, AlertCircle, RefreshCw, Image as ImageIcon } from 'lucide-react'
+import {
+  Camera, Upload, CheckCircle2, ChevronLeft, ChevronRight,
+  Loader2, X, Star, Gift, AlertCircle, RefreshCw, Image as ImageIcon,
+  Plus, Repeat2,
+} from 'lucide-react'
 import clsx from 'clsx'
 import { collectApi } from '@/api/datasets'
 import type { CollectFormDefinition, DatasetField, DatasetEntry } from '@/types/dataset'
 
-// ── Camera capture component ─────────────────────────────────────────────────
+// ── In-browser camera overlay ─────────────────────────────────────────────────
 
-function CameraCapture({ onCapture, onClose }: { onCapture: (file: File) => void; onClose: () => void }) {
+function CameraCapture({
+  onCapture, onClose,
+}: {
+  onCapture: (file: File) => void
+  onClose: () => void
+}) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
-  const [error, setError] = useState('')
+  const nativeFallbackRef = useRef<HTMLInputElement>(null)
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment')
+  const [error, setError] = useState('')
+  const [streaming, setStreaming] = useState(false)
 
   const startCamera = useCallback(async (mode: 'environment' | 'user') => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop())
-    }
+    setError('')
+    setStreaming(false)
+    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop())
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: mode, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: mode, width: { ideal: 1920 }, height: { ideal: 1080 } },
       })
       streamRef.current = stream
       if (videoRef.current) {
         videoRef.current.srcObject = stream
         await videoRef.current.play()
+        setStreaming(true)
       }
-      setError('')
-    } catch {
-      setError('Camera not accessible. Please allow camera permissions and try again.')
+    } catch (err: any) {
+      const msg = err?.name === 'NotAllowedError'
+        ? 'Camera permission denied. Tap "Use Device Camera" below or allow camera access in browser settings.'
+        : err?.name === 'NotFoundError'
+        ? 'No camera found on this device.'
+        : 'Camera unavailable — the page may need to be served over HTTPS.'
+      setError(msg)
     }
   }, [])
 
@@ -61,28 +80,21 @@ function CameraCapture({ onCapture, onClose }: { onCapture: (file: File) => void
       <div className="flex items-center justify-between px-4 py-3 bg-black/80 z-10">
         <button onClick={onClose} className="p-2 rounded-full bg-white/10 text-white"><X size={18} /></button>
         <span className="text-sm font-medium text-white">Take Photo</span>
-        <button onClick={() => setFacingMode(m => m === 'environment' ? 'user' : 'environment')}
-          className="p-2 rounded-full bg-white/10 text-white">
+        <button
+          onClick={() => setFacingMode(m => m === 'environment' ? 'user' : 'environment')}
+          disabled={!!error}
+          className="p-2 rounded-full bg-white/10 text-white disabled:opacity-30">
           <RefreshCw size={18} />
         </button>
       </div>
 
       {/* Viewfinder */}
-      <div className="flex-1 relative overflow-hidden">
-        {error ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
-            <AlertCircle size={40} className="text-red-400" />
-            <p className="text-sm text-white">{error}</p>
-            <button onClick={() => startCamera(facingMode)} className="px-4 py-2 bg-white/10 text-white rounded-xl text-sm">Retry</button>
-          </div>
-        ) : (
-          <video ref={videoRef} className="w-full h-full object-cover" playsInline muted autoPlay />
-        )}
-        {/* Corner guides */}
-        {!error && (
+      <div className="flex-1 relative overflow-hidden bg-black">
+        <video ref={videoRef} className="w-full h-full object-cover" playsInline muted autoPlay />
+        {streaming && !error && (
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
             <div className="w-64 h-64 relative">
-              {(['tl','tr','bl','br'] as const).map(c => (
+              {(['tl', 'tr', 'bl', 'br'] as const).map(c => (
                 <div key={c} className={clsx('absolute w-8 h-8 border-white border-2',
                   c === 'tl' && 'top-0 left-0 border-r-0 border-b-0 rounded-tl-lg',
                   c === 'tr' && 'top-0 right-0 border-l-0 border-b-0 rounded-tr-lg',
@@ -93,44 +105,93 @@ function CameraCapture({ onCapture, onClose }: { onCapture: (file: File) => void
             </div>
           </div>
         )}
+        {error && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-6 text-center bg-black/80">
+            <AlertCircle size={40} className="text-red-400" />
+            <p className="text-sm text-white leading-relaxed">{error}</p>
+            <div className="flex flex-col gap-2 w-full max-w-xs">
+              <button onClick={() => startCamera(facingMode)}
+                className="py-2.5 px-5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-sm font-medium">
+                Retry
+              </button>
+              <button onClick={() => nativeFallbackRef.current?.click()}
+                className="py-2.5 px-5 bg-sky-600/80 hover:bg-sky-600 text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2">
+                <Camera size={15} /> Use Device Camera
+              </button>
+            </div>
+            <input ref={nativeFallbackRef} type="file" accept="image/*" capture="environment" className="hidden"
+              onChange={e => { if (e.target.files?.[0]) { onCapture(e.target.files[0]); onClose() } }} />
+          </div>
+        )}
       </div>
 
       {/* Shutter */}
       <div className="bg-black/80 py-8 flex justify-center">
-        <button onClick={capture} disabled={!!error}
-          className="w-18 h-18 w-[72px] h-[72px] rounded-full bg-white disabled:opacity-40 active:scale-95 transition-transform shadow-lg" />
+        <button onClick={capture} disabled={!streaming}
+          className="w-[72px] h-[72px] rounded-full bg-white disabled:opacity-30 active:scale-95 transition-transform shadow-lg" />
       </div>
+
       <canvas ref={canvasRef} className="hidden" />
     </div>
   )
 }
 
-// ── Field submission card ─────────────────────────────────────────────────────
+// ── Per-field session state ───────────────────────────────────────────────────
 
-interface FieldState {
+interface Submission {
+  preview: string | null
+  entry: DatasetEntry
+}
+
+interface FieldSession {
+  // active (in-progress) capture
   file: File | null
   preview: string | null
   textValue: string
   description: string
-  submitted: boolean
   submitting: boolean
   error: string
-  entry: DatasetEntry | null
+  // completed submissions for this field
+  submissions: Submission[]
 }
 
+function blankSession(): FieldSession {
+  return { file: null, preview: null, textValue: '', description: '', submitting: false, error: '', submissions: [] }
+}
+
+function canAddMore(field: DatasetField, session: FieldSession): boolean {
+  if (!field.repeatable) return session.submissions.length === 0
+  if (field.max_repeats === 0) return true
+  return session.submissions.length < field.max_repeats
+}
+
+function isFieldDone(field: DatasetField, session: FieldSession): boolean {
+  if (session.submissions.length === 0) return false
+  if (!field.repeatable) return true
+  if (field.max_repeats > 0) return session.submissions.length >= field.max_repeats
+  return false // infinite — always open for more
+}
+
+// ── Field card ────────────────────────────────────────────────────────────────
+
 function FieldCard({
-  field, state, token, onSubmitted,
+  field, session, token,
+  onSubmitted,
 }: {
   field: DatasetField
-  state: FieldState
+  session: FieldSession
   token: string
-  onSubmitted: (entry: DatasetEntry) => void
+  onSubmitted: (entry: DatasetEntry, preview: string | null) => void
 }) {
   const [showCamera, setShowCamera] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const [localState, setLocalState] = useState<FieldState>(state)
+  const [local, setLocal] = useState<FieldSession>(session)
+  const set = (patch: Partial<FieldSession>) => setLocal(s => ({ ...s, ...patch }))
 
-  const set = (patch: Partial<FieldState>) => setLocalState(s => ({ ...s, ...patch }))
+  // Reset active capture when a new repeat begins (submissions array grows)
+  useEffect(() => {
+    setLocal(s => ({ ...s, submissions: session.submissions }))
+  }, [session.submissions.length])  // eslint-disable-line
 
   const pickFile = (file: File) => {
     const preview = file.type.startsWith('image/') ? URL.createObjectURL(file) : null
@@ -138,64 +199,55 @@ function FieldCard({
   }
 
   const submit = async () => {
-    if (field.type === 'image' || field.type === 'file') {
-      if (!localState.file && field.required) { set({ error: 'Please capture or upload a file.' }); return }
-    } else {
-      if (!localState.textValue.trim() && field.required) { set({ error: 'This field is required.' }); return }
+    if ((field.type === 'image' || field.type === 'file') && !local.file && field.required) {
+      set({ error: 'Please capture or upload a file.' }); return
     }
-    if (field.description_required && !localState.description.trim()) {
+    if ((field.type === 'text' || field.type === 'number') && !local.textValue.trim() && field.required) {
+      set({ error: 'This field is required.' }); return
+    }
+    if (field.description_required && !local.description.trim()) {
       set({ error: 'Description is required for this field.' }); return
     }
     set({ submitting: true, error: '' })
     try {
       const entry = await collectApi.submit(
         token, field.id,
-        localState.file,
-        (field.type === 'text' || field.type === 'number') ? localState.textValue : undefined,
-        localState.description || undefined,
+        local.file,
+        (field.type === 'text' || field.type === 'number') ? local.textValue : undefined,
+        local.description || undefined,
       )
-      set({ submitting: false, submitted: true, entry })
-      onSubmitted(entry)
+      const preview = local.preview
+      // reset active capture for next repeat
+      set({ file: null, preview: null, textValue: '', description: '', submitting: false, error: '' })
+      onSubmitted(entry, preview)
     } catch (e: any) {
       set({ submitting: false, error: e?.response?.data?.detail ?? 'Submission failed. Try again.' })
     }
   }
 
-  if (localState.submitted) {
-    return (
-      <div className="rounded-2xl border border-emerald-800/50 bg-emerald-900/20 p-5">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-emerald-900/60 flex items-center justify-center shrink-0">
-            <CheckCircle2 size={20} className="text-emerald-400" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-emerald-300">{field.label}</p>
-            <p className="text-xs text-emerald-600 mt-0.5">Submitted ✓</p>
-          </div>
-          {localState.preview && (
-            <img src={localState.preview} alt="" className="w-14 h-14 rounded-xl object-cover border border-emerald-800/50 shrink-0" />
-          )}
-        </div>
-        {localState.entry && localState.entry.points_awarded > 0 && (
-          <div className="mt-3 flex items-center gap-1.5 text-xs text-amber-400">
-            <Star size={12} fill="currentColor" /> +{localState.entry.points_awarded} points earned
-          </div>
-        )}
-      </div>
-    )
-  }
+  const done = isFieldDone(field, session)
+  const addMore = canAddMore(field, session)
+  const count = session.submissions.length
+  const cap = field.max_repeats > 0 ? field.max_repeats : null
 
   return (
     <div className="rounded-2xl border border-gray-700/60 bg-gray-800/40 overflow-hidden">
-      {/* Field header */}
+      {/* Header */}
       <div className="px-4 pt-4 pb-3">
         <div className="flex items-start gap-3">
           <div className={clsx('w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5',
             field.type === 'image' ? 'bg-sky-900/60' : field.type === 'file' ? 'bg-purple-900/60' : 'bg-gray-700/60')}>
-            {field.type === 'image' ? <ImageIcon size={16} className="text-sky-400" /> : <Upload size={16} className="text-purple-400" />}
+            {field.type === 'image' ? <ImageIcon size={16} className="text-sky-400" /> : field.type === 'file' ? <Upload size={16} className="text-purple-400" /> : <span className="text-xs text-gray-400">T</span>}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-white leading-snug">{field.label}</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="text-sm font-semibold text-white leading-snug">{field.label}</p>
+              {field.repeatable && (
+                <span className="flex items-center gap-1 text-[10px] text-indigo-400 bg-indigo-900/30 border border-indigo-800/40 rounded-full px-2 py-0.5">
+                  <Repeat2 size={9} /> {cap ? `up to ${cap}×` : '∞'}
+                </span>
+              )}
+            </div>
             {field.instruction && (
               <p className="text-xs text-gray-400 mt-1 leading-relaxed">{field.instruction}</p>
             )}
@@ -204,110 +256,163 @@ function FieldCard({
         </div>
       </div>
 
-      {/* Content area */}
-      <div className="px-4 pb-4 space-y-3">
-        {(field.type === 'image' || field.type === 'file') && (
-          <>
-            {/* Preview */}
-            {localState.preview ? (
-              <div className="relative">
-                <img src={localState.preview} alt="Preview" className="w-full h-52 object-cover rounded-xl border border-gray-600/50" />
-                <button onClick={() => set({ file: null, preview: null })}
-                  className="absolute top-2 right-2 p-1.5 rounded-full bg-black/60 text-white hover:bg-black/80">
-                  <X size={14} />
-                </button>
-              </div>
-            ) : localState.file ? (
-              <div className="flex items-center gap-3 bg-gray-700/50 rounded-xl px-3 py-3">
-                <Upload size={18} className="text-gray-400 shrink-0" />
-                <span className="text-sm text-gray-300 truncate flex-1">{localState.file.name}</span>
-                <button onClick={() => set({ file: null })} className="text-gray-500 hover:text-white"><X size={14} /></button>
-              </div>
-            ) : (
-              <div className="rounded-xl border-2 border-dashed border-gray-600/50 bg-gray-800/30 p-6 text-center">
-                <ImageIcon size={28} className="text-gray-600 mx-auto mb-2" />
-                <p className="text-xs text-gray-500">No image selected</p>
-              </div>
-            )}
-
-            {/* Capture / upload buttons */}
-            <div className={clsx('grid gap-2', field.capture_mode === 'both' ? 'grid-cols-2' : 'grid-cols-1')}>
-              {(field.capture_mode === 'camera_only' || field.capture_mode === 'both') && (
-                <button onClick={() => setShowCamera(true)}
-                  className="flex items-center justify-center gap-2 py-3 rounded-xl bg-sky-600/20 hover:bg-sky-600/30 border border-sky-600/30 text-sky-400 text-sm font-medium transition-colors active:scale-[0.98]">
-                  <Camera size={16} /> Take Photo
-                </button>
-              )}
-              {(field.capture_mode === 'upload_only' || field.capture_mode === 'both') && (
-                <>
-                  <button onClick={() => fileInputRef.current?.click()}
-                    className="flex items-center justify-center gap-2 py-3 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 border border-purple-600/30 text-purple-400 text-sm font-medium transition-colors active:scale-[0.98]">
-                    <Upload size={16} /> Upload
-                  </button>
-                  <input ref={fileInputRef} type="file"
-                    accept={field.type === 'image' ? 'image/*' : '*/*'}
-                    className="hidden" onChange={e => e.target.files?.[0] && pickFile(e.target.files[0])} />
-                </>
-              )}
-            </div>
-          </>
-        )}
-
-        {(field.type === 'text') && (
-          <textarea rows={3}
-            className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none"
-            placeholder="Type your response here…"
-            value={localState.textValue}
-            onChange={e => set({ textValue: e.target.value })} />
-        )}
-
-        {field.type === 'number' && (
-          <input type="number"
-            className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
-            placeholder="Enter a number"
-            value={localState.textValue}
-            onChange={e => set({ textValue: e.target.value })} />
-        )}
-
-        {/* Description */}
-        {field.description_mode !== 'none' && (
-          <div>
-            <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1.5 block">
-              Description {field.description_required && <span className="text-red-400">*</span>}
-            </label>
-            {field.description_mode === 'free_text' ? (
-              <textarea rows={2}
-                className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none"
-                placeholder="Describe what you see…"
-                value={localState.description}
-                onChange={e => set({ description: e.target.value })} />
-            ) : (
-              <div className="grid grid-cols-2 gap-1.5">
-                {field.description_presets.map(p => (
-                  <button key={p} onClick={() => set({ description: p })}
-                    className={clsx('py-2 px-3 rounded-xl border text-sm text-left transition-colors active:scale-[0.98]',
-                      localState.description === p
-                        ? 'bg-indigo-600/30 border-indigo-500/60 text-indigo-300 font-medium'
-                        : 'bg-gray-800/50 border-gray-700/50 text-gray-400 hover:border-gray-600')}>
-                    {p}
-                  </button>
-                ))}
-              </div>
+      {/* Thumbnails of past repeats */}
+      {count > 0 && (
+        <div className="px-4 pb-3">
+          <div className="flex items-center gap-2 mb-2">
+            <CheckCircle2 size={12} className="text-emerald-400" />
+            <span className="text-[11px] text-emerald-400 font-semibold">
+              {count}{cap ? `/${cap}` : ''} captured
+            </span>
+            {session.submissions[0]?.entry.points_awarded > 0 && (
+              <span className="text-[10px] text-amber-400 flex items-center gap-0.5 ml-auto">
+                <Star size={9} fill="currentColor" /> +{count * session.submissions[0].entry.points_awarded} pts
+              </span>
             )}
           </div>
-        )}
+          {session.submissions.some(s => s.preview) && (
+            <div className="flex gap-1.5 flex-wrap">
+              {session.submissions.map((s, i) => s.preview ? (
+                <img key={i} src={s.preview} alt={`capture ${i + 1}`}
+                  className="w-14 h-14 rounded-xl object-cover border border-emerald-800/40" />
+              ) : (
+                <div key={i} className="w-14 h-14 rounded-xl bg-emerald-900/20 border border-emerald-800/30 flex items-center justify-center">
+                  <CheckCircle2 size={16} className="text-emerald-500" />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
-        {localState.error && (
-          <p className="text-xs text-red-400 flex items-center gap-1.5">
-            <AlertCircle size={12} /> {localState.error}
-          </p>
-        )}
+      {/* Capture form — shown when more can be added */}
+      {addMore && (
+        <div className="px-4 pb-4 space-y-3">
+          {count > 0 && (
+            <p className="text-[11px] text-indigo-400 font-semibold flex items-center gap-1.5">
+              <Plus size={11} /> Add another capture
+            </p>
+          )}
 
-        <button onClick={submit} disabled={localState.submitting}
-          className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.98]">
-          {localState.submitting ? <><Loader2 size={16} className="animate-spin" /> Submitting…</> : 'Submit'}
-        </button>
-      </div>
+          {(field.type === 'image' || field.type === 'file') && (
+            <>
+              {local.preview ? (
+                <div className="relative">
+                  <img src={local.preview} alt="Preview" className="w-full h-52 object-cover rounded-xl border border-gray-600/50" />
+                  <button onClick={() => set({ file: null, preview: null })}
+                    className="absolute top-2 right-2 p-1.5 rounded-full bg-black/60 text-white hover:bg-black/80">
+                    <X size={14} />
+                  </button>
+                </div>
+              ) : local.file ? (
+                <div className="flex items-center gap-3 bg-gray-700/50 rounded-xl px-3 py-3">
+                  <Upload size={18} className="text-gray-400 shrink-0" />
+                  <span className="text-sm text-gray-300 truncate flex-1">{local.file.name}</span>
+                  <button onClick={() => set({ file: null })} className="text-gray-500 hover:text-white"><X size={14} /></button>
+                </div>
+              ) : (
+                <div className="rounded-xl border-2 border-dashed border-gray-600/50 bg-gray-800/30 p-6 text-center">
+                  <ImageIcon size={28} className="text-gray-600 mx-auto mb-2" />
+                  <p className="text-xs text-gray-500">No image selected</p>
+                </div>
+              )}
+
+              <div className={clsx('grid gap-2', field.capture_mode === 'both' ? 'grid-cols-2' : 'grid-cols-1')}>
+                {(field.capture_mode === 'camera_only' || field.capture_mode === 'both') && (
+                  <button onClick={() => setShowCamera(true)}
+                    className="flex items-center justify-center gap-2 py-3 rounded-xl bg-sky-600/20 hover:bg-sky-600/30 border border-sky-600/30 text-sky-400 text-sm font-medium transition-colors active:scale-[0.98]">
+                    <Camera size={16} /> Take Photo
+                  </button>
+                )}
+                {(field.capture_mode === 'upload_only' || field.capture_mode === 'both') && (
+                  <>
+                    <button onClick={() => fileInputRef.current?.click()}
+                      className="flex items-center justify-center gap-2 py-3 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 border border-purple-600/30 text-purple-400 text-sm font-medium transition-colors active:scale-[0.98]">
+                      <Upload size={16} /> Upload
+                    </button>
+                    <input ref={fileInputRef} type="file"
+                      accept={field.type === 'image' ? 'image/*' : '*/*'}
+                      className="hidden" onChange={e => { if (e.target.files?.[0]) { pickFile(e.target.files[0]); e.target.value = '' } }} />
+                  </>
+                )}
+              </div>
+            </>
+          )}
+
+          {field.type === 'text' && (
+            <textarea rows={3}
+              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none"
+              placeholder="Type your response here…"
+              value={local.textValue}
+              onChange={e => set({ textValue: e.target.value })} />
+          )}
+
+          {field.type === 'number' && (
+            <input type="number"
+              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+              placeholder="Enter a number"
+              value={local.textValue}
+              onChange={e => set({ textValue: e.target.value })} />
+          )}
+
+          {field.description_mode !== 'none' && (
+            <div>
+              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1.5 block">
+                Description {field.description_required && <span className="text-red-400">*</span>}
+              </label>
+              {field.description_mode === 'free_text' ? (
+                <textarea rows={2}
+                  className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none"
+                  placeholder="Describe what you see…"
+                  value={local.description}
+                  onChange={e => set({ description: e.target.value })} />
+              ) : (
+                <div className="grid grid-cols-2 gap-1.5">
+                  {field.description_presets.map(p => (
+                    <button key={p} onClick={() => set({ description: p })}
+                      className={clsx('py-2 px-3 rounded-xl border text-sm text-left transition-colors active:scale-[0.98]',
+                        local.description === p
+                          ? 'bg-indigo-600/30 border-indigo-500/60 text-indigo-300 font-medium'
+                          : 'bg-gray-800/50 border-gray-700/50 text-gray-400 hover:border-gray-600')}>
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {local.error && (
+            <p className="text-xs text-red-400 flex items-center gap-1.5">
+              <AlertCircle size={12} /> {local.error}
+            </p>
+          )}
+
+          <button onClick={submit} disabled={local.submitting}
+            className={clsx(
+              'w-full py-3 rounded-xl disabled:opacity-50 text-white font-semibold text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.98]',
+              count > 0 ? 'bg-indigo-700 hover:bg-indigo-600' : 'bg-indigo-600 hover:bg-indigo-500',
+            )}>
+            {local.submitting
+              ? <><Loader2 size={16} className="animate-spin" /> Submitting…</>
+              : count > 0
+              ? <><Plus size={15} /> Submit Another</>
+              : 'Submit'}
+          </button>
+        </div>
+      )}
+
+      {/* Done state for non-repeatable / capped fields */}
+      {done && (
+        <div className="px-4 pb-4">
+          <div className="flex items-center gap-2 text-emerald-400 bg-emerald-900/20 border border-emerald-800/30 rounded-xl px-4 py-2.5">
+            <CheckCircle2 size={14} className="shrink-0" />
+            <span className="text-xs font-semibold">
+              {field.repeatable ? `All ${count} captures submitted ✓` : 'Submitted ✓'}
+            </span>
+          </div>
+        </div>
+      )}
 
       {showCamera && (
         <CameraCapture
@@ -321,38 +426,44 @@ function FieldCard({
 
 // ── Main CollectPage ──────────────────────────────────────────────────────────
 
-interface Props {
-  token: string
-}
-
-export default function CollectPage({ token }: Props) {
+export default function CollectPage({ token }: { token: string }) {
   const [form, setForm] = useState<CollectFormDefinition | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [fieldStates, setFieldStates] = useState<Record<string, FieldState>>({})
+  const [sessions, setSessions] = useState<Record<string, FieldSession>>({})
   const [currentIdx, setCurrentIdx] = useState(0)
+  const [finished, setFinished] = useState(false)
 
   useEffect(() => {
     collectApi.getForm(token)
       .then(f => {
         setForm(f)
-        const states: Record<string, FieldState> = {}
-        f.dataset.fields.forEach(field => {
-          states[field.id] = {
-            file: null, preview: null, textValue: '', description: '',
-            submitted: false, submitting: false, error: '', entry: null,
-          }
-        })
-        setFieldStates(states)
+        const init: Record<string, FieldSession> = {}
+        f.dataset.fields.forEach(field => { init[field.id] = blankSession() })
+        setSessions(init)
       })
       .catch(e => setError(e?.response?.data?.detail ?? 'Failed to load collection form.'))
       .finally(() => setLoading(false))
   }, [token])
 
-  const handleSubmitted = (fieldId: string, entry: DatasetEntry) => {
-    setFieldStates(s => ({ ...s, [fieldId]: { ...s[fieldId], submitted: true, entry } }))
-    if (form && currentIdx < form.dataset.fields.length - 1) {
-      setTimeout(() => setCurrentIdx(i => i + 1), 600)
+  const handleSubmitted = (fieldId: string, entry: DatasetEntry, preview: string | null) => {
+    setSessions(prev => {
+      const existing = prev[fieldId] ?? blankSession()
+      return {
+        ...prev,
+        [fieldId]: {
+          ...existing,
+          submissions: [...existing.submissions, { preview, entry }],
+        },
+      }
+    })
+    // auto-advance to next field only if non-repeatable and not already at end
+    const field = form?.dataset.fields.find(f => f.id === fieldId)
+    if (field && !field.repeatable && form) {
+      const idx = form.dataset.fields.findIndex(f => f.id === fieldId)
+      if (idx < form.dataset.fields.length - 1) {
+        setTimeout(() => setCurrentIdx(idx + 1), 500)
+      }
     }
   }
 
@@ -380,9 +491,42 @@ export default function CollectPage({ token }: Props) {
 
   const { dataset, collector } = form
   const fields = dataset.fields
-  const submittedCount = Object.values(fieldStates).filter(s => s.submitted).length
-  const allDone = submittedCount === fields.length
-  const progress = fields.length > 0 ? (submittedCount / fields.length) * 100 : 0
+
+  // total submissions across all fields
+  const totalSubmissions = Object.values(sessions).reduce((n, s) => n + s.submissions.length, 0)
+  // total points earned this session
+  const pointsThisSession = Object.values(sessions)
+    .reduce((n, s) => n + s.submissions.reduce((m, sub) => m + sub.entry.points_awarded, 0), 0)
+  // required fields with at least one submission
+  const requiredDone = fields.filter(f => f.required).every(f => (sessions[f.id]?.submissions.length ?? 0) > 0)
+  // overall progress (fields with ≥1 submission / total fields)
+  const fieldsWithEntry = fields.filter(f => (sessions[f.id]?.submissions.length ?? 0) > 0).length
+  const progress = fields.length > 0 ? (fieldsWithEntry / fields.length) * 100 : 0
+
+  if (finished) {
+    return (
+      <div className="min-h-screen bg-[#060810] flex items-center justify-center px-4">
+        <div className="text-center max-w-sm">
+          <div className="w-20 h-20 rounded-full bg-emerald-900/40 border-2 border-emerald-700/50 flex items-center justify-center mx-auto mb-4">
+            <CheckCircle2 size={36} className="text-emerald-400" />
+          </div>
+          <h2 className="text-xl font-bold text-white mb-2">All done! 🎉</h2>
+          <p className="text-sm text-gray-400 mb-1">
+            Thank you for contributing to <strong className="text-white">{dataset.name}</strong>.
+          </p>
+          <p className="text-xs text-gray-500 mb-5">{totalSubmissions} submission{totalSubmissions !== 1 ? 's' : ''} recorded.</p>
+          {dataset.points_enabled && (
+            <div className="inline-flex items-center gap-2 bg-amber-900/30 border border-amber-800/40 rounded-full px-5 py-2.5">
+              <Star size={16} className="text-amber-400" fill="currentColor" />
+              <span className="text-sm font-semibold text-amber-300">
+                {collector.points_earned + pointsThisSession} points earned
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-[#060810] text-white">
@@ -395,22 +539,21 @@ export default function CollectPage({ token }: Props) {
               <h1 className="text-sm font-bold text-white truncate">{dataset.name}</h1>
             </div>
             <div className="text-right shrink-0">
-              <p className="text-xs text-gray-500">{submittedCount}/{fields.length}</p>
+              <p className="text-xs text-gray-500">{fieldsWithEntry}/{fields.length} fields</p>
               {dataset.points_enabled && (
                 <p className="text-xs text-amber-400 flex items-center gap-1 justify-end">
-                  <Star size={10} fill="currentColor" /> {collector.points_earned + submittedCount * dataset.points_per_entry} pts
+                  <Star size={10} fill="currentColor" /> {collector.points_earned + pointsThisSession} pts
                 </p>
               )}
             </div>
           </div>
-          {/* Progress bar */}
           <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
             <div className="h-full bg-indigo-500 rounded-full transition-all duration-500" style={{ width: `${progress}%` }} />
           </div>
         </div>
       </div>
 
-      <div className="max-w-lg mx-auto px-4 py-6 space-y-4 pb-24">
+      <div className="max-w-lg mx-auto px-4 py-6 space-y-4 pb-28">
         {/* Points banner */}
         {dataset.points_enabled && dataset.points_redemption_info && (
           <div className="flex items-center gap-3 bg-amber-900/20 border border-amber-800/40 rounded-2xl px-4 py-3">
@@ -422,94 +565,68 @@ export default function CollectPage({ token }: Props) {
           </div>
         )}
 
-        {/* Description */}
         {dataset.description && (
           <p className="text-sm text-gray-400 leading-relaxed">{dataset.description}</p>
         )}
 
-        {/* All done state */}
-        {allDone ? (
-          <div className="text-center py-12 px-4">
-            <div className="w-20 h-20 rounded-full bg-emerald-900/40 border-2 border-emerald-700/50 flex items-center justify-center mx-auto mb-4">
-              <CheckCircle2 size={36} className="text-emerald-400" />
-            </div>
-            <h2 className="text-xl font-bold text-white mb-2">All done! 🎉</h2>
-            <p className="text-sm text-gray-400 mb-4">Thank you for contributing to <strong className="text-white">{dataset.name}</strong>.</p>
-            {dataset.points_enabled && (
-              <div className="inline-flex items-center gap-2 bg-amber-900/30 border border-amber-800/40 rounded-full px-5 py-2.5">
-                <Star size={16} className="text-amber-400" fill="currentColor" />
-                <span className="text-sm font-semibold text-amber-300">{collector.points_earned + submittedCount * dataset.points_per_entry} points earned</span>
-              </div>
-            )}
+        {/* Field tabs */}
+        {fields.length > 1 && (
+          <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+            {fields.map((f, i) => {
+              const count = sessions[f.id]?.submissions.length ?? 0
+              const done = isFieldDone(f, sessions[f.id] ?? blankSession())
+              return (
+                <button key={f.id} onClick={() => setCurrentIdx(i)}
+                  className={clsx('flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap transition-colors shrink-0',
+                    i === currentIdx
+                      ? 'bg-indigo-600/30 border border-indigo-500/50 text-indigo-300'
+                      : done
+                      ? 'bg-emerald-900/30 border border-emerald-800/40 text-emerald-400'
+                      : count > 0
+                      ? 'bg-indigo-900/20 border border-indigo-800/30 text-indigo-400'
+                      : 'bg-gray-800/50 border border-gray-700/40 text-gray-500')}>
+                  {done ? <CheckCircle2 size={10} /> : count > 0 ? <span className="text-[9px] font-bold">{count}×</span> : null}
+                  {f.label.slice(0, 20)}{f.label.length > 20 ? '…' : ''}
+                </button>
+              )
+            })}
           </div>
-        ) : (
-          <>
-            {/* Navigation (field tabs) */}
-            {fields.length > 1 && (
-              <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none">
-                {fields.map((f, i) => (
-                  <button key={f.id} onClick={() => setCurrentIdx(i)}
-                    className={clsx('flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap transition-colors shrink-0',
-                      i === currentIdx
-                        ? 'bg-indigo-600/30 border border-indigo-500/50 text-indigo-300'
-                        : fieldStates[f.id]?.submitted
-                        ? 'bg-emerald-900/30 border border-emerald-800/40 text-emerald-400'
-                        : 'bg-gray-800/50 border border-gray-700/40 text-gray-500')}>
-                    {fieldStates[f.id]?.submitted && <CheckCircle2 size={10} />}
-                    {f.label.slice(0, 20)}{f.label.length > 20 ? '…' : ''}
-                  </button>
-                ))}
-              </div>
-            )}
+        )}
 
-            {/* Current field */}
-            {fields[currentIdx] && (
-              <FieldCard
-                key={fields[currentIdx].id}
-                field={fields[currentIdx]}
-                state={fieldStates[fields[currentIdx].id] ?? {
-                  file: null, preview: null, textValue: '', description: '',
-                  submitted: false, submitting: false, error: '', entry: null,
-                }}
-                token={token}
-                onSubmitted={entry => handleSubmitted(fields[currentIdx].id, entry)}
-              />
-            )}
+        {/* Current field */}
+        {fields[currentIdx] && (
+          <FieldCard
+            key={fields[currentIdx].id}
+            field={fields[currentIdx]}
+            session={sessions[fields[currentIdx].id] ?? blankSession()}
+            token={token}
+            onSubmitted={(entry, preview) => handleSubmitted(fields[currentIdx].id, entry, preview)}
+          />
+        )}
 
-            {/* Prev / Next */}
-            {fields.length > 1 && (
-              <div className="flex gap-3">
-                <button onClick={() => setCurrentIdx(i => Math.max(0, i - 1))} disabled={currentIdx === 0}
-                  className="flex-1 py-3 rounded-xl bg-gray-800/60 disabled:opacity-30 text-gray-300 text-sm flex items-center justify-center gap-2">
-                  <ChevronLeft size={16} /> Previous
-                </button>
-                <button onClick={() => setCurrentIdx(i => Math.min(fields.length - 1, i + 1))} disabled={currentIdx === fields.length - 1}
-                  className="flex-1 py-3 rounded-xl bg-gray-800/60 disabled:opacity-30 text-gray-300 text-sm flex items-center justify-center gap-2">
-                  Next <ChevronRight size={16} />
-                </button>
-              </div>
-            )}
+        {/* Prev / Next */}
+        {fields.length > 1 && (
+          <div className="flex gap-3">
+            <button onClick={() => setCurrentIdx(i => Math.max(0, i - 1))} disabled={currentIdx === 0}
+              className="flex-1 py-3 rounded-xl bg-gray-800/60 disabled:opacity-30 text-gray-300 text-sm flex items-center justify-center gap-2">
+              <ChevronLeft size={16} /> Previous
+            </button>
+            <button onClick={() => setCurrentIdx(i => Math.min(fields.length - 1, i + 1))} disabled={currentIdx === fields.length - 1}
+              className="flex-1 py-3 rounded-xl bg-gray-800/60 disabled:opacity-30 text-gray-300 text-sm flex items-center justify-center gap-2">
+              Next <ChevronRight size={16} />
+            </button>
+          </div>
+        )}
 
-            {/* Submitted fields overview */}
-            {submittedCount > 0 && (
-              <div className="space-y-2 pt-2">
-                <p className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">Submitted</p>
-                {fields.filter(f => fieldStates[f.id]?.submitted).map(f => (
-                  <div key={f.id} className="flex items-center gap-3 bg-emerald-900/20 border border-emerald-800/30 rounded-xl px-4 py-2.5">
-                    <CheckCircle2 size={14} className="text-emerald-400 shrink-0" />
-                    <span className="text-xs text-emerald-300 flex-1 truncate">{f.label}</span>
-                    {fieldStates[f.id]?.preview && (
-                      <img src={fieldStates[f.id].preview!} alt="" className="w-8 h-8 rounded-lg object-cover shrink-0" />
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
+        {/* Finish button — shown when all required fields have ≥1 submission */}
+        {requiredDone && (
+          <button onClick={() => setFinished(true)}
+            className="w-full py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.98] shadow-lg shadow-emerald-900/30">
+            <CheckCircle2 size={16} /> Finish &amp; Submit
+          </button>
         )}
       </div>
 
-      {/* Footer */}
       <div className="fixed bottom-0 left-0 right-0 bg-[#060810]/90 backdrop-blur border-t border-gray-800/50 px-4 py-3 text-center">
         <p className="text-[10px] text-gray-600">Powered by <span className="text-gray-500">MLDock.io</span></p>
       </div>

@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import {
   ArrowRight, Code2, Menu, X, CheckCircle2, Zap, Globe, Shield,
-  BarChart2, GitBranch, Cpu, CloudLightning, DollarSign, Layers,
-  ChevronRight, Play,
+  BarChart2, GitBranch, Cpu, CloudLightning, Layers,
+  ChevronRight, Play, Database,
 } from 'lucide-react'
 import clsx from 'clsx'
 import Logo from '@/components/Logo'
@@ -55,9 +55,9 @@ const STEPS = [
 
 const DIFFERENTIATORS = [
   {
-    icon: <DollarSign size={20} className="text-emerald-400" />,
-    title: 'No USD card required',
-    body: 'Every other ML platform bills in USD with international cards. MLDock.io accepts local payment methods — top up your wallet and go. Built specifically for teams outside the Western banking system.',
+    icon: <Database size={20} className="text-sky-400" />,
+    title: 'Built-in dataset collection',
+    body: 'Define structured collection forms, invite contributors via unique links, and gather labelled images, files, or text at scale — with optional model-based validation that automatically rejects off-topic submissions.',
   },
   {
     icon: <Layers size={20} className="text-violet-400" />,
@@ -89,6 +89,7 @@ const DIFFERENTIATORS = [
 const VS = [
   { feature: 'Local training (free tier)', us: true, sm: false, wb: false, modal: false },
   { feature: 'Local payment methods', us: true, sm: false, wb: false, modal: false },
+  { feature: 'Built-in dataset collection', us: true, sm: false, wb: false, modal: false },
   { feature: 'Wallet billing (pre-fund)', us: true, sm: false, wb: false, modal: false },
   { feature: 'Any Python framework', us: true, sm: true, wb: true, modal: true },
   { feature: 'Built-in experiment tracking', us: true, sm: false, wb: true, modal: false },

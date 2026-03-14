@@ -17,8 +17,8 @@ export const datasetsApi = {
   delete: (id: string) =>
     client.delete(`/datasets/${id}`),
 
-  invite: (id: string, email: string, name?: string) =>
-    client.post<DatasetCollector>(`/datasets/${id}/invite`, { email, name: name ?? '' }).then(r => r.data),
+  invite: (id: string, email: string, name?: string, message?: string) =>
+    client.post<DatasetCollector>(`/datasets/${id}/invite`, { email, name: name ?? '', message: message ?? '' }).then(r => r.data),
 
   listCollectors: (id: string) =>
     client.get<DatasetCollector[]>(`/datasets/${id}/collectors`).then(r => r.data),
@@ -26,7 +26,7 @@ export const datasetsApi = {
   removeCollector: (datasetId: string, collectorId: string) =>
     client.delete(`/datasets/${datasetId}/collectors/${collectorId}`),
 
-  getEntries: (id: string, params?: { field_id?: string; collector_id?: string }) =>
+  getEntries: (id: string, params?: { field_id?: string; collector_id?: string; date_from?: string; date_to?: string }) =>
     client.get<DatasetEntry[]>(`/datasets/${id}/entries`, { params }).then(r => r.data),
 }
 

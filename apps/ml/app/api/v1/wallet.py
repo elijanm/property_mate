@@ -6,8 +6,9 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from app.dependencies.auth import get_current_user
+from app.dependencies.auth import get_current_user, require_roles
 from app.models.wallet import Wallet, WalletTransaction
+from app.models.platform_ledger import PlatformLedger
 from app.services import wallet_service
 from app.services.paystack_service import verify_webhook_signature
 
@@ -29,6 +30,12 @@ class TopupVerifyRequest(BaseModel):
 
 class PurchaseHoursRequest(BaseModel):
     hours: float           # additional local training hours to purchase (deducted from USD wallet)
+
+
+class AdminRechargeRequest(BaseModel):
+    user_email: str
+    amount_usd: float
+    note: str = ""
 
 
 def _wallet_dict(wallet: Wallet) -> dict:
@@ -221,6 +228,80 @@ async def purchase_local_hours(body: PurchaseHoursRequest, user=Depends(get_curr
         cost_usd=cost_usd,
     )
     return _wallet_dict(w)
+
+
+def _ledger_dict(entry: PlatformLedger) -> dict:
+    return {
+        "id": str(entry.id),
+        "amount_usd": round(entry.amount_usd, 4),
+        "recipient_email": entry.recipient_email,
+        "performed_by": entry.performed_by,
+        "note": entry.note,
+        "wallet_tx_id": entry.wallet_tx_id,
+        "created_at": entry.created_at.isoformat(),
+    }
+
+
+# ── Admin-only endpoints ───────────────────────────────────────────────────────
+
+@router.post("/admin/recharge", dependencies=[Depends(require_roles("admin"))])
+async def admin_recharge(body: AdminRechargeRequest, user=Depends(get_current_user)):
+    """
+    Admin credits a user's wallet with the given USD amount and records it as a
+    platform expense in the ledger.
+    """
+    if body.amount_usd <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than 0")
+    if not body.user_email:
+        raise HTTPException(status_code=400, detail="user_email is required")
+
+    # Look up target user to get their org_id
+    from app.models.ml_user import MLUser
+    target = await MLUser.find_one(MLUser.email == body.user_email)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    wallet, ledger = await wallet_service.admin_credit(
+        user_email=body.user_email,
+        org_id=target.org_id,
+        amount_usd=body.amount_usd,
+        performed_by=user.email,
+        note=body.note,
+    )
+    return {
+        "wallet": _wallet_dict(wallet),
+        "ledger_entry": _ledger_dict(ledger),
+    }
+
+
+@router.get("/admin/ledger", dependencies=[Depends(require_roles("admin"))])
+async def admin_ledger(page: int = 1, page_size: int = 30):
+    """Paginated list of all admin-initiated wallet recharges (platform expenses)."""
+    skip = (page - 1) * page_size
+    query = PlatformLedger.find().sort(-PlatformLedger.created_at)
+    total = await query.count()
+    items = await query.skip(skip).limit(page_size).to_list()
+
+    total_spent = await PlatformLedger.find().sum(PlatformLedger.amount_usd) or 0.0
+
+    return {
+        "items": [_ledger_dict(e) for e in items],
+        "total": total,
+        "total_spent_usd": round(total_spent, 4),
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@router.get("/admin/users", dependencies=[Depends(require_roles("admin"))])
+async def admin_list_users():
+    """Return a slim list of all users (email + org_id) for the admin recharge picker."""
+    from app.models.ml_user import MLUser
+    users = await MLUser.find(MLUser.is_active == True).to_list()
+    return [
+        {"email": u.email, "full_name": u.full_name, "org_id": u.org_id, "role": u.role}
+        for u in users
+    ]
 
 
 @router.post("/webhook/paystack")

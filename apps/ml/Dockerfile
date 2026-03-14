@@ -42,8 +42,12 @@ COPY app/ ./app/
 COPY entrypoint.sh /entrypoint.sh
 RUN dos2unix /entrypoint.sh && chmod +x /entrypoint.sh
 
-# Trainer plugins — built-in samples shipped with the image
+# Trainer plugins — shipped with the image.
+# /app/trainers/         → runtime volume (user edits live here)
+# /app/trainers_builtin/ → read-only seed; entrypoint.sh copies missing
+#                          sample_*.py files into the volume on every startup
 COPY trainers/ /app/trainers/
+COPY trainers/ /app/trainers_builtin/
 
 EXPOSE 8030
 

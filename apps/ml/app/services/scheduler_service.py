@@ -40,6 +40,16 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
+    # ── Wallet reservation reconciliation every 30 minutes ───────────────
+    # Finds jobs stuck in queued/running for >2h with a wallet reservation
+    # and releases the held funds back to the user's balance.
+    _scheduler.add_job(
+        _run_wallet_reconciliation,
+        CronTrigger(minute="*/30"),
+        id="wallet_reconciliation",
+        replace_existing=True,
+    )
+
     _scheduler.start()
     logger.info("ml_scheduler_started", jobs=len(_scheduler.get_jobs()))
 
@@ -91,6 +101,66 @@ async def _run_alert_evaluation() -> None:
         await evaluate_all_rules()
     except Exception as e:
         logger.error("alert_evaluation_failed", error=str(e))
+
+
+async def _run_wallet_reconciliation() -> None:
+    """
+    Release wallet reservations for jobs that are stuck or abandoned:
+      - status queued/running AND created/started more than 2 hours ago
+    This is a safety net — normal completion/failure paths release inline.
+    """
+    try:
+        from datetime import datetime, timezone, timedelta
+        from app.models.training_job import TrainingJob
+        from app.models.wallet import WalletTransaction
+        from app.services import wallet_service
+
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
+
+        # Find jobs that are still active but stale
+        stale_jobs = await TrainingJob.find(
+            {"status": {"$in": ["queued", "running"]}, "created_at": {"$lt": cutoff}},
+        ).to_list()
+
+        released = 0
+        for job in stale_jobs:
+            if not job.owner_email:
+                continue
+            # Check there is an open reservation for this job
+            reserve_tx = await WalletTransaction.find_one(
+                WalletTransaction.job_id == str(job.id),
+                WalletTransaction.type == "reserve",
+                WalletTransaction.user_email == job.owner_email,
+            )
+            if not reserve_tx:
+                continue
+            # Check it hasn't already been released
+            already_released = await WalletTransaction.find_one(
+                WalletTransaction.job_id == str(job.id),
+                WalletTransaction.type == "release",
+                WalletTransaction.user_email == job.owner_email,
+            )
+            if already_released:
+                continue
+
+            try:
+                w = await wallet_service.get_or_create(job.owner_email, job.org_id)
+                await wallet_service.release_and_charge(w, str(job.id), actual_cost=0.0)
+                await job.set({
+                    "status": "failed",
+                    "error": "Job timed out — reservation auto-released after 2 hours",
+                    "finished_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(timezone.utc),
+                })
+                released += 1
+                logger.info("wallet_reconciliation_released", job_id=str(job.id), owner=job.owner_email)
+            except Exception as exc:
+                logger.warning("wallet_reconciliation_release_failed", job_id=str(job.id), error=str(exc))
+
+        if released:
+            logger.info("wallet_reconciliation_complete", released=released)
+    except Exception as exc:
+        logger.error("wallet_reconciliation_failed", error=str(exc))
 
 
 async def stop_scheduler() -> None:

@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef } from 'react'
-import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck } from 'lucide-react'
 import clsx from 'clsx'
 import { datasetsApi } from '@/api/datasets'
-import type { DatasetProfile, DatasetField, DatasetCreatePayload, FieldType, CaptureMode, DescriptionMode } from '@/types/dataset'
+import { modelsApi } from '@/api/models'
+import type { ModelDeployment } from '@/types/trainer'
+import type { DatasetProfile, DatasetCollector, DatasetField, DatasetCreatePayload, FieldType, CaptureMode, DescriptionMode } from '@/types/dataset'
 
 const FIELD_TYPE_ICONS: Record<FieldType, typeof ImageIcon> = {
   image: ImageIcon,
@@ -20,15 +22,17 @@ const STATUS_COLOR: Record<string, string> = {
 // ── Field editor row ──────────────────────────────────────────────────────────
 
 function FieldRow({
-  field, idx, onChange, onRemove,
+  field, idx, onChange, onRemove, deployments,
 }: {
   field: Omit<DatasetField, 'id'>
   idx: number
   onChange: (f: Omit<DatasetField, 'id'>) => void
   onRemove: () => void
+  deployments: ModelDeployment[]
 }) {
   const [open, setOpen] = useState(idx === 0)
   const [preset, setPreset] = useState('')
+  const [labelInput, setLabelInput] = useState('')
 
   const isMedia = field.type === 'image' || field.type === 'file'
 
@@ -172,7 +176,103 @@ function FieldRow({
                 <span className="text-xs text-gray-400">Description required</span>
               </label>
             )}
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" className="rounded border-gray-600 text-indigo-500 bg-gray-900" checked={field.repeatable}
+                onChange={e => onChange({ ...field, repeatable: e.target.checked, max_repeats: e.target.checked ? 0 : 0 })} />
+              <span className="text-xs text-gray-400">Repeatable</span>
+            </label>
           </div>
+          {field.repeatable && (
+            <div className="flex items-center gap-3 pt-1">
+              <span className="text-xs text-gray-400 shrink-0">Max captures</span>
+              <input
+                type="number" min={0}
+                className="w-24 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-indigo-500"
+                placeholder="∞"
+                value={field.max_repeats === 0 ? '' : field.max_repeats}
+                onChange={e => onChange({ ...field, max_repeats: e.target.value === '' ? 0 : Math.max(0, parseInt(e.target.value) || 0) })}
+              />
+              <span className="text-[10px] text-gray-600">{field.max_repeats === 0 ? 'Unlimited' : `up to ${field.max_repeats}×`}</span>
+            </div>
+          )}
+
+          {/* Model validation */}
+          {isMedia && deployments.length > 0 && (
+            <div className="border border-gray-700/50 rounded-xl p-3 space-y-2 bg-gray-800/30">
+              <div className="flex items-center gap-2 mb-1">
+                <ShieldCheck size={13} className="text-indigo-400" />
+                <span className="text-[10px] text-indigo-400 font-semibold uppercase tracking-wider">Model Validation</span>
+              </div>
+              <div>
+                <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Validation model</label>
+                <select
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
+                  value={field.validation_model ?? ''}
+                  onChange={e => onChange({ ...field, validation_model: e.target.value || null, validation_labels: [], validation_message: '' })}
+                >
+                  <option value="">None — no validation</option>
+                  {deployments.map(d => (
+                    <option key={d.id} value={d.trainer_name}>{d.trainer_name} v{d.version}</option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-gray-600 mt-0.5">Run every uploaded file through this model before accepting.</p>
+              </div>
+
+              {field.validation_model && (
+                <>
+                  <div>
+                    <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">
+                      Accepted labels <span className="text-gray-600 normal-case font-normal">(press Enter to add)</span>
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                        placeholder="e.g. maize, crop, corn"
+                        value={labelInput}
+                        onChange={e => setLabelInput(e.target.value)}
+                        onKeyDown={e => {
+                          if ((e.key === 'Enter' || e.key === ',') && labelInput.trim()) {
+                            e.preventDefault()
+                            const l = labelInput.trim().replace(/,$/, '')
+                            if (l && !field.validation_labels.includes(l)) {
+                              onChange({ ...field, validation_labels: [...field.validation_labels, l] })
+                            }
+                            setLabelInput('')
+                          }
+                        }}
+                      />
+                    </div>
+                    {field.validation_labels.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {field.validation_labels.map(l => (
+                          <span key={l} className="flex items-center gap-1 bg-indigo-900/40 border border-indigo-700/40 text-indigo-300 text-[11px] px-2 py-0.5 rounded-full">
+                            {l}
+                            <button onClick={() => onChange({ ...field, validation_labels: field.validation_labels.filter(x => x !== l) })}
+                              className="text-indigo-500 hover:text-white"><X size={10} /></button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-[10px] text-gray-600 mt-0.5">
+                      {field.validation_labels.length === 0
+                        ? 'No labels set — model runs but all predictions are accepted.'
+                        : 'Submissions predicted outside these labels will be rejected.'}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Rejection message (optional)</label>
+                    <input
+                      className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                      placeholder="e.g. Please capture a crop image only."
+                      value={field.validation_message}
+                      onChange={e => onChange({ ...field, validation_message: e.target.value })}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -184,7 +284,8 @@ function FieldRow({
 const BLANK_FIELD = (): Omit<DatasetField, 'id'> => ({
   label: '', instruction: '', type: 'image', capture_mode: 'both',
   required: true, description_mode: 'none', description_presets: [],
-  description_required: false, order: 0,
+  description_required: false, order: 0, repeatable: false, max_repeats: 0,
+  validation_model: null, validation_labels: [], validation_message: '',
 })
 
 function DatasetSlideOver({
@@ -205,6 +306,11 @@ function DatasetSlideOver({
   const [pointsInfo, setPointsInfo] = useState(initial?.points_redemption_info ?? '')
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
+  const [deployments, setDeployments] = useState<ModelDeployment[]>([])
+
+  useEffect(() => {
+    modelsApi.list({ include_all: true }).then(setDeployments).catch(() => {})
+  }, [])
 
   const save = async () => {
     if (!name.trim()) { setErr('Name is required'); return }
@@ -269,7 +375,8 @@ function DatasetSlideOver({
               {fields.map((f, i) => (
                 <FieldRow key={i} field={f} idx={i}
                   onChange={updated => setFields(fs => fs.map((x, j) => j === i ? updated : x))}
-                  onRemove={() => setFields(fs => fs.filter((_, j) => j !== i))} />
+                  onRemove={() => setFields(fs => fs.filter((_, j) => j !== i))}
+                  deployments={deployments} />
               ))}
               {fields.length === 0 && (
                 <p className="text-center text-xs text-gray-600 py-6">No fields yet — add at least one capture field.</p>
@@ -321,9 +428,24 @@ function DatasetSlideOver({
 
 // ── Invite modal ─────────────────────────────────────────────────────────────
 
-function InviteModal({ datasetId, onClose }: { datasetId: string; onClose: () => void }) {
+function buildDefaultMessage(dataset: DatasetProfile): string {
+  const fieldLabels = dataset.fields.map(f => `• ${f.label}`).join('\n')
+  const parts: string[] = [
+    `We're collecting data for "${dataset.name}" and need your help!`,
+  ]
+  if (dataset.description) parts.push(dataset.description)
+  if (fieldLabels) parts.push(`\nWhat we need:\n${fieldLabels}`)
+  if (dataset.points_enabled) {
+    parts.push(`\nYou'll earn ${dataset.points_per_entry} point(s) per entry${dataset.points_redemption_info ? ` — ${dataset.points_redemption_info}` : ''}.`)
+  }
+  parts.push('\nClick the link in this email to get started. Thank you!')
+  return parts.join('\n')
+}
+
+function InviteModal({ dataset, onClose }: { dataset: DatasetProfile; onClose: () => void }) {
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
+  const [message, setMessage] = useState(() => buildDefaultMessage(dataset))
   const [sending, setSending] = useState(false)
   const [done, setDone] = useState(false)
   const [err, setErr] = useState('')
@@ -332,7 +454,7 @@ function InviteModal({ datasetId, onClose }: { datasetId: string; onClose: () =>
     if (!email.trim()) { setErr('Email required'); return }
     setSending(true); setErr('')
     try {
-      await datasetsApi.invite(datasetId, email.trim(), name.trim())
+      await datasetsApi.invite(dataset.id, email.trim(), name.trim(), message.trim())
       setDone(true)
     } catch (e: any) {
       setErr(e?.response?.data?.detail ?? 'Failed to send invite')
@@ -342,7 +464,7 @@ function InviteModal({ datasetId, onClose }: { datasetId: string; onClose: () =>
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-sm mx-4 shadow-2xl">
+      <div className="relative bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-md mx-4 shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold text-white">Invite Collector</h3>
           <button onClick={onClose} className="text-gray-500 hover:text-white"><X size={16} /></button>
@@ -366,6 +488,18 @@ function InviteModal({ datasetId, onClose }: { datasetId: string; onClose: () =>
               <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Name (optional)</label>
               <input className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
                 placeholder="John Doe" value={name} onChange={e => setName(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">
+                Message (pre-filled — edit as needed)
+              </label>
+              <textarea
+                rows={7}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none"
+                value={message}
+                onChange={e => setMessage(e.target.value)}
+              />
+              <p className="text-[10px] text-gray-600 mt-0.5">This message appears in the invite email above the contribution link.</p>
             </div>
             {err && <p className="text-xs text-red-400">{err}</p>}
             <button onClick={send} disabled={sending}
@@ -467,42 +601,122 @@ function DatasetCard({
 
 function EntriesPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: () => void }) {
   const [entries, setEntries] = useState<any[]>([])
+  const [collectors, setCollectors] = useState<DatasetCollector[]>([])
   const [loading, setLoading] = useState(true)
+
+  const [showFilters, setShowFilters] = useState(false)
   const [filterField, setFilterField] = useState('')
+  const [filterCollector, setFilterCollector] = useState('')
+  const [filterDateFrom, setFilterDateFrom] = useState('')
+  const [filterDateTo, setFilterDateTo] = useState('')
+
+  const load = useCallback(() => {
+    setLoading(true)
+    const params: Record<string, string> = {}
+    if (filterField) params.field_id = filterField
+    if (filterCollector) params.collector_id = filterCollector
+    if (filterDateFrom) params.date_from = filterDateFrom
+    if (filterDateTo) params.date_to = filterDateTo
+    datasetsApi.getEntries(dataset.id, params)
+      .then(setEntries).finally(() => setLoading(false))
+  }, [dataset.id, filterField, filterCollector, filterDateFrom, filterDateTo])
+
+  useEffect(() => { load() }, [load])
 
   useEffect(() => {
-    datasetsApi.getEntries(dataset.id, filterField ? { field_id: filterField } : {})
-      .then(setEntries).finally(() => setLoading(false))
-  }, [dataset.id, filterField])
+    datasetsApi.listCollectors(dataset.id).then(setCollectors).catch(() => {})
+  }, [dataset.id])
 
   const fieldName = (id: string) => dataset.fields.find(f => f.id === id)?.label ?? id
+  const collectorName = (id: string) => collectors.find(c => c.id === id)?.name || collectors.find(c => c.id === id)?.email || id
+
+  const hasFilter = filterField || filterCollector || filterDateFrom || filterDateTo
+  const clearFilters = () => { setFilterField(''); setFilterCollector(''); setFilterDateFrom(''); setFilterDateTo('') }
 
   return (
     <div className="fixed inset-0 z-50 flex">
       <div className="flex-1 bg-black/50" onClick={onClose} />
       <div className="w-full max-w-2xl bg-gray-900 shadow-2xl flex flex-col overflow-hidden">
+
+        {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
           <div>
             <h2 className="text-base font-semibold text-white">{dataset.name}</h2>
-            <p className="text-xs text-gray-500 mt-0.5">{entries.length} entries collected</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {loading ? 'Loading…' : `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}${hasFilter ? ' (filtered)' : ''}`}
+            </p>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-400"><X size={16} /></button>
         </div>
 
-        {/* Filter */}
-        <div className="px-6 py-3 border-b border-gray-800/50">
-          <select className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
-            value={filterField} onChange={e => setFilterField(e.target.value)}>
-            <option value="">All fields</option>
-            {dataset.fields.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
-          </select>
+        {/* Filters */}
+        <div className="px-6 py-2 border-b border-gray-800/50">
+          <button onClick={() => setShowFilters(s => !s)}
+            className="flex items-center gap-2 text-xs text-gray-400 hover:text-white py-1 transition-colors">
+            <ChevronRight size={12} className={clsx('transition-transform', showFilters && 'rotate-90')} />
+            Filters
+            {hasFilter && <span className="ml-1 w-1.5 h-1.5 rounded-full bg-indigo-400 inline-block" />}
+          </button>
         </div>
+        {showFilters && (
+        <div className="px-6 py-3 border-b border-gray-800/50 space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            {/* Field filter */}
+            <div>
+              <label className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-1 block">Field</label>
+              <select
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                value={filterField} onChange={e => setFilterField(e.target.value)}>
+                <option value="">All fields</option>
+                {dataset.fields.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+              </select>
+            </div>
 
+            {/* Collector filter */}
+            <div>
+              <label className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-1 block">Collector</label>
+              <select
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                value={filterCollector} onChange={e => setFilterCollector(e.target.value)}>
+                <option value="">All collectors</option>
+                {collectors.map(c => (
+                  <option key={c.id} value={c.id}>{c.name || c.email}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Date from */}
+            <div>
+              <label className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-1 block">From date</label>
+              <input type="date"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)} />
+            </div>
+
+            {/* Date to */}
+            <div>
+              <label className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-1 block">To date</label>
+              <input type="date"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)} />
+            </div>
+          </div>
+
+          {hasFilter && (
+            <button onClick={clearFilters}
+              className="text-[10px] text-gray-500 hover:text-white flex items-center gap-1 transition-colors">
+              <X size={10} /> Clear filters
+            </button>
+          )}
+        </div>
+        )}
+
+        {/* Entries grid */}
         <div className="flex-1 overflow-y-auto p-6">
           {loading ? (
             <p className="text-center text-xs text-gray-500 py-10">Loading…</p>
           ) : entries.length === 0 ? (
-            <p className="text-center text-xs text-gray-500 py-10">No entries yet.</p>
+            <p className="text-center text-xs text-gray-500 py-10">No entries{hasFilter ? ' matching filters' : ' yet'}.</p>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
               {entries.map(e => (
@@ -515,13 +729,15 @@ function EntriesPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: 
                       <FileText size={20} /> View file
                     </a>
                   ) : (
-                    <div className="flex items-center justify-center h-20 bg-gray-700/30 text-gray-500 text-xs">
+                    <div className="flex items-center justify-center h-20 bg-gray-700/30 text-gray-500 text-xs px-2 text-center">
                       {e.text_value ?? '—'}
                     </div>
                   )}
                   <div className="p-2 space-y-1">
                     <p className="text-[10px] text-indigo-400 font-semibold truncate">{fieldName(e.field_id)}</p>
+                    <p className="text-[10px] text-gray-500 truncate">{collectorName(e.collector_id)}</p>
                     {e.description && <p className="text-[10px] text-gray-400 truncate">{e.description}</p>}
+                    <p className="text-[10px] text-gray-600">{new Date(e.captured_at).toLocaleDateString()}</p>
                     {e.points_awarded > 0 && <p className="text-[10px] text-amber-500">+{e.points_awarded} pts</p>}
                   </div>
                 </div>
@@ -541,7 +757,7 @@ export default function DatasetPage() {
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [editTarget, setEditTarget] = useState<DatasetProfile | null>(null)
-  const [inviteTarget, setInviteTarget] = useState<string | null>(null)
+  const [inviteTarget, setInviteTarget] = useState<DatasetProfile | null>(null)
   const [viewTarget, setViewTarget] = useState<DatasetProfile | null>(null)
 
   const load = () => {
@@ -590,7 +806,7 @@ export default function DatasetPage() {
             <DatasetCard key={d.id} dataset={d}
               onEdit={() => setEditTarget(d)}
               onDelete={() => handleDelete(d.id)}
-              onInvite={() => setInviteTarget(d.id)}
+              onInvite={() => setInviteTarget(d)}
               onView={() => setViewTarget(d)}
             />
           ))}
@@ -608,7 +824,7 @@ export default function DatasetPage() {
           }}
         />
       )}
-      {inviteTarget && <InviteModal datasetId={inviteTarget} onClose={() => setInviteTarget(null)} />}
+      {inviteTarget && <InviteModal dataset={inviteTarget} onClose={() => setInviteTarget(null)} />}
       {viewTarget && <EntriesPanel dataset={viewTarget} onClose={() => setViewTarget(null)} />}
     </div>
   )

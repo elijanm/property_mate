@@ -84,7 +84,28 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
 
     trainer_cls = get_trainer_class(job.trainer_name)
     if not trainer_cls:
-        await _fail(job, f"Trainer '{job.trainer_name}' not registered")
+        # Try to load the plugin file directly to surface the actual import error
+        error_msg = f"Trainer '{job.trainer_name}' not registered"
+        try:
+            import importlib.util
+            from pathlib import Path
+            plugin_dir = Path(settings.TRAINER_PLUGIN_DIR)
+            candidates = list(plugin_dir.glob("*.py"))
+            match = next(
+                (f for f in candidates if f.stem == job.trainer_name or f.stem.lower() == job.trainer_name.lower()),
+                None,
+            )
+            if match:
+                spec = importlib.util.spec_from_file_location("_probe", match)
+                if spec and spec.loader:
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)  # type: ignore[union-attr]
+                    error_msg += " — file loaded but no valid BaseTrainer subclass found (check name/data_source attrs)"
+            else:
+                error_msg += f" — no matching .py file in {plugin_dir}"
+        except Exception as probe_exc:
+            error_msg += f" — import error: {probe_exc}"
+        await _fail(job, error_msg)
         return
 
     # Block resource-intensive trainers from local execution

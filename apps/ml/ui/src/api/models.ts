@@ -1,4 +1,5 @@
 import client from './client'
+import type { ModelDeployment } from '@/types/trainer'
 
 export interface DeployUriPayload {
   name: string
@@ -14,6 +15,10 @@ export interface DeployUriPayload {
 }
 
 export const modelsApi = {
+  list: (params?: { status?: string; trainer_name?: string; include_all?: boolean }) =>
+    client.get<{ items: ModelDeployment[]; total: number }>('/models', { params })
+      .then(r => r.data.items),
+
   deployFromUri: (payload: DeployUriPayload) =>
     client.post('/models/deploy-pretrained', payload).then(r => r.data),
 

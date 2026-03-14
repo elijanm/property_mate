@@ -839,3 +839,80 @@ class RedisDataSource(DataSource):
 
     def describe(self) -> Dict:
         return {"type": "redis", "key": self.key, "data_type": self.data_type}
+
+
+# ── ML Dock built-in Dataset ──────────────────────────────────────────────────
+
+@dataclass
+class DatasetDataSource(DataSource):
+    """
+    Load training data from an ML Dock built-in dataset (DatasetProfile).
+
+    Returns a list of dicts, one per entry:
+      entry_id, field_id, field_label, field_type,
+      text_value, file_url, file_mime, description,
+      captured_at, collector_id, collector_name
+
+        data_source = DatasetDataSource(dataset_id="<dataset_id>")
+    """
+    dataset_id: str
+    org_id: Optional[str] = None   # optional — leave None to skip org check
+
+    @property
+    def source_type(self) -> str:
+        return "dataset"
+
+    async def load(self, **kwargs) -> List[Dict]:
+        from motor.motor_asyncio import AsyncIOMotorClient
+        from app.core.config import settings as _s
+        from bson import ObjectId as BsonObjectId
+
+        client = AsyncIOMotorClient(_s.MONGODB_URL)
+        db = client[_s.MONGODB_DATABASE]
+        try:
+            try:
+                ds_filter: Dict = {"_id": BsonObjectId(self.dataset_id)}
+            except Exception as exc:
+                raise ValueError(f"Invalid dataset_id: {self.dataset_id!r}") from exc
+
+            profile = await db["dataset_profiles"].find_one(ds_filter)
+            if not profile:
+                raise ValueError(f"Dataset {self.dataset_id!r} not found")
+            if self.org_id and str(profile.get("org_id", "")) != self.org_id:
+                raise ValueError(f"Dataset {self.dataset_id!r} not accessible")
+
+            field_map = {f["id"]: f for f in profile.get("fields", [])}
+
+            entries = await db["dataset_entries"].find(
+                {"dataset_id": self.dataset_id}
+            ).to_list(length=None)
+
+            collectors_raw = await db["dataset_collectors"].find(
+                {"dataset_id": self.dataset_id}
+            ).to_list(length=None)
+            collectors = {str(c.get("id") or c.get("_id", "")): c.get("name", "") for c in collectors_raw}
+
+            results: List[Dict] = []
+            for e in entries:
+                field_meta = field_map.get(e.get("field_id", ""), {})
+                results.append({
+                    "entry_id": str(e.get("_id", "")),
+                    "field_id": e.get("field_id", ""),
+                    "field_label": field_meta.get("label", ""),
+                    "field_type": field_meta.get("type", "text"),
+                    "text_value": e.get("text_value"),
+                    "file_url": e.get("file_url"),
+                    "file_key": e.get("file_key"),
+                    "file_mime": e.get("file_mime"),
+                    "description": e.get("description"),
+                    "captured_at": str(e.get("captured_at", "")),
+                    "collector_id": str(e.get("collector_id", "")),
+                    "collector_name": collectors.get(str(e.get("collector_id", "")), ""),
+                    "points_awarded": e.get("points_awarded", 0),
+                })
+            return results
+        finally:
+            client.close()
+
+    def describe(self) -> Dict:
+        return {"type": "dataset", "dataset_id": self.dataset_id}

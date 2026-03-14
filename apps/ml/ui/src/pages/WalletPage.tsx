@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback } from 'react'
 import { walletApi } from '@/api/wallet'
-import type { Wallet, WalletTransaction, LocalQuota } from '@/types/wallet'
-import { Loader2, TrendingUp, TrendingDown, Clock, RotateCcw, AlertCircle, Wallet as WalletIcon, Monitor, ShoppingCart } from 'lucide-react'
+import type { Wallet, WalletTransaction, LocalQuota, PlatformLedgerEntry, AdminUserSummary } from '@/types/wallet'
+import { useAuth } from '@/context/AuthContext'
+import { Loader2, TrendingUp, TrendingDown, Clock, RotateCcw, AlertCircle, Wallet as WalletIcon, Monitor, ShoppingCart, Shield, DollarSign, Users } from 'lucide-react'
 import clsx from 'clsx'
 
 const TYPE_STYLES: Record<WalletTransaction['type'], { label: string; classes: string; sign: string }> = {
   credit:  { label: 'Credit',  classes: 'bg-emerald-900/40 text-emerald-400 border-emerald-800/40', sign: '+' },
-  debit:   { label: 'Debit',   classes: 'bg-red-900/40 text-red-400 border-red-800/40',             sign: '-' },
-  reserve: { label: 'Reserve', classes: 'bg-amber-900/40 text-amber-400 border-amber-800/40',       sign: '-' },
-  release: { label: 'Release', classes: 'bg-blue-900/40 text-blue-400 border-blue-800/40',          sign: '+' },
+  debit:   { label: 'Charge',  classes: 'bg-red-900/40 text-red-400 border-red-800/40',             sign: '-' },
+  reserve: { label: 'Reserved', classes: 'bg-amber-900/40 text-amber-400 border-amber-800/40',      sign: '-' },
+  release: { label: 'Refund',  classes: 'bg-blue-900/40 text-blue-400 border-blue-800/40',          sign: '+' },
 }
 
 const TYPE_ICONS: Record<WalletTransaction['type'], React.ReactNode> = {
@@ -40,6 +41,9 @@ function daysUntil(iso: string | null): number {
 }
 
 export default function WalletPage() {
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
+
   const [wallet, setWallet] = useState<Wallet | null>(null)
   const [quota, setQuota] = useState<LocalQuota | null>(null)
   const [transactions, setTransactions] = useState<WalletTransaction[]>([])
@@ -48,6 +52,20 @@ export default function WalletPage() {
   const [loading, setLoading] = useState(true)
   const [txLoading, setTxLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Admin recharge state
+  const [adminUsers, setAdminUsers] = useState<AdminUserSummary[]>([])
+  const [rechargeEmail, setRechargeEmail] = useState('')
+  const [rechargeAmount, setRechargeAmount] = useState('')
+  const [rechargeNote, setRechargeNote] = useState('')
+  const [rechargeLoading, setRechargeLoading] = useState(false)
+  const [rechargeError, setRechargeError] = useState<string | null>(null)
+  const [rechargeSuccess, setRechargeSuccess] = useState<string | null>(null)
+  const [ledgerEntries, setLedgerEntries] = useState<PlatformLedgerEntry[]>([])
+  const [ledgerTotal, setLedgerTotal] = useState(0)
+  const [ledgerSpent, setLedgerSpent] = useState(0)
+  const [ledgerPage, setLedgerPage] = useState(1)
+  const [ledgerLoading, setLedgerLoading] = useState(false)
 
   // Top-up modal state
   const [topupOpen, setTopupOpen] = useState(false)
@@ -89,8 +107,52 @@ export default function WalletPage() {
     finally { setTxLoading(false) }
   }, [])
 
+  const loadLedger = useCallback(async (p: number) => {
+    setLedgerLoading(true)
+    try {
+      const data = await walletApi.adminLedger(p)
+      setLedgerEntries(data.items)
+      setLedgerTotal(data.total)
+      setLedgerSpent(data.total_spent_usd)
+    } catch {}
+    finally { setLedgerLoading(false) }
+  }, [])
+
   useEffect(() => { loadWallet() }, [loadWallet])
   useEffect(() => { loadTransactions(page) }, [loadTransactions, page])
+
+  useEffect(() => {
+    if (!isAdmin) return
+    walletApi.adminListUsers().then(setAdminUsers).catch(() => {})
+    loadLedger(ledgerPage)
+  }, [isAdmin, loadLedger, ledgerPage])
+
+  const handleRecharge = async () => {
+    const amount = parseFloat(rechargeAmount)
+    if (!rechargeEmail) { setRechargeError('Select a user'); return }
+    if (!amount || amount <= 0) { setRechargeError('Enter a valid amount'); return }
+    setRechargeLoading(true)
+    setRechargeError(null)
+    try {
+      const result = await walletApi.adminRecharge(rechargeEmail, amount, rechargeNote)
+      // If the recharged user is the current viewer (admin recharging own account), update balance
+      if (rechargeEmail === user?.email) {
+        setWallet(result.wallet)
+      }
+      setRechargeSuccess(`$${amount.toFixed(2)} USD credited to ${rechargeEmail}`)
+      setRechargeAmount('')
+      setRechargeNote('')
+      setRechargeEmail('')
+      loadLedger(1)
+      setLedgerPage(1)
+      loadTransactions(1)
+      setPage(1)
+    } catch (e: unknown) {
+      setRechargeError(e instanceof Error ? e.message : 'Recharge failed')
+    } finally {
+      setRechargeLoading(false)
+    }
+  }
 
   const handleBuyHours = async () => {
     const hours = parseFloat(buyHoursAmount)
@@ -400,6 +462,173 @@ export default function WalletPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── Admin: Recharge & Ledger ─────────────────────────────────────────── */}
+      {isAdmin && (
+        <>
+          {/* Recharge form */}
+          <div className="bg-gray-900 border border-amber-800/40 rounded-2xl p-6 space-y-5">
+            <div className="flex items-center gap-2 text-amber-400 text-sm font-semibold">
+              <Shield size={15} /> Admin — Recharge User Wallet
+            </div>
+            <p className="text-xs text-gray-500">
+              Credits a user's wallet directly and records the amount as a platform expense in the ledger.
+            </p>
+
+            {rechargeSuccess && (
+              <div className="flex items-center justify-between bg-emerald-950/40 border border-emerald-800/60 rounded-xl px-4 py-3 text-xs text-emerald-400">
+                <span>{rechargeSuccess}</span>
+                <button onClick={() => setRechargeSuccess(null)} className="text-emerald-700 hover:text-emerald-400 ml-3">×</button>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">
+                  <Users size={11} className="inline mr-1" />User
+                </label>
+                <select
+                  value={rechargeEmail}
+                  onChange={e => setRechargeEmail(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-amber-500"
+                >
+                  <option value="">Select a user…</option>
+                  {adminUsers.map(u => (
+                    <option key={u.email} value={u.email}>
+                      {u.email}{u.full_name ? ` — ${u.full_name}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">
+                  <DollarSign size={11} className="inline mr-1" />Amount (USD)
+                </label>
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={rechargeAmount}
+                  onChange={e => setRechargeAmount(e.target.value)}
+                  placeholder="e.g. 10.00"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">Note (optional)</label>
+                <input
+                  type="text"
+                  value={rechargeNote}
+                  onChange={e => setRechargeNote(e.target.value)}
+                  placeholder="e.g. Promotional credit"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+            </div>
+
+            {rechargeError && (
+              <div className="flex items-center gap-2 text-red-400 text-xs bg-red-950/30 border border-red-800/40 rounded-lg p-2.5">
+                <AlertCircle size={13} /> {rechargeError}
+              </div>
+            )}
+
+            <button
+              onClick={handleRecharge}
+              disabled={rechargeLoading}
+              className="flex items-center gap-2 px-5 py-2.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-colors"
+            >
+              {rechargeLoading ? <Loader2 size={14} className="animate-spin" /> : <TrendingUp size={14} />}
+              {rechargeLoading ? 'Processing…' : 'Recharge Wallet'}
+            </button>
+          </div>
+
+          {/* Platform expense ledger */}
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-widest">
+                Platform Ledger — Recharge History
+              </h2>
+              {ledgerSpent > 0 && (
+                <span className="text-xs text-amber-400 font-medium tabular-nums">
+                  Total issued: ${ledgerSpent.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                </span>
+              )}
+            </div>
+
+            {ledgerLoading ? (
+              <div className="flex items-center justify-center h-20">
+                <Loader2 size={18} className="animate-spin text-gray-600" />
+              </div>
+            ) : ledgerEntries.length === 0 ? (
+              <div className="text-center text-gray-600 text-sm py-10">
+                No admin recharges yet.
+              </div>
+            ) : (
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-800 text-xs text-gray-500 uppercase tracking-wider">
+                      <th className="text-left px-4 py-3 font-medium">Date</th>
+                      <th className="text-left px-4 py-3 font-medium">Recipient</th>
+                      <th className="text-left px-4 py-3 font-medium">Admin</th>
+                      <th className="text-left px-4 py-3 font-medium">Note</th>
+                      <th className="text-right px-4 py-3 font-medium">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-800">
+                    {ledgerEntries.map(entry => (
+                      <tr key={entry.id} className="hover:bg-gray-800/40 transition-colors">
+                        <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
+                          {formatDate(entry.created_at)}
+                        </td>
+                        <td className="px-4 py-3 text-gray-300 text-xs font-medium">
+                          {entry.recipient_email}
+                        </td>
+                        <td className="px-4 py-3 text-gray-500 text-xs">
+                          {entry.performed_by}
+                        </td>
+                        <td className="px-4 py-3 text-gray-500 text-xs max-w-[160px] truncate" title={entry.note}>
+                          {entry.note || <span className="text-gray-700 italic">—</span>}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono font-semibold text-sm text-emerald-400 tabular-nums">
+                          +{entry.amount_usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                {Math.ceil(ledgerTotal / 30) > 1 && (
+                  <div className="flex items-center justify-between px-4 py-3 border-t border-gray-800 text-xs text-gray-500">
+                    <span>{ledgerTotal} entries</span>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => setLedgerPage(p => Math.max(1, p - 1))}
+                        disabled={ledgerPage === 1}
+                        className="px-2.5 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      >
+                        ‹ Prev
+                      </button>
+                      <span className="px-2.5 py-1 text-gray-400">
+                        {ledgerPage} / {Math.ceil(ledgerTotal / 30)}
+                      </span>
+                      <button
+                        onClick={() => setLedgerPage(p => Math.min(Math.ceil(ledgerTotal / 30), p + 1))}
+                        disabled={ledgerPage === Math.ceil(ledgerTotal / 30)}
+                        className="px-2.5 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      >
+                        Next ›
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </>
       )}
 
       {/* Transaction history */}
