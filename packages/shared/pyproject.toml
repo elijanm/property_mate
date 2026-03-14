@@ -1,0 +1,12 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pms-shared"
+version = "0.1.0"
+description = "PMS Shared Types, Enums, and Constants"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.0.0",
+]

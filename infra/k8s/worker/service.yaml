@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: pms-worker-service
+  namespace: pms
+spec:
+  selector:
+    app: pms-worker
+  clusterIP: None  # headless — no port exposure needed

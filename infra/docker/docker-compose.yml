@@ -1,0 +1,541 @@
+services:
+  # ── Infrastructure ──────────────────────────────────────────
+  mongodb:
+    image: mongo:7.0
+    restart: unless-stopped
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: pms
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  opensearch:
+    image: opensearchproject/opensearch:2.17.0
+    restart: unless-stopped
+    ports:
+      - "9200:9200"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    environment:
+      - discovery.type=single-node
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=Admin@1234
+      - DISABLE_SECURITY_PLUGIN=true
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Application ─────────────────────────────────────────────
+  backend:
+    container_name: pms_backend
+    build:
+      context: ../../apps/backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    env_file:
+      - .env
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      wuzapi:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    build:
+      context: ../../apps/worker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ../../apps/frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5174:80"
+    depends_on:
+      - backend
+
+  wuzapi:
+    image: asternic/wuzapi:latest
+    container_name: pms_wuzapi
+    restart: unless-stopped
+    ports:
+      - "3100:8080"
+    volumes:
+      - wuzapi_data:/app/dbdata
+    environment:
+      WUZAPI_ADMIN_TOKEN: changeme-wuzapi-admin
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  voice-agent:
+    container_name: pms_voice_agent
+    build:
+      context: ../../apps/voice-agent
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8010:8010"
+    env_file:
+      - ../../apps/voice-agent/.env
+      - .env
+    environment:
+      # Override service URLs for Docker networking
+      - MONGODB_URL=mongodb://mongodb:27017
+      - REDIS_URL=redis://redis:6379
+      - PMS_API_URL=http://backend:8000/api/v1
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_PUBLIC_ENDPOINT_URL=http://localhost:9000
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── IoT Stack ────────────────────────────────────────────────
+  emqx:
+    image: emqx/emqx:5.8.1
+    container_name: pms_emqx
+    hostname: pms_emqx          # must match EMQX_NODE__NAME for Erlang distribution
+    restart: unless-stopped
+    ports:
+      - "1883:1883"       # MQTT (plain — dev only; use TLS in prod)
+      - "8883:8883"       # MQTT over TLS
+      - "18083:18083"     # EMQX Dashboard
+      - "8083:8083"       # MQTT-WebSocket
+    volumes:
+      - emqx_data:/opt/emqx/data
+      - emqx_log:/opt/emqx/log
+      - ./emqx/emqx.conf:/opt/emqx/etc/emqx.conf:ro
+      # mTLS certs — generate with: bash scripts/gen-certs.sh
+      # The directory is optional; if absent EMQX falls back to plain TCP on 1883.
+      - ./certs:/opt/emqx/etc/certs:ro
+    environment:
+      EMQX_NODE__NAME: emqx@pms_emqx
+      EMQX_DASHBOARD__DEFAULT_USERNAME: admin
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: Admin@1234
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/1883' && timeout 2 bash -c '</dev/tcp/localhost/18083'"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  thingsboard-db:
+    image: postgres:15-alpine
+    container_name: pms_thingsboard_db
+    restart: unless-stopped
+    volumes:
+      - thingsboard_db_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: thingsboard
+      POSTGRES_USER: thingsboard
+      POSTGRES_PASSWORD: thingsboard
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U thingsboard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  thingsboard:
+    image: thingsboard/tb-postgres:3.7.0
+    container_name: pms_thingsboard
+    restart: unless-stopped
+    ports:
+      - "8081:9090"       # ThingsBoard UI + REST API
+      - "1884:1883"       # ThingsBoard MQTT (separate from EMQX)
+      - "7070:7070"       # ThingsBoard Edge RPC
+    volumes:
+      - thingsboard_data:/data
+      - thingsboard_logs:/var/log/thingsboard
+    environment:
+      TB_QUEUE_TYPE: in-memory
+      SPRING_DATASOURCE_URL: jdbc:postgresql://thingsboard-db:5432/thingsboard
+      SPRING_DATASOURCE_USERNAME: thingsboard
+      SPRING_DATASOURCE_PASSWORD: thingsboard
+      # Disable default ThingsBoard MQTT (EMQX is our broker)
+      MQTT_ENABLED: "false"
+    depends_on:
+      thingsboard-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9090/api/noauth/activate 2>/dev/null | grep -q 'activationLink\\|not found' || curl -sf http://localhost:9090/api/v1/noauth/signup 2>/dev/null; exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  headscale:
+    image: headscale/headscale:latest
+    container_name: pms_headscale
+    restart: unless-stopped
+    ports:
+      - "8085:8080"       # Headscale REST API + DERP
+    volumes:
+      - headscale_data:/var/lib/headscale
+      - ./headscale/config.yaml:/etc/headscale/config.yaml:ro
+    command: serve
+    healthcheck:
+      test: ["CMD-SHELL", "headscale version || /ko-app/headscale version"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  iot-service:
+    build:
+      context: ../../apps/iot
+      dockerfile: Dockerfile
+    container_name: pms_iot
+    restart: unless-stopped
+    ports:
+      - "8020:8020"
+    env_file:
+      - .env
+    environment:
+      MONGODB_URL: mongodb://mongodb:27017
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      EMQX_API_URL: http://emqx:18083
+      MQTT_BROKER_HOST: emqx
+      MQTT_BROKER_PORT: "1883"
+      MQTT_USERNAME: iot-service
+      MQTT_PASSWORD: changeme-mqtt-password
+      IOT_INTERNAL_SECRET: changeme-internal-secret
+      THINGSBOARD_URL: http://thingsboard:9090
+      HEADSCALE_URL: http://headscale:8080
+      HEADSCALE_PUBLIC_URL: http://localhost:8085
+      HEADSCALE_API_KEY: hskey-api-w_QjTe5TVlNI-y6w0QWUeW22dBoOoMaIc6qvelHkN7uedZVtYn-_gK71yKyqzahOhCU4ZjttBaLHI
+      HEADSCALE_NAMESPACE: pms-devices
+      # mTLS / X.509 — loaded from env_file (.env) by ca_service.py at runtime.
+      # Do NOT set IOT_CA_CERT_PEM / IOT_CA_KEY_PEM here — empty values override env_file.
+      # Run scripts/gen-certs.sh then populate .env to enable cert issuance.
+      IOT_CERT_VALIDITY_DAYS: "365"
+    volumes:
+      - iot_ssh_keys:/etc/iot/ssh
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      emqx:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8020/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: pms_minio_init
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 minioadmin minioadmin &&
+        mc mb --ignore-existing local/pms-ml &&
+        mc mb --ignore-existing local/pms-media &&
+        mc mb --ignore-existing local/pms-voice &&
+        echo 'MinIO buckets ready'
+      "
+
+  # ── ML / AI Stack ────────────────────────────────────────────
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.17.2
+    container_name: pms_mlflow
+    restart: unless-stopped
+    ports:
+      - "5510:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    environment:
+      MLFLOW_BACKEND_STORE_URI: sqlite:////mlflow/mlflow.db
+      MLFLOW_ARTIFACT_ROOT: s3://pms-ml/mlflow-artifacts
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root s3://pms-ml/mlflow-artifacts
+      --host 0.0.0.0
+      --port 5000
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  ml-service:
+    build:
+      context: ../../apps/ml
+      dockerfile: Dockerfile
+    container_name: pms_ml
+    restart: unless-stopped
+    ports:
+      - "8030:8030"
+    env_file:
+      - .env
+    environment:
+      MONGODB_URL: mongodb://mongodb:27017
+      MONGODB_DATABASE: pms_ml
+      REDIS_URL: redis://redis:6379
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_DEFAULT_EXPERIMENT: pms-models
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: pms-ml
+      S3_REGION: us-east-1
+      PMS_API_URL: http://backend:8000/api/v1
+      CUDA_DEVICE: auto
+      TRAINING_WORKERS: "4"
+      TRAINING_BATCH_SIZE: "32"
+      TRAINING_FP16: "false"
+      TRAINING_MAX_EPOCHS: "100"
+      TRAINING_EARLY_STOPPING: "true"
+      TRAINING_EARLY_STOPPING_PATIENCE: "5"
+      TRAINER_PLUGIN_DIR: /app/trainers
+      GIT_PYTHON_REFRESH: quiet
+      # MLflow uses standard AWS env vars to load artifacts from MinIO
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING: "false"
+      ULTRALYTICS_SETTINGS_DIR: /tmp/ultralytics
+      ROBOFLOW_API_KEY: ${ROBOFLOW_API_KEY:-}
+      CLAMAV_SOCKET: /var/run/clamav/clamd.ctl
+      # Email overrides — set ML_RESEND_API_KEY / ML_EMAIL_FROM in .env to use
+      # different sender credentials for ml-service without touching other services
+      RESEND_API_KEY: ${ML_RESEND_API_KEY:-${RESEND_API_KEY:-}}
+      EMAIL_FROM: ${ML_EMAIL_FROM:-MLDock.io <noreply@mldock.io>}
+    volumes:
+      - ml_trainer_plugins:/app/trainers
+      - ml_clamav_db:/var/lib/clamav
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8030/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  ml-worker:
+    build:
+      context: ../../apps/ml
+      dockerfile: Dockerfile.worker
+    container_name: pms_ml_worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MONGODB_URL: mongodb://mongodb:27017
+      MONGODB_DATABASE: pms_ml
+      REDIS_URL: redis://redis:6379
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_DEFAULT_EXPERIMENT: pms-models
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: pms-ml
+      S3_REGION: us-east-1
+      # MLflow uses the standard AWS env vars to write artifacts to MinIO
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      CUDA_DEVICE: auto
+      TRAINING_WORKERS: "4"
+      TRAINER_PLUGIN_DIR: /app/trainers
+      GIT_PYTHON_REFRESH: quiet
+      MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING: "false"
+      ULTRALYTICS_SETTINGS_DIR: /tmp/ultralytics
+      ROBOFLOW_API_KEY: ${ROBOFLOW_API_KEY:-}
+    volumes:
+      - ml_trainer_plugins:/app/trainers
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+
+  ml-ui:
+    build:
+      context: ../../apps/ml/ui
+      dockerfile: Dockerfile
+    container_name: pms_ml_ui
+    restart: unless-stopped
+    ports:
+      - "5200:80"
+    depends_on:
+      ml-service:
+        condition: service_healthy
+
+  # ── Observability ────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    restart: unless-stopped
+    ports:
+      - "3004:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    depends_on:
+      - prometheus
+
+volumes:
+  wuzapi_data:
+  mongodb_data:
+  redis_data:
+  rabbitmq_data:
+  opensearch_data:
+  minio_data:
+  prometheus_data:
+  grafana_data:
+  emqx_data:
+  emqx_log:
+  thingsboard_db_data:
+  thingsboard_data:
+  thingsboard_logs:
+  headscale_data:
+  iot_ssh_keys:
+  mlflow_data:
+  ml_trainer_plugins:
+  ml_clamav_db:

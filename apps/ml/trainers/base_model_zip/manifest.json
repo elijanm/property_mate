@@ -1,0 +1,50 @@
+{
+    "name": "my-model",
+    "version": "1.0.0",
+    "description": "Short description of what this model does",
+    "tags": {
+        "domain": "your-domain",
+        "type": "classifier"
+    },
+    "model_file": "model.pt",
+    "entry_point": "inference.py",
+    "set_as_default": true,
+    "category": {
+        "key": "custom",
+        "label": "Custom Model"
+    },
+
+    "input_schema": {
+        "image": {
+            "type": "image",
+            "label": "Input Image",
+            "description": "Image to run inference on",
+            "required": true
+        }
+    },
+
+    "output_schema": {
+        "label": {
+            "type": "text",
+            "label": "Predicted Label",
+            "description": "Top predicted class name",
+            "editable": true
+        },
+        "confidence": {
+            "type": "number",
+            "label": "Confidence",
+            "format": "percent",
+            "description": "Confidence score of the top prediction"
+        },
+        "annotated_url": {
+            "type": "image_url",
+            "label": "Annotated Image",
+            "description": "Output image with bounding boxes / annotations drawn"
+        },
+        "detections": {
+            "type": "detections",
+            "label": "Detections",
+            "description": "List of detected objects with class, confidence, and bounding box"
+        }
+    }
+}
