@@ -26,6 +26,10 @@ set -euo pipefail
 export MSYS_NO_PATHCONV=1
 
 CERTS_DIR="$(cd "$(dirname "$0")/../infra/docker/certs" && pwd)"
+# Git Bash returns /c/Users/... — convert to C:/Users/... for native Windows OpenSSL
+if command -v cygpath >/dev/null 2>&1; then
+  CERTS_DIR="$(cygpath -m "$CERTS_DIR")"
+fi
 CA_DAYS=${CA_DAYS:-3650}        # 10 years for dev CA
 SERVER_DAYS=${SERVER_DAYS:-825} # 27 months for server cert
 EMQX_HOST="localhost"
