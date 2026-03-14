@@ -1,7 +1,7 @@
 """Dataset management API — admin/engineer endpoints."""
 from typing import Optional, List
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 
 from app.dependencies.auth import RequireEngineer
 from app.models.ml_user import MLUser

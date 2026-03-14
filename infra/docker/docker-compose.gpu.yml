@@ -1,0 +1,21 @@
+# GPU override — apply this on Linux hosts with nvidia-container-toolkit installed.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Requirements:
+#   - NVIDIA GPU + drivers
+#   - nvidia-container-toolkit installed
+#   - /etc/docker/daemon.json has "default-runtime": "nvidia"  (or pass --runtime=nvidia)
+#
+# Not needed on macOS or Windows (no NVIDIA GPU passthrough support in Docker Desktop).
+
+services:
+  ml-service:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

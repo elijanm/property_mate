@@ -420,13 +420,6 @@ services:
         condition: service_healthy
       mlflow:
         condition: service_healthy
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8030/health"]
       interval: 15s

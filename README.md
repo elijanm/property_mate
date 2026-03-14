@@ -73,6 +73,29 @@ Services started:
 - backend (8000), worker, iot-service (8020), voice-agent (8010), ml-service (8030)
 - frontend (5200)
 
+#### GPU Passthrough (Linux only)
+
+The base `docker-compose.yml` runs `ml-service` on CPU and works on all platforms. To enable NVIDIA GPU passthrough on a Linux host:
+
+```bash
+# Prerequisites
+# 1. NVIDIA drivers installed
+# 2. nvidia-container-toolkit installed:
+#      curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+#      curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+#      sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+#      sudo nvidia-ctk runtime configure --runtime=docker
+#      sudo systemctl restart docker
+
+# Start with GPU override
+cd infra/docker
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+```
+
+The override file `infra/docker/docker-compose.gpu.yml` adds the `deploy.resources.reservations` block to `ml-service` only. All other services are unaffected.
+
+> **macOS / Windows**: Docker Desktop has no NVIDIA GPU passthrough — use the standard `docker compose up -d` command. The ML service will train on CPU or dispatch to a cloud GPU provider (RunPod, Lambda Labs, Modal) configured via `.env`.
+
 ### 3. Run Frontend Locally
 
 ```bash
