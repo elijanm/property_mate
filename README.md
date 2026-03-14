@@ -203,4 +203,4 @@ cd apps/frontend && npm run test
 
 ## License
 
-Proprietary — Nexidra. All rights reserved.
+Proprietary — Nexidra. All rights reserved

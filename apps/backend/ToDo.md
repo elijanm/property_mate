@@ -1,1 +1,0 @@
-A data retention policy API — org-level settings like "auto-delete call recordings after 90 days", "purge tenant PII after lease ends + 7 years", etc. — this doesn't exist yet
