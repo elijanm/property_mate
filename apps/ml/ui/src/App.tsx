@@ -23,6 +23,8 @@ import ExperimentsPage from './components/ExperimentsPage'
 import UsersPage from './components/UsersPage'
 import WalletPage from './pages/WalletPage'
 import AdminAnalyticsPage from './pages/AdminAnalyticsPage'
+import DatasetPage from './pages/DatasetPage'
+import CollectPage from './pages/CollectPage'
 import { walletApi } from './api/wallet'
 import type { Wallet as WalletData } from './types/wallet'
 import { useAuth } from './context/AuthContext'
@@ -39,12 +41,12 @@ import {
   Brain, RefreshCw, Cpu, LayoutGrid, BookOpen,
   Upload, Play, Settings, List, Activity, Shield,
   FlaskConical, Bell, Key, Layers, ClipboardList, GitCompare,
-  LogOut, User, Loader2, Users, Wallet, BarChart2,
+  LogOut, User, Loader2, Users, Wallet, BarChart2, Database,
 } from 'lucide-react'
 import Logo from './components/Logo'
 import clsx from 'clsx'
 
-type Page = 'models' | 'trainers' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics'
+type Page = 'models' | 'trainers' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets'
 
 const NAV: { id: Page; label: string; icon: React.ReactNode }[] = [
   { id: 'models',      label: 'Models',       icon: <LayoutGrid size={14} /> },
@@ -63,6 +65,7 @@ const NAV: { id: Page; label: string; icon: React.ReactNode }[] = [
   { id: 'audit',       label: 'Audit Log',    icon: <ClipboardList size={14} /> },
   { id: 'users',       label: 'Users',        icon: <Users size={14} /> },
   { id: 'analytics',   label: 'Analytics',    icon: <BarChart2 size={14} /> },
+  { id: 'datasets',    label: 'Datasets',     icon: <Database size={14} /> },
   { id: 'wallet',      label: 'Wallet',       icon: <Wallet size={14} /> },
   { id: 'config',      label: 'Config',       icon: <Settings size={14} /> },
 ]
@@ -85,6 +88,7 @@ const PAGE_TITLE: Record<Page, string> = {
   audit:       'Audit Log',
   users:       'User Management',
   analytics:   'Platform Analytics',
+  datasets:    'Datasets',
   wallet:      'Wallet',
 }
 
@@ -163,6 +167,16 @@ export default function App() {
     : page === 'models'
       ? `${deployments.length} deployed model${deployments.length !== 1 ? 's' : ''}`
       : ''
+
+  // Public collect page — /collect/<token> or #collect/<token>
+  const collectToken = (() => {
+    const hash = window.location.hash.replace('#', '')
+    if (hash.startsWith('collect/')) return hash.slice(8)
+    const path = window.location.pathname
+    const m = path.match(/\/collect\/([^/]+)/)
+    return m ? m[1] : null
+  })()
+  if (collectToken) return <CollectPage token={collectToken} />
 
   if (authLoading || linkVerifying) {
     return (
@@ -402,6 +416,7 @@ export default function App() {
               {page === 'audit' && <AuditLogPage />}
               {page === 'users' && <UsersPage />}
               {page === 'analytics' && <AdminAnalyticsPage />}
+              {page === 'datasets' && <DatasetPage />}
               {page === 'wallet' && <WalletPage />}
             </div>
           )}

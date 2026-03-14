@@ -30,6 +30,7 @@ async def init_db():
     from app.models.batch_job import BatchJob
     from app.models.audit_log import AuditLog
     from app.models.wallet import Wallet, WalletTransaction
+    from app.models.dataset import DatasetProfile, DatasetCollector, DatasetEntry
 
     client = AsyncIOMotorClient(settings.MONGODB_URL)
     await init_beanie(
@@ -55,6 +56,9 @@ async def init_db():
             AuditLog,
             Wallet,
             WalletTransaction,
+            DatasetProfile,
+            DatasetCollector,
+            DatasetEntry,
         ],
     )
     logger.info("ml_db_initialized", database=settings.MONGODB_DATABASE)
