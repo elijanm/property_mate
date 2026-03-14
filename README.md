@@ -174,6 +174,229 @@ Device gateway at `apps/iot/`. EMQX authenticates devices via HTTP hook → iot-
 
 ---
 
+## EMQX TLS Certificates
+
+EMQX listens on port **8883** for TLS MQTT. A self-signed internal CA is used so devices can verify the broker without a public CA.
+
+### Generate Certs (first time or to rotate)
+
+```bash
+bash scripts/gen-certs.sh
+# Optional flags:
+#   --host <hostname>   SAN hostname for the server cert (default: localhost)
+#   --days <n>          Server cert validity in days (default: 825)
+```
+
+Outputs to `infra/docker/certs/`:
+
+| File | Purpose |
+|---|---|
+| `ca.key` | CA private key — **never commit, keep secret** |
+| `ca.crt` | CA certificate — distribute to IoT devices so they trust the broker |
+| `server.key` | EMQX server private key |
+| `server.crt` | EMQX server certificate (signed by CA) |
+
+### Load CA into `.env`
+
+The iot-service uses the CA to sign per-device certificates. Export it into `infra/docker/.env`:
+
+```bash
+# Linux / macOS
+echo "IOT_CA_CERT_PEM=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0}' infra/docker/certs/ca.crt)" >> infra/docker/.env
+echo "IOT_CA_KEY_PEM=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0}' infra/docker/certs/ca.key)"  >> infra/docker/.env
+```
+
+### Restart Services
+
+```bash
+docker compose -f infra/docker/docker-compose.yml restart emqx iot-service
+```
+
+### Verify TLS
+
+```bash
+# Check broker certificate
+openssl s_client -connect localhost:8883 -CAfile infra/docker/certs/ca.crt
+
+# Subscribe via MQTT over TLS
+mosquitto_sub -h localhost -p 8883 \
+  --cafile infra/docker/certs/ca.crt \
+  -t test/topic -d
+
+# Subscribe with mutual TLS (device cert)
+mosquitto_sub -h localhost -p 8883 \
+  --cafile  infra/docker/certs/ca.crt \
+  --cert    infra/docker/certs/device1.crt \
+  --key     infra/docker/certs/device1.key \
+  -t test/topic -d
+```
+
+### Issue a Device Certificate (manual)
+
+```bash
+# 1. Generate device key
+openssl ecparam -name prime256v1 -genkey -noout -out infra/docker/certs/device1.key
+
+# 2. Create CSR  (CN = device UID registered in the system)
+openssl req -new \
+  -key infra/docker/certs/device1.key \
+  -out infra/docker/certs/device1.csr \
+  -subj "/CN=edge-node-001/O=PMS/OU=IoT-Devices"
+
+# 3. Sign with internal CA
+openssl x509 -req \
+  -in  infra/docker/certs/device1.csr \
+  -CA  infra/docker/certs/ca.crt \
+  -CAkey infra/docker/certs/ca.key \
+  -CAcreateserial \
+  -out infra/docker/certs/device1.crt \
+  -days 365 -sha256
+
+# 4. Clean up CSR
+rm infra/docker/certs/device1.csr
+```
+
+> In production the iot-service issues device certs automatically via the device provisioning API — manual issuance is only needed for testing.
+
+### `.gitignore` Note
+
+Ensure private keys are never committed:
+
+```
+infra/docker/certs/ca.key
+infra/docker/certs/server.key
+infra/docker/certs/*.key
+```
+
+---
+
+## EMQX Configuration
+
+Config file: `infra/docker/emqx/emqx.conf` (mounted read-only into the container).
+
+### Listeners
+
+| Port | Protocol | Purpose |
+|---|---|---|
+| `1883` | MQTT TCP | Plain — **dev only**, disable in production |
+| `8883` | MQTT TLS (mTLS) | Production device connections — requires certs |
+| `8083` | MQTT WebSocket | Browser / web clients |
+| `8084` | MQTT Secure WebSocket | WSS — uses same server cert as 8883 |
+| `18083` | HTTP | EMQX Dashboard |
+
+### mTLS Settings (`listeners.ssl.default`)
+
+```hocon
+ssl_options {
+  certfile             = "/opt/emqx/etc/certs/server.crt"
+  keyfile              = "/opt/emqx/etc/certs/server.key"
+  cacertfile           = "/opt/emqx/etc/certs/ca.crt"
+  verify               = verify_peer          # enforce client cert
+  fail_if_no_peer_cert = true                 # reject connections without cert
+  versions             = [tlsv1.3, tlsv1.2]  # TLS 1.0/1.1 disabled
+}
+```
+
+`verify_peer` + `fail_if_no_peer_cert = true` means every device **must** present a valid certificate signed by the internal CA. Connections without a cert are rejected at the TLS handshake — before MQTT CONNECT is even reached.
+
+### Authentication & ACL (HTTP Hooks)
+
+EMQX delegates both authentication and authorisation to the iot-service over HTTP.
+
+| Hook | Endpoint | What it checks |
+|---|---|---|
+| MQTT CONNECT | `POST /api/v1/internal/emqx/auth/connect` | device_uid + bcrypt password vs MongoDB; also accepts cert CN as identity |
+| PUB / SUB | `POST /api/v1/internal/emqx/auth/acl` | device topic ownership; `no_match = deny` so any unchecked topic is blocked |
+
+Both hooks require the `X-Internal-Secret` header. Set this in `.env` and keep it in sync with `emqx.conf`:
+
+```env
+IOT_INTERNAL_SECRET=your-strong-random-secret
+```
+
+Update `emqx.conf` header block to match:
+```hocon
+headers {
+  "X-Internal-Secret" = "your-strong-random-secret"
+}
+```
+
+ACL results are cached for 60 seconds (`ttl = 60s`, `max_size = 10000`) to reduce iot-service load under high device counts.
+
+### MQTT Protocol Limits
+
+| Setting | Value | Notes |
+|---|---|---|
+| `max_packet_size` | 1 MB | Increase if payloads are larger (e.g. image uploads) |
+| `max_topic_levels` | 8 | Matches PMS topic hierarchy depth |
+| `max_qos_allowed` | 2 | Full QoS support |
+| `session_expiry_interval` | 2 h | Offline devices retain session for 2 hours |
+| `max_inflight` | 128 | In-flight QoS 1/2 messages per client |
+| `max_mqueue_len` | 1024 | Queued messages for offline clients |
+
+### IoT Service Environment Variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `EMQX_API_URL` | EMQX management API base URL | `http://emqx:18083` |
+| `MQTT_BROKER_HOST` | Broker hostname from iot-service | `emqx` |
+| `MQTT_BROKER_PORT` | Broker port (plain TCP inside Docker network) | `1883` |
+| `MQTT_USERNAME` | iot-service's own MQTT credential | `iot-service` |
+| `MQTT_PASSWORD` | iot-service's own MQTT password | ⚠ change in prod |
+| `IOT_INTERNAL_SECRET` | Shared secret on EMQX → iot-service hooks | ⚠ change in prod |
+| `IOT_CA_CERT_PEM` | PEM-encoded CA cert (newlines as `\n`) | set after `gen-certs.sh` |
+| `IOT_CA_KEY_PEM` | PEM-encoded CA private key | set after `gen-certs.sh` |
+| `IOT_CERT_VALIDITY_DAYS` | Days issued device certs are valid | `365` |
+
+### EMQX Dashboard Credentials
+
+Default credentials (change immediately in production):
+
+```env
+EMQX_DASHBOARD__DEFAULT_USERNAME=admin
+EMQX_DASHBOARD__DEFAULT_PASSWORD=Admin@1234
+```
+
+Dashboard: `http://localhost:18083`
+
+### Node Identity
+
+`EMQX_NODE__NAME` must match the `hostname` in `docker-compose.yml` for Erlang distribution (clustering). Both are set to `emqx@pms_emqx`. If you rename the container, update both.
+
+---
+
+## Production Considerations
+
+### Security
+
+- **Disable plain TCP (1883)** — remove or comment out `listeners.tcp.default` in `emqx.conf` so all traffic is forced through TLS on 8883.
+- **Rotate `X-Internal-Secret`** — the default `changeme-internal-secret` must be replaced before going live.
+- **Rotate EMQX dashboard password** — default `Admin@1234` is public knowledge.
+- **Rotate `node.cookie`** — default `pms-emqx-secret-cookie` must be changed; this protects Erlang cluster communication.
+- **Do not commit `ca.key` or `server.key`** — add `infra/docker/certs/*.key` to `.gitignore`.
+- **Use short-lived device certs in production** — set `IOT_CERT_VALIDITY_DAYS=90` and implement cert rotation via the provisioning API.
+
+### TLS
+
+- Certs generated by `gen-certs.sh` use **EC P-256** (faster handshake than RSA, smaller keys).
+- Server cert SAN includes `localhost`, `pms_emqx`, and `127.0.0.1` — sufficient for dev and internal Docker networking. For production add your public hostname: `bash scripts/gen-certs.sh --host mqtt.yourdomain.com`.
+- The CA cert is valid for **10 years** (`CA_DAYS=3650`); server cert is **825 days** (`SERVER_DAYS=825`, the maximum trusted by Apple/Chrome). Plan a rotation schedule.
+- For production, consider replacing the self-signed CA with a proper PKI (e.g. HashiCorp Vault PKI, AWS Private CA) to automate device cert issuance and revocation.
+
+### Scaling
+
+- EMQX supports horizontal clustering — add nodes to `docker-compose.yml` using the same `node.cookie` and a shared load balancer on 8883.
+- ACL cache (`ttl = 60s`) is per-node; in a cluster each node maintains its own cache independently.
+- The iot-service auth pool is set to `pool_size = 32` — increase if auth hook latency rises under load.
+- ThingsBoard MQTT is disabled (`MQTT_ENABLED: "false"`) — EMQX is the sole broker. Do not re-enable it.
+
+### Windows Dev
+
+- Shell scripts (`entrypoint.sh`, `gen-certs.sh`) must have **LF** line endings. A `.gitattributes` file enforces this. If `gen-certs.sh` fails on Windows, run it inside WSL2 or Git Bash, or use: `dos2unix scripts/gen-certs.sh`.
+- `openssl` and `mosquitto_sub` are available via WSL2, Git for Windows, or `choco install openssl mosquitto`.
+
+---
+
 ## Testing
 
 ```bash
