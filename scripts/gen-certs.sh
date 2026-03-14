@@ -18,6 +18,10 @@
 
 set -euo pipefail
 
+# Git Bash on Windows converts leading '/' in -subj to a Windows path.
+# MSYS_NO_PATHCONV=1 disables that conversion for openssl -subj arguments.
+export MSYS_NO_PATHCONV=1
+
 CERTS_DIR="$(cd "$(dirname "$0")/../infra/docker/certs" && pwd)"
 CA_DAYS=${CA_DAYS:-3650}        # 10 years for dev CA
 SERVER_DAYS=${SERVER_DAYS:-825} # 27 months for server cert
