@@ -16,6 +16,9 @@
 # Usage:
 #   bash scripts/gen-certs.sh [--days <n>] [--host <emqx-hostname>] [--force]
 
+# If invoked with plain `sh`, re-exec under bash (pipefail + [[ ]] are bash-only)
+[ -z "${BASH_VERSION:-}" ] && exec bash "$0" "$@"
+
 set -euo pipefail
 
 # Git Bash on Windows converts leading '/' in -subj to a Windows path.

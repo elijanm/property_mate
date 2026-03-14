@@ -181,11 +181,60 @@ EMQX listens on port **8883** for TLS MQTT. A self-signed internal CA is used so
 ### Generate Certs (first time or to rotate)
 
 ```bash
-bash scripts/gen-certs.sh
-# Optional flags:
-#   --host <hostname>   SAN hostname for the server cert (default: localhost)
-#   --days <n>          Server cert validity in days (default: 825)
+bash scripts/gen-certs.sh [--host <hostname>] [--days <n>] [--force]
 ```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--host` | `localhost` | Primary hostname embedded in the server cert SAN |
+| `--days` | `825` | Server cert validity in days (CA is always 10 years) |
+| `--force` | off | Regenerate the CA as well (default reuses existing CA) |
+
+### Setting `--host` and Why It Matters
+
+The `--host` value becomes the **Subject CN** and the first **Subject Alternative Name (DNS.1)** on the server certificate. This is what TLS clients verify when connecting to the broker.
+
+**The server cert always includes these SANs regardless of `--host`:**
+```
+DNS.1 = <your --host value>
+DNS.2 = pms_emqx          ← Docker internal hostname
+DNS.3 = localhost
+IP.1  = 127.0.0.1
+```
+
+**What to set `--host` to:**
+
+| Environment | `--host` value | Why |
+|---|---|---|
+| Local dev | `localhost` (default) | Clients connect via `localhost:8883` |
+| Docker Compose (internal) | `pms_emqx` | Services inside the stack connect by container hostname |
+| Staging / prod server | `mqtt.yourdomain.com` | External clients and devices verify against this hostname |
+| Self-hosted with IP only | omit, then add IP manually | See note below |
+
+**Examples:**
+
+```bash
+# Dev (default — no flag needed)
+bash scripts/gen-certs.sh
+
+# Production with public hostname
+bash scripts/gen-certs.sh --host mqtt.yourdomain.com
+
+# Staging, custom validity
+bash scripts/gen-certs.sh --host mqtt.staging.yourdomain.com --days 365
+
+# Force-regenerate everything (new CA + new server cert)
+bash scripts/gen-certs.sh --host mqtt.yourdomain.com --force
+```
+
+**Implications of getting `--host` wrong:**
+
+- If a device or client connects to `mqtt.yourdomain.com` but the cert only has `localhost` as the CN/SAN, the TLS handshake will fail with a **hostname verification error** — even though the cert is signed by the right CA.
+- EMQX itself does not care (it's the server, not the verifier), but **every client** that validates the server cert (which should be all of them) will reject the connection.
+- Devices provisioned before a cert rotation carry the old CA — they will need the new `ca.crt` pushed to them before they can reconnect. Plan rotations carefully.
+- After changing `--host`, always regenerate with `--force` and restart EMQX: `docker compose restart emqx`.
+
+> **On Windows (Git Bash):** The script sets `MSYS_NO_PATHCONV=1` automatically to prevent Git Bash from converting `/CN=...` OpenSSL subject strings into Windows paths. No manual workaround needed.
 
 Outputs to `infra/docker/certs/`:
 
