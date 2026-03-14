@@ -1,0 +1,841 @@
+"""
+Abstract data source definitions + concrete implementations.
+
+Available sources
+-----------------
+  S3DataSource              — S3 / MinIO bucket (single file or prefix)
+  URLDataSource             — HTTP/HTTPS URL (file, ZIP, JSON API)
+  UploadedFileDataSource    — file uploaded via the training API
+  InMemoryDataSource        — pass data directly (tests / notebooks)
+  LocalFileDataSource       — path on the local filesystem or mounted volume
+  MongoDBDataSource         — query a MongoDB collection, returns list of dicts
+  PostgreSQLDataSource      — SQL query against a PostgreSQL database
+  SQLDataSource             — generic SQL via SQLAlchemy (any RDBMS)
+  HuggingFaceDataSource     — Hugging Face Hub dataset
+  KafkaDataSource           — consume N messages from a Kafka topic
+  GCSDataSource             — Google Cloud Storage blob / prefix
+  AzureBlobDataSource       — Azure Blob Storage container / blob
+  FTPDataSource             — FTP / SFTP remote file
+  PaginatedAPIDataSource    — paginated REST API (fetches all pages)
+  RedisDataSource           — Redis list, set, sorted-set, or key pattern
+
+Example
+-------
+    class MyTrainer(BaseTrainer):
+        data_source = MongoDBDataSource(
+            uri="mongodb://localhost:27017",
+            database="pms",
+            collection="leases",
+            query={"status": "active"},
+            projection={"tenant_id": 1, "rent_amount": 1, "status": 1},
+        )
+"""
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+
+# ── Abstract base ─────────────────────────────────────────────────────────────
+
+class DataSource(ABC):
+    """Abstract base for all data sources."""
+
+    @abstractmethod
+    async def load(self, **kwargs) -> Any:
+        """Load raw data. Returns data in whatever format the trainer expects."""
+        ...
+
+    @property
+    @abstractmethod
+    def source_type(self) -> str:
+        ...
+
+    def describe(self) -> Dict:
+        return {"type": self.source_type}
+
+
+# ── S3 / MinIO ────────────────────────────────────────────────────────────────
+
+@dataclass
+class S3DataSource(DataSource):
+    """
+    Load training data from an S3 / MinIO bucket.
+
+    If ``key`` is a single object key the raw bytes are returned.
+    If ``key`` is a prefix all matching objects are downloaded and returned
+    as a list of bytes.
+
+        data_source = S3DataSource(bucket="pms-ml", key="datasets/churn.csv")
+        data_source = S3DataSource(bucket="pms-ml", key="datasets/images/")
+    """
+    bucket: str
+    key: str
+    endpoint_url: Optional[str] = None
+    access_key: Optional[str] = None
+    secret_key: Optional[str] = None
+    region: str = "us-east-1"
+
+    @property
+    def source_type(self) -> str:
+        return "s3"
+
+    async def load(self, **kwargs) -> bytes | List[bytes]:
+        import aioboto3
+        from app.core.config import settings as _s
+
+        endpoint = self.endpoint_url or _s.S3_ENDPOINT_URL
+        ak = self.access_key or _s.S3_ACCESS_KEY
+        sk = self.secret_key or _s.S3_SECRET_KEY
+
+        session = aioboto3.Session()
+        async with session.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=ak,
+            aws_secret_access_key=sk,
+            region_name=self.region,
+        ) as s3:
+            try:
+                resp = await s3.get_object(Bucket=self.bucket, Key=self.key)
+                return await resp["Body"].read()
+            except Exception:
+                pass
+            paginator = s3.get_paginator("list_objects_v2")
+            results: List[bytes] = []
+            async for page in paginator.paginate(Bucket=self.bucket, Prefix=self.key):
+                for obj in page.get("Contents", []):
+                    r = await s3.get_object(Bucket=self.bucket, Key=obj["Key"])
+                    results.append(await r["Body"].read())
+            return results
+
+    def describe(self) -> Dict:
+        return {"type": "s3", "bucket": self.bucket, "key": self.key}
+
+
+# ── HTTP / HTTPS URL ──────────────────────────────────────────────────────────
+
+@dataclass
+class URLDataSource(DataSource):
+    """
+    Download training data from any HTTP/HTTPS URL.
+
+    Supports basic auth, custom headers, and bearer tokens.
+
+        data_source = URLDataSource(url="https://example.com/data.csv")
+        data_source = URLDataSource(
+            url="https://api.example.com/export",
+            headers={"Authorization": "Bearer TOKEN"},
+        )
+    """
+    url: str
+    headers: Dict[str, str] = field(default_factory=dict)
+    auth: Optional[tuple] = None          # (username, password) for HTTP Basic Auth
+    timeout: int = 120
+
+    @property
+    def source_type(self) -> str:
+        return "url"
+
+    async def load(self, **kwargs) -> bytes:
+        import httpx
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+            resp = await client.get(self.url, headers=self.headers, auth=self.auth)
+            resp.raise_for_status()
+            return resp.content
+
+    def describe(self) -> Dict:
+        return {"type": "url", "url": self.url}
+
+
+# ── Uploaded file (API injection) ─────────────────────────────────────────────
+
+@dataclass
+class UploadedFileDataSource(DataSource):
+    """
+    Bytes are injected at training time via the ``/training/start-with-data``
+    endpoint. Use this when training data changes per run and cannot be
+    stored centrally.
+
+        data_source = UploadedFileDataSource()
+    """
+    _data: Optional[bytes] = field(default=None, repr=False)
+
+    @property
+    def source_type(self) -> str:
+        return "file"
+
+    def inject(self, data: bytes) -> None:
+        self._data = data
+
+    async def load(self, **kwargs) -> bytes:
+        data = kwargs.get("injected_data") or self._data
+        if data is None:
+            raise ValueError(
+                "No file data injected — use POST /training/start-with-data "
+                "to upload training data alongside the trigger."
+            )
+        return data
+
+    def describe(self) -> Dict:
+        return {"type": "file"}
+
+
+# ── Local filesystem ──────────────────────────────────────────────────────────
+
+@dataclass
+class LocalFileDataSource(DataSource):
+    """
+    Read a file (or all files in a directory) from the local filesystem /
+    a mounted Docker volume.
+
+        data_source = LocalFileDataSource(path="/data/train.csv")
+        data_source = LocalFileDataSource(path="/data/images/", glob="*.jpg")
+    """
+    path: str
+    glob: str = "*"                   # only used when path is a directory
+    encoding: Optional[str] = None    # set to "utf-8" to return str instead of bytes
+
+    @property
+    def source_type(self) -> str:
+        return "local_file"
+
+    async def load(self, **kwargs) -> bytes | str | List[bytes]:
+        import aiofiles
+        from pathlib import Path
+
+        p = Path(self.path)
+        if p.is_file():
+            mode = "r" if self.encoding else "rb"
+            async with aiofiles.open(p, mode, encoding=self.encoding) as f:
+                return await f.read()
+        if p.is_dir():
+            results: List[bytes] = []
+            for child in sorted(p.glob(self.glob)):
+                if child.is_file():
+                    async with aiofiles.open(child, "rb") as f:
+                        results.append(await f.read())
+            return results
+        raise FileNotFoundError(f"Path not found: {self.path}")
+
+    def describe(self) -> Dict:
+        return {"type": "local_file", "path": self.path}
+
+
+# ── In-memory (tests / notebooks) ────────────────────────────────────────────
+
+@dataclass
+class InMemoryDataSource(DataSource):
+    """
+    Pass data directly — useful for built-in datasets, tests, and notebooks.
+
+        data_source = InMemoryDataSource()   # preprocess() loads the dataset itself
+        data_source = InMemoryDataSource(data=my_dataframe)
+    """
+    data: Any = None
+
+    @property
+    def source_type(self) -> str:
+        return "memory"
+
+    async def load(self, **kwargs) -> Any:
+        return self.data
+
+    def describe(self) -> Dict:
+        return {"type": "memory"}
+
+
+# ── MongoDB ───────────────────────────────────────────────────────────────────
+
+@dataclass
+class MongoDBDataSource(DataSource):
+    """
+    Query a MongoDB collection and return results as a list of dicts.
+
+    Uses the PMS MongoDB connection by default (set uri=None). Specify a
+    different ``uri`` to connect to any other MongoDB instance.
+
+        data_source = MongoDBDataSource(
+            database="pms",
+            collection="leases",
+            query={"status": "active"},
+            projection={"tenant_id": 1, "rent_amount": 1, "_id": 0},
+            limit=50000,
+        )
+    """
+    database: str
+    collection: str
+    query: Dict = field(default_factory=dict)
+    projection: Optional[Dict] = None
+    sort: Optional[List] = None       # e.g. [("created_at", -1)]
+    limit: int = 0                    # 0 = no limit
+    uri: Optional[str] = None         # defaults to MONGODB_URL from settings
+
+    @property
+    def source_type(self) -> str:
+        return "mongodb"
+
+    async def load(self, **kwargs) -> List[Dict]:
+        from motor.motor_asyncio import AsyncIOMotorClient
+        from app.core.config import settings as _s
+
+        client = AsyncIOMotorClient(self.uri or _s.MONGODB_URL)
+        try:
+            coll = client[self.database][self.collection]
+            cursor = coll.find(self.query, self.projection or {})
+            if self.sort:
+                cursor = cursor.sort(self.sort)
+            if self.limit:
+                cursor = cursor.limit(self.limit)
+            return await cursor.to_list(length=self.limit or None)
+        finally:
+            client.close()
+
+    def describe(self) -> Dict:
+        return {
+            "type": "mongodb",
+            "database": self.database,
+            "collection": self.collection,
+            "query": self.query,
+            "limit": self.limit,
+        }
+
+
+# ── PostgreSQL ────────────────────────────────────────────────────────────────
+
+@dataclass
+class PostgreSQLDataSource(DataSource):
+    """
+    Execute a SQL query against a PostgreSQL database and return rows as
+    a list of dicts.
+
+        data_source = PostgreSQLDataSource(
+            dsn="postgresql://user:pass@host:5432/dbname",
+            query="SELECT * FROM invoices WHERE status = 'overdue'",
+        )
+    """
+    dsn: str
+    query: str
+    params: Optional[tuple] = None    # positional query parameters
+
+    @property
+    def source_type(self) -> str:
+        return "postgresql"
+
+    async def load(self, **kwargs) -> List[Dict]:
+        try:
+            import asyncpg
+        except ImportError:
+            raise ImportError("asyncpg is required for PostgreSQLDataSource: pip install asyncpg")
+
+        conn = await asyncpg.connect(self.dsn)
+        try:
+            rows = await conn.fetch(self.query, *(self.params or ()))
+            return [dict(r) for r in rows]
+        finally:
+            await conn.close()
+
+    def describe(self) -> Dict:
+        return {"type": "postgresql", "query": self.query[:120]}
+
+
+# ── Generic SQL (SQLAlchemy) ──────────────────────────────────────────────────
+
+@dataclass
+class SQLDataSource(DataSource):
+    """
+    Execute a SQL query via SQLAlchemy — works with any RDBMS
+    (MySQL, SQLite, MSSQL, Oracle, etc.).
+
+        data_source = SQLDataSource(
+            connection_string="mysql+pymysql://user:pass@host/dbname",
+            query="SELECT * FROM payments WHERE paid_at >= '2024-01-01'",
+        )
+    """
+    connection_string: str
+    query: str
+    chunksize: Optional[int] = None   # if set, returns list of DataFrames
+
+    @property
+    def source_type(self) -> str:
+        return "sql"
+
+    async def load(self, **kwargs) -> Any:
+        import asyncio
+        try:
+            import pandas as pd
+            from sqlalchemy import create_engine, text
+        except ImportError:
+            raise ImportError("pandas and sqlalchemy are required for SQLDataSource")
+
+        def _read():
+            engine = create_engine(self.connection_string)
+            with engine.connect() as conn:
+                if self.chunksize:
+                    return pd.read_sql(text(self.query), conn, chunksize=self.chunksize)
+                return pd.read_sql(text(self.query), conn)
+
+        return await asyncio.get_event_loop().run_in_executor(None, _read)
+
+    def describe(self) -> Dict:
+        return {"type": "sql", "query": self.query[:120]}
+
+
+# ── Hugging Face Hub ──────────────────────────────────────────────────────────
+
+@dataclass
+class HuggingFaceDataSource(DataSource):
+    """
+    Load a dataset from the Hugging Face Hub (or a local HF dataset cache).
+
+        data_source = HuggingFaceDataSource(
+            dataset_name="imdb",
+            split="train",
+        )
+        data_source = HuggingFaceDataSource(
+            dataset_name="squad",
+            split="train[:10%]",
+            config_name="plain_text",
+        )
+    """
+    dataset_name: str
+    split: str = "train"
+    config_name: Optional[str] = None
+    token: Optional[str] = None       # HF API token for private datasets
+    cache_dir: Optional[str] = None
+
+    @property
+    def source_type(self) -> str:
+        return "huggingface"
+
+    async def load(self, **kwargs) -> Any:
+        import asyncio
+        try:
+            from datasets import load_dataset
+        except ImportError:
+            raise ImportError("datasets is required for HuggingFaceDataSource: pip install datasets")
+
+        def _load():
+            return load_dataset(
+                self.dataset_name,
+                self.config_name,
+                split=self.split,
+                token=self.token,
+                cache_dir=self.cache_dir,
+            )
+
+        return await asyncio.get_event_loop().run_in_executor(None, _load)
+
+    def describe(self) -> Dict:
+        return {
+            "type": "huggingface",
+            "dataset": self.dataset_name,
+            "split": self.split,
+        }
+
+
+# ── Kafka ─────────────────────────────────────────────────────────────────────
+
+@dataclass
+class KafkaDataSource(DataSource):
+    """
+    Consume up to ``max_messages`` messages from a Kafka topic and return
+    them as a list of decoded values.
+
+        data_source = KafkaDataSource(
+            bootstrap_servers="kafka:9092",
+            topic="pms.payments",
+            group_id="ml-training-consumer",
+            max_messages=100000,
+        )
+    """
+    bootstrap_servers: str
+    topic: str
+    group_id: str = "pms-ml-training"
+    max_messages: int = 10000
+    timeout_seconds: float = 30.0
+    value_deserializer: str = "json"   # "json" | "bytes" | "utf8"
+    from_beginning: bool = True
+
+    @property
+    def source_type(self) -> str:
+        return "kafka"
+
+    async def load(self, **kwargs) -> List[Any]:
+        import asyncio
+        try:
+            from aiokafka import AIOKafkaConsumer
+        except ImportError:
+            raise ImportError("aiokafka is required for KafkaDataSource: pip install aiokafka")
+        import json
+
+        def _deserialize(v: bytes) -> Any:
+            if self.value_deserializer == "json":
+                return json.loads(v)
+            if self.value_deserializer == "utf8":
+                return v.decode("utf-8")
+            return v
+
+        consumer = AIOKafkaConsumer(
+            self.topic,
+            bootstrap_servers=self.bootstrap_servers,
+            group_id=self.group_id,
+            auto_offset_reset="earliest" if self.from_beginning else "latest",
+            enable_auto_commit=False,
+        )
+        await consumer.start()
+        messages: List[Any] = []
+        try:
+            async for msg in consumer:
+                messages.append(_deserialize(msg.value))
+                if len(messages) >= self.max_messages:
+                    break
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            await consumer.stop()
+        return messages
+
+    def describe(self) -> Dict:
+        return {
+            "type": "kafka",
+            "bootstrap_servers": self.bootstrap_servers,
+            "topic": self.topic,
+            "max_messages": self.max_messages,
+        }
+
+
+# ── Google Cloud Storage ──────────────────────────────────────────────────────
+
+@dataclass
+class GCSDataSource(DataSource):
+    """
+    Download a blob or all blobs under a prefix from Google Cloud Storage.
+
+    Authentication: set ``GOOGLE_APPLICATION_CREDENTIALS`` env var to a
+    service-account JSON key path, or pass ``credentials_json`` directly.
+
+        data_source = GCSDataSource(bucket="my-gcs-bucket", blob="data/train.csv")
+        data_source = GCSDataSource(bucket="my-gcs-bucket", blob="data/images/")
+    """
+    bucket: str
+    blob: str                             # single blob name or prefix
+    credentials_json: Optional[str] = None   # path to SA key file
+
+    @property
+    def source_type(self) -> str:
+        return "gcs"
+
+    async def load(self, **kwargs) -> bytes | List[bytes]:
+        import asyncio
+        try:
+            from google.cloud import storage
+            from google.oauth2 import service_account
+        except ImportError:
+            raise ImportError(
+                "google-cloud-storage is required for GCSDataSource: "
+                "pip install google-cloud-storage"
+            )
+
+        def _download():
+            if self.credentials_json:
+                creds = service_account.Credentials.from_service_account_file(self.credentials_json)
+                client = storage.Client(credentials=creds)
+            else:
+                client = storage.Client()
+
+            bucket = client.bucket(self.bucket)
+            # Try single blob
+            b = bucket.blob(self.blob)
+            if b.exists():
+                return b.download_as_bytes()
+            # Prefix listing
+            results = []
+            for blob in client.list_blobs(self.bucket, prefix=self.blob):
+                results.append(blob.download_as_bytes())
+            return results
+
+        return await asyncio.get_event_loop().run_in_executor(None, _download)
+
+    def describe(self) -> Dict:
+        return {"type": "gcs", "bucket": self.bucket, "blob": self.blob}
+
+
+# ── Azure Blob Storage ────────────────────────────────────────────────────────
+
+@dataclass
+class AzureBlobDataSource(DataSource):
+    """
+    Download a blob or all blobs with a given prefix from Azure Blob Storage.
+
+        data_source = AzureBlobDataSource(
+            connection_string="DefaultEndpointsProtocol=https;...",
+            container="training-data",
+            blob="churn/train.csv",
+        )
+    """
+    container: str
+    blob: str                             # blob name or prefix
+    connection_string: Optional[str] = None
+    account_url: Optional[str] = None     # alternative to connection_string
+    credential: Optional[str] = None      # SAS token or account key
+
+    @property
+    def source_type(self) -> str:
+        return "azure_blob"
+
+    async def load(self, **kwargs) -> bytes | List[bytes]:
+        try:
+            from azure.storage.blob.aio import BlobServiceClient
+        except ImportError:
+            raise ImportError(
+                "azure-storage-blob is required for AzureBlobDataSource: "
+                "pip install azure-storage-blob"
+            )
+
+        if self.connection_string:
+            client = BlobServiceClient.from_connection_string(self.connection_string)
+        else:
+            client = BlobServiceClient(account_url=self.account_url, credential=self.credential)
+
+        async with client:
+            container_client = client.get_container_client(self.container)
+            # Try single blob
+            try:
+                blob_client = container_client.get_blob_client(self.blob)
+                stream = await blob_client.download_blob()
+                return await stream.readall()
+            except Exception:
+                pass
+            # Prefix listing
+            results: List[bytes] = []
+            async for item in container_client.list_blobs(name_starts_with=self.blob):
+                bc = container_client.get_blob_client(item.name)
+                stream = await bc.download_blob()
+                results.append(await stream.readall())
+            return results
+
+    def describe(self) -> Dict:
+        return {"type": "azure_blob", "container": self.container, "blob": self.blob}
+
+
+# ── FTP / SFTP ────────────────────────────────────────────────────────────────
+
+@dataclass
+class FTPDataSource(DataSource):
+    """
+    Download a file from an FTP or SFTP server.
+
+    Set ``use_sftp=True`` for SFTP (requires paramiko).
+
+        data_source = FTPDataSource(
+            host="ftp.example.com",
+            path="/data/train.csv",
+            username="user",
+            password="pass",
+        )
+        data_source = FTPDataSource(
+            host="sftp.example.com",
+            path="/data/train.csv",
+            username="user",
+            private_key_path="/keys/id_rsa",
+            use_sftp=True,
+        )
+    """
+    host: str
+    path: str
+    username: str = "anonymous"
+    password: str = ""
+    port: Optional[int] = None
+    use_sftp: bool = False
+    private_key_path: Optional[str] = None
+
+    @property
+    def source_type(self) -> str:
+        return "sftp" if self.use_sftp else "ftp"
+
+    async def load(self, **kwargs) -> bytes:
+        import asyncio
+        import io
+
+        def _download():
+            buf = io.BytesIO()
+            if self.use_sftp:
+                try:
+                    import paramiko
+                except ImportError:
+                    raise ImportError("paramiko is required for SFTP: pip install paramiko")
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                connect_kwargs: Dict = {
+                    "hostname": self.host,
+                    "username": self.username,
+                    "port": self.port or 22,
+                }
+                if self.private_key_path:
+                    connect_kwargs["key_filename"] = self.private_key_path
+                else:
+                    connect_kwargs["password"] = self.password
+                ssh.connect(**connect_kwargs)
+                sftp = ssh.open_sftp()
+                sftp.getfo(self.path, buf)
+                sftp.close()
+                ssh.close()
+            else:
+                from ftplib import FTP
+                ftp = FTP()
+                ftp.connect(self.host, self.port or 21)
+                ftp.login(self.username, self.password)
+                ftp.retrbinary(f"RETR {self.path}", buf.write)
+                ftp.quit()
+            buf.seek(0)
+            return buf.read()
+
+        return await asyncio.get_event_loop().run_in_executor(None, _download)
+
+    def describe(self) -> Dict:
+        return {"type": self.source_type, "host": self.host, "path": self.path}
+
+
+# ── Paginated REST API ────────────────────────────────────────────────────────
+
+@dataclass
+class PaginatedAPIDataSource(DataSource):
+    """
+    Fetch all pages from a paginated REST API and combine results.
+
+    Supports two pagination styles:
+      - page/per_page  (``pagination="page"``)
+      - cursor/next    (``pagination="cursor"``, reads ``next_key`` from response)
+
+        data_source = PaginatedAPIDataSource(
+            url="https://api.example.com/records",
+            headers={"Authorization": "Bearer TOKEN"},
+            data_key="results",       # JSON key that holds the records list
+            pagination="page",
+            page_size=200,
+        )
+    """
+    url: str
+    headers: Dict[str, str] = field(default_factory=dict)
+    params: Dict[str, Any] = field(default_factory=dict)
+    data_key: str = "results"              # JSON key containing records
+    pagination: str = "page"               # "page" | "cursor"
+    page_param: str = "page"
+    page_size_param: str = "per_page"
+    page_size: int = 100
+    cursor_param: str = "cursor"
+    next_key: str = "next_cursor"          # response key holding the next cursor
+    max_pages: int = 1000
+    timeout: int = 30
+
+    @property
+    def source_type(self) -> str:
+        return "paginated_api"
+
+    async def load(self, **kwargs) -> List[Any]:
+        import httpx
+        all_records: List[Any] = []
+
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+            if self.pagination == "page":
+                page = 1
+                while page <= self.max_pages:
+                    p = {**self.params, self.page_param: page, self.page_size_param: self.page_size}
+                    resp = await client.get(self.url, headers=self.headers, params=p)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    records = data.get(self.data_key, data if isinstance(data, list) else [])
+                    if not records:
+                        break
+                    all_records.extend(records)
+                    page += 1
+            else:  # cursor
+                cursor: Optional[str] = None
+                pages = 0
+                while pages < self.max_pages:
+                    p = {**self.params, self.page_size_param: self.page_size}
+                    if cursor:
+                        p[self.cursor_param] = cursor
+                    resp = await client.get(self.url, headers=self.headers, params=p)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    records = data.get(self.data_key, data if isinstance(data, list) else [])
+                    all_records.extend(records)
+                    cursor = data.get(self.next_key)
+                    pages += 1
+                    if not cursor or not records:
+                        break
+
+        return all_records
+
+    def describe(self) -> Dict:
+        return {"type": "paginated_api", "url": self.url, "pagination": self.pagination}
+
+
+# ── Redis ─────────────────────────────────────────────────────────────────────
+
+@dataclass
+class RedisDataSource(DataSource):
+    """
+    Read data from Redis — supports list, set, sorted-set, and key-pattern scans.
+
+    ``data_type``:
+      - ``"list"``        — LRANGE key 0 -1
+      - ``"set"``         — SMEMBERS key
+      - ``"zset"``        — ZRANGE key 0 -1 WITHSCORES
+      - ``"pattern"``     — SCAN for all keys matching key as glob, GET each
+
+        data_source = RedisDataSource(key="pms:training:events", data_type="list")
+        data_source = RedisDataSource(key="pms:ml:*", data_type="pattern")
+    """
+    key: str
+    data_type: str = "list"          # list | set | zset | pattern
+    uri: Optional[str] = None        # defaults to REDIS_URL from settings
+    decode: bool = True              # decode bytes to str
+
+    @property
+    def source_type(self) -> str:
+        return "redis"
+
+    async def load(self, **kwargs) -> List[Any]:
+        import json
+        try:
+            import redis.asyncio as aioredis
+        except ImportError:
+            raise ImportError("redis[asyncio] is required for RedisDataSource")
+
+        from app.core.config import settings as _s
+        r = aioredis.from_url(self.uri or _s.REDIS_URL, decode_responses=self.decode)
+
+        try:
+            if self.data_type == "list":
+                raw = await r.lrange(self.key, 0, -1)
+            elif self.data_type == "set":
+                raw = list(await r.smembers(self.key))
+            elif self.data_type == "zset":
+                raw = await r.zrange(self.key, 0, -1, withscores=True)
+            elif self.data_type == "pattern":
+                keys = [k async for k in r.scan_iter(self.key)]
+                raw = []
+                for k in keys:
+                    v = await r.get(k)
+                    if v is not None:
+                        raw.append(v)
+            else:
+                raise ValueError(f"Unknown data_type '{self.data_type}'")
+        finally:
+            await r.aclose()
+
+        # Attempt JSON decode of each item
+        results: List[Any] = []
+        for item in raw:
+            try:
+                results.append(json.loads(item) if isinstance(item, str) else item)
+            except (json.JSONDecodeError, TypeError):
+                results.append(item)
+        return results
+
+    def describe(self) -> Dict:
+        return {"type": "redis", "key": self.key, "data_type": self.data_type}

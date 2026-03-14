@@ -1,0 +1,26 @@
+from fastapi import APIRouter
+from app.api.v1 import trainers, training, inference, evaluation, models, config, feedback, sse, security, monitoring
+from app.api.v1 import auth, api_keys, ab_tests, alert_rules, batch, audit, experiments, explain, users, wallet, admin
+
+api_router = APIRouter(prefix="/api/v1")
+api_router.include_router(trainers.router)
+api_router.include_router(training.router)
+api_router.include_router(inference.router)
+api_router.include_router(evaluation.router)
+api_router.include_router(models.router)
+api_router.include_router(config.router)
+api_router.include_router(feedback.router)
+api_router.include_router(sse.router)
+api_router.include_router(security.router)
+api_router.include_router(monitoring.router)
+api_router.include_router(auth.router)
+api_router.include_router(api_keys.router)
+api_router.include_router(ab_tests.router)
+api_router.include_router(alert_rules.router)
+api_router.include_router(batch.router)
+api_router.include_router(audit.router)
+api_router.include_router(experiments.router)
+api_router.include_router(explain.router)
+api_router.include_router(users.router)
+api_router.include_router(wallet.router)
+api_router.include_router(admin.router)

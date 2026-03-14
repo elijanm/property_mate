@@ -1,0 +1,79 @@
+{
+    "name": "water-meter-ocr-cloud",
+    "version": "2.0.0",
+    "description": "Water meter OCR via Roboflow serverless inference — no local model required.",
+    "tags": {
+        "domain": "utilities",
+        "type": "ocr",
+        "meter": "water",
+        "backend": "roboflow"
+    },
+    "model_file": "config.json",
+    "entry_point": "inference.py",
+    "set_as_default": true,
+    "category": {
+        "key": "ocr",
+        "label": "OCR & Vision"
+    },
+    "input_schema": {
+        "image_b64": {
+            "type": "image",
+            "label": "Meter Image",
+            "required": true,
+            "description": "Base64 JPEG/PNG of the water meter. Auto-set when using file upload."
+        },
+        "reference": {
+            "type": "string",
+            "label": "Meter Reference ID",
+            "required": false,
+            "description": "Identifier stored with the image (e.g. MTR-001). Defaults to 'unknown'."
+        },
+        "confidence_threshold": {
+            "type": "number",
+            "label": "Confidence Threshold",
+            "required": false,
+            "default": 0.5,
+            "description": "Minimum detection confidence (0–1). Lower = more detections, possibly noisier."
+        },
+        "api_key": {
+            "type": "string",
+            "label": "Roboflow API Key",
+            "required": false,
+            "description": "Overrides the ROBOFLOW_API_KEY env var for this request."
+        }
+    },
+    "output_schema": {
+        "reading": {
+            "type": "text",
+            "label": "Meter Reading",
+            "editable": true,
+            "description": "Detected digit sequence read left-to-right (e.g. '04823')"
+        },
+        "confidence_avg": {
+            "type": "number",
+            "label": "Avg Confidence",
+            "format": "percent",
+            "description": "Mean confidence across all detected digits"
+        },
+        "digit_count": {
+            "type": "number",
+            "label": "Digits Detected",
+            "description": "Number of digit bounding boxes found"
+        },
+        "original_url": {
+            "type": "image_url",
+            "label": "Original Image",
+            "description": "Presigned S3 URL to the raw uploaded image"
+        },
+        "annotated_url": {
+            "type": "image_url",
+            "label": "Annotated Image",
+            "description": "Presigned S3 URL to the image with bounding box overlays"
+        },
+        "detections": {
+            "type": "detections",
+            "label": "Detections",
+            "description": "Array of {bbox, class_name, score} for each detected digit"
+        }
+    }
+}

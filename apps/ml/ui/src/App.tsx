@@ -1,0 +1,412 @@
+import { useState, useEffect, useCallback } from 'react'
+import { trackPageView } from './utils/analytics'
+import { trainersApi } from './api/trainers'
+import { authApi } from './api/auth'
+import type { ModelDeployment } from './types/trainer'
+import ModelGrid from './components/ModelGrid'
+import ModelWorkspace from './components/ModelWorkspace'
+import LiveFeed from './components/LiveFeed'
+import JobsPanel from './components/JobsPanel'
+import TrainersPage from './components/TrainersPage'
+import DeployPage from './components/DeployPage'
+import TrainingPage from './components/TrainingPage'
+import ConfigPage from './components/ConfigPage'
+import InferenceLogsPage from './components/InferenceLogsPage'
+import MonitoringPage from './components/MonitoringPage'
+import SecurityPage from './components/SecurityPage'
+import ABTestPage from './components/ABTestPage'
+import AlertRulesPage from './components/AlertRulesPage'
+import ApiKeysPage from './components/ApiKeysPage'
+import BatchPage from './components/BatchPage'
+import AuditLogPage from './components/AuditLogPage'
+import ExperimentsPage from './components/ExperimentsPage'
+import UsersPage from './components/UsersPage'
+import WalletPage from './pages/WalletPage'
+import AdminAnalyticsPage from './pages/AdminAnalyticsPage'
+import { walletApi } from './api/wallet'
+import type { Wallet as WalletData } from './types/wallet'
+import { useAuth } from './context/AuthContext'
+import LoginPage from './pages/LoginPage'
+import RegisterPage from './pages/RegisterPage'
+import VerifyEmailPage from './pages/VerifyEmailPage'
+import LandingPage from './pages/LandingPage'
+import GettingStartedPage from './pages/GettingStartedPage'
+import ApiDocsPage from './pages/ApiDocsPage'
+import PrivacyPolicyPage from './pages/PrivacyPolicyPage'
+import TermsPage from './pages/TermsPage'
+import CookieConsent from './components/CookieConsent'
+import {
+  Brain, RefreshCw, Cpu, LayoutGrid, BookOpen,
+  Upload, Play, Settings, List, Activity, Shield,
+  FlaskConical, Bell, Key, Layers, ClipboardList, GitCompare,
+  LogOut, User, Loader2, Users, Wallet, BarChart2,
+} from 'lucide-react'
+import Logo from './components/Logo'
+import clsx from 'clsx'
+
+type Page = 'models' | 'trainers' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics'
+
+const NAV: { id: Page; label: string; icon: React.ReactNode }[] = [
+  { id: 'models',      label: 'Models',       icon: <LayoutGrid size={14} /> },
+  { id: 'trainers',    label: 'Trainers',     icon: <Brain size={14} /> },
+  { id: 'deploy',      label: 'Deploy',       icon: <Upload size={14} /> },
+  { id: 'training',    label: 'Training',     icon: <Play size={14} /> },
+  { id: 'jobs',        label: 'Jobs',         icon: <Cpu size={14} /> },
+  { id: 'logs',        label: 'Inferences',   icon: <List size={14} /> },
+  { id: 'monitoring',  label: 'Monitoring',   icon: <Activity size={14} /> },
+  { id: 'security',    label: 'Security',     icon: <Shield size={14} /> },
+  { id: 'ab-tests',    label: 'A/B Tests',    icon: <FlaskConical size={14} /> },
+  { id: 'alerts',      label: 'Alert Rules',  icon: <Bell size={14} /> },
+  { id: 'api-keys',    label: 'API Keys',     icon: <Key size={14} /> },
+  { id: 'batch',       label: 'Batch',        icon: <Layers size={14} /> },
+  { id: 'experiments', label: 'Experiments',  icon: <GitCompare size={14} /> },
+  { id: 'audit',       label: 'Audit Log',    icon: <ClipboardList size={14} /> },
+  { id: 'users',       label: 'Users',        icon: <Users size={14} /> },
+  { id: 'analytics',   label: 'Analytics',    icon: <BarChart2 size={14} /> },
+  { id: 'wallet',      label: 'Wallet',       icon: <Wallet size={14} /> },
+  { id: 'config',      label: 'Config',       icon: <Settings size={14} /> },
+]
+
+const PAGE_TITLE: Record<Page, string> = {
+  models:      'Model Deployments',
+  trainers:    'Trainer Plugins',
+  deploy:      'Deploy Model',
+  training:    'Training',
+  jobs:        'All Jobs',
+  logs:        'Inference Logs',
+  config:      'Training Config',
+  monitoring:  'Model Monitoring',
+  security:    'Security',
+  'ab-tests':  'A/B Tests',
+  alerts:      'Alert Rules',
+  'api-keys':  'API Keys',
+  batch:       'Batch Inference',
+  experiments: 'Experiments',
+  audit:       'Audit Log',
+  users:       'User Management',
+  analytics:   'Platform Analytics',
+  wallet:      'Wallet',
+}
+
+export default function App() {
+  const { user, logout, loading: authLoading, pendingEmail, clearPending, login } = useAuth()
+  const [authPage, setAuthPage] = useState<'login' | 'register' | 'landing' | 'getting-started' | 'api-docs' | 'privacy' | 'terms'>('landing')
+  const [linkVerifying, setLinkVerifying] = useState(false)
+  const [linkEmail, setLinkEmail] = useState('')
+
+  // Handle ?token= query param for link-click activation
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const vtoken = params.get('token') ?? params.get('verify_token')
+    if (!vtoken) return
+    setLinkVerifying(true)
+    authApi.verifyToken(vtoken)
+      .then(res => { setLinkEmail(res.email); setLinkVerifying(false) })
+      .catch(() => setLinkVerifying(false))
+    // Clean URL
+    window.history.replaceState({}, '', window.location.pathname)
+  }, [])
+  const [deployments, setDeployments] = useState<ModelDeployment[]>([])
+  const [selected, setSelected] = useState<ModelDeployment | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [page, setPage] = useState<Page>('models')
+  const [wallet, setWallet] = useState<WalletData | null>(null)
+
+  const refreshWallet = useCallback(() => {
+    walletApi.get().then(setWallet).catch(() => {})
+  }, [])
+
+  const load = async () => {
+    setRefreshing(true)
+    try {
+      const data = await trainersApi.listDeployments()
+      setDeployments(data)
+    } catch {}
+    finally { setRefreshing(false); setLoading(false) }
+  }
+
+  useEffect(() => { load() }, [])
+  useEffect(() => { if (user) refreshWallet() }, [user, refreshWallet])
+
+  const handleDeleteDeployment = async (id: string) => {
+    await trainersApi.deleteDeployment(id)
+    setDeployments(prev => prev.filter(d => d.id !== id))
+    if (selected?.id === id) setSelected(null)
+  }
+
+  const navigate = (p: Page) => {
+    setPage(p)
+    setSelected(null)
+    if (p === 'wallet') refreshWallet()
+    trackPageView(`/${p}`)
+  }
+
+  const handleTrainingCompleted = async (trainerName: string) => {
+    setRefreshing(true)
+    try {
+      const data = await trainersApi.listDeployments()
+      setDeployments(data)
+      const newDep = data.find(d => d.trainer_name === trainerName && d.is_default)
+        ?? data.find(d => d.trainer_name === trainerName)
+      if (newDep) {
+        setPage('models')
+        setSelected(newDep)
+      }
+    } catch {}
+    finally { setRefreshing(false) }
+  }
+
+  const title = selected ? selected.mlflow_model_name : PAGE_TITLE[page]
+  const subtitle = selected
+    ? `Trainer: ${selected.trainer_name}`
+    : page === 'models'
+      ? `${deployments.length} deployed model${deployments.length !== 1 ? 's' : ''}`
+      : ''
+
+  if (authLoading || linkVerifying) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+        <Loader2 size={24} className="animate-spin text-gray-600" />
+      </div>
+    )
+  }
+
+  // Link-click activated — show "all done, sign in"
+  if (linkEmail) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 max-w-sm w-full text-center space-y-4">
+          <div className="w-14 h-14 rounded-full bg-green-900/30 border border-green-700/40 flex items-center justify-center mx-auto">
+            <span className="text-2xl">✓</span>
+          </div>
+          <div>
+            <div className="text-white font-semibold text-lg">Account activated!</div>
+            <div className="text-sm text-gray-500 mt-1">{linkEmail}</div>
+          </div>
+          <button
+            onClick={() => { setLinkEmail(''); setAuthPage('login') }}
+            className="w-full bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium rounded-lg py-2.5 transition-colors"
+          >
+            Sign in
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (!user) {
+    if (pendingEmail) {
+      return (
+        <VerifyEmailPage
+          email={pendingEmail}
+          onVerified={() => { clearPending(); setAuthPage('login') }}
+          onBack={() => { clearPending(); setAuthPage('login') }}
+        />
+      )
+    }
+    if (authPage === 'getting-started') {
+      return (
+        <GettingStartedPage
+          onBack={() => setAuthPage('landing')}
+          onSignIn={() => setAuthPage('login')}
+          onApiDocs={() => setAuthPage('api-docs')}
+          onPrivacy={() => setAuthPage('privacy')}
+          onTerms={() => setAuthPage('terms')}
+        />
+      )
+    }
+    if (authPage === 'api-docs') {
+      return (
+        <ApiDocsPage
+          onBack={() => setAuthPage('landing')}
+          onSignIn={() => setAuthPage('login')}
+          onGettingStarted={() => setAuthPage('getting-started')}
+          onPrivacy={() => setAuthPage('privacy')}
+          onTerms={() => setAuthPage('terms')}
+        />
+      )
+    }
+    if (authPage === 'privacy') {
+      return <PrivacyPolicyPage onBack={() => setAuthPage('landing')} onTerms={() => setAuthPage('terms')} />
+    }
+    if (authPage === 'terms') {
+      return <TermsPage onBack={() => setAuthPage('landing')} onPrivacy={() => setAuthPage('privacy')} />
+    }
+    if (authPage === 'landing') {
+      return (
+        <>
+          <LandingPage
+            onSignIn={() => setAuthPage('login')}
+            onGetStarted={() => setAuthPage('register')}
+            onApiDocs={() => setAuthPage('api-docs')}
+            onGettingStarted={() => setAuthPage('getting-started')}
+            onPrivacy={() => setAuthPage('privacy')}
+            onTerms={() => setAuthPage('terms')}
+          />
+          <CookieConsent onViewPolicy={() => setAuthPage('privacy')} />
+        </>
+      )
+    }
+    return authPage === 'login'
+      ? <LoginPage onGoRegister={() => setAuthPage('register')} />
+      : <RegisterPage onGoLogin={() => setAuthPage('login')} />
+  }
+
+  return (
+    <div className="flex h-screen overflow-hidden bg-gray-950">
+      {/* Sidebar */}
+      <aside className="w-52 flex-shrink-0 border-r border-gray-800 flex flex-col">
+        {/* Logo */}
+        <div className="px-4 py-4 border-b border-gray-800">
+          <Logo size="sm" tld={true} />
+        </div>
+
+        {/* Nav */}
+        <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
+          {NAV.filter(item => !['users', 'audit', 'security', 'config', 'analytics'].includes(item.id) || user?.role === 'admin').map(item => (
+            <button key={item.id} onClick={() => navigate(item.id)}
+              className={clsx('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors',
+                page === item.id && !selected ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200'
+              )}>
+              {item.icon} {item.label}
+            </button>
+          ))}
+        </nav>
+
+        {/* Live feed */}
+        <div className="border-t border-gray-800 h-56 overflow-hidden flex-shrink-0">
+          <LiveFeed trainerFilter={selected?.trainer_name} />
+        </div>
+
+        {/* Footer */}
+        <div className="px-4 py-3 border-t border-gray-800 space-y-2 flex-shrink-0">
+          {/* Wallet balance */}
+          {wallet && (
+            <button onClick={() => navigate('wallet')}
+              className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-gray-900 hover:bg-gray-800 border border-gray-800 hover:border-brand-700 transition-colors group mb-1">
+              <div className="flex items-center gap-1.5">
+                <Wallet size={11} className="text-gray-500 group-hover:text-brand-400 transition-colors" />
+                <span className="text-[11px] text-gray-400 group-hover:text-gray-200 transition-colors">Wallet</span>
+              </div>
+              <div className="text-right">
+                <div className="text-[11px] font-semibold text-white">${wallet.balance.toFixed(2)} USD</div>
+                {wallet.reserved > 0 && (
+                  <div className="text-[9px] text-amber-500">${wallet.reserved.toFixed(2)} held</div>
+                )}
+              </div>
+            </button>
+          )}
+          {/* User info */}
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-6 h-6 rounded-full bg-brand-700 flex items-center justify-center flex-shrink-0">
+              <User size={11} className="text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-[11px] text-gray-300 truncate">{user.email}</div>
+              <div className="text-[10px] text-gray-600 capitalize">{user.role}</div>
+            </div>
+            <button onClick={logout} title="Sign out" className="text-gray-600 hover:text-red-400 transition-colors">
+              <LogOut size={12} />
+            </button>
+          </div>
+          <a href="/plugin-guide.html" target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-1.5 text-[11px] text-gray-500 hover:text-brand-400 transition-colors">
+            <BookOpen size={11} /> Plugin Developer Guide
+          </a>
+          <div className="flex items-center gap-1.5 text-[10px] text-gray-700">
+            <Cpu size={10} /> PMS ML Service · port 8030
+          </div>
+        </div>
+      </aside>
+
+      {/* Main */}
+      <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {/* Top bar */}
+        <header className="flex items-center justify-between px-6 py-4 border-b border-gray-800 bg-gray-950/80 backdrop-blur sticky top-0 z-10">
+          <div className="flex items-center gap-3">
+            {selected && (
+              <button onClick={() => setSelected(null)} className="text-gray-500 hover:text-gray-300 text-xs flex items-center gap-1">
+                Models <span className="text-gray-700">›</span>
+              </button>
+            )}
+            <div>
+              <h1 className="text-base font-bold text-white">{title}</h1>
+              {subtitle && <p className="text-xs text-gray-600 mt-0.5">{subtitle}</p>}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Wallet chip */}
+            {wallet && (
+              <button onClick={() => navigate('wallet')}
+                className={clsx(
+                  'flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors',
+                  page === 'wallet'
+                    ? 'bg-brand-900/40 border-brand-700 text-brand-300'
+                    : 'bg-gray-900 border-gray-700 text-gray-300 hover:border-brand-700 hover:text-brand-300'
+                )}>
+                <Wallet size={12} />
+                ${wallet.balance.toFixed(2)} USD
+                {wallet.reserved > 0 && (
+                  <span className="text-[10px] text-amber-500 font-normal">·${wallet.reserved.toFixed(2)} held</span>
+                )}
+              </button>
+            )}
+            {page === 'models' && !selected && (
+              <button onClick={load} disabled={refreshing}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 bg-gray-900 hover:bg-gray-800 border border-gray-700 rounded-lg transition-colors disabled:opacity-40">
+                <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} /> Refresh
+              </button>
+            )}
+          </div>
+        </header>
+
+        {/* Beta banner */}
+        <div className="flex items-center gap-2.5 px-6 py-2 bg-amber-950/40 border-b border-amber-800/30 flex-shrink-0">
+          <span className="text-[10px] font-bold text-amber-500 bg-amber-900/50 border border-amber-700/40 rounded px-1.5 py-0.5 flex-shrink-0">BETA</span>
+          <p className="text-[11px] text-amber-200/50 flex-1">
+            You're on an early beta — some features may be unstable.{' '}
+            <a href="mailto:support@mldock.io?subject=MLDock%20Beta%20Report"
+              className="text-amber-400/80 hover:text-amber-300 underline underline-offset-2 transition-colors">
+              Report an issue
+            </a>
+          </p>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto">
+          {selected ? (
+            <ModelWorkspace deployment={selected} onClose={() => setSelected(null)} />
+          ) : (
+            <div className="p-6">
+              {page === 'models' && (
+                <ModelGrid deployments={deployments} onSelect={setSelected} onDelete={handleDeleteDeployment} loading={loading} />
+              )}
+              {page === 'trainers' && (
+                <TrainersPage onStartTraining={() => { navigate('training') }} />
+              )}
+              {page === 'deploy' && (
+                <DeployPage onJobCreated={() => navigate('jobs')} />
+              )}
+              {page === 'training' && <TrainingPage onJobCompleted={handleTrainingCompleted} />}
+              {page === 'jobs' && <JobsPanel />}
+              {page === 'logs' && <InferenceLogsPage />}
+              {page === 'monitoring' && <MonitoringPage />}
+              {page === 'security' && <SecurityPage />}
+              {page === 'config' && <ConfigPage />}
+              {page === 'ab-tests' && <ABTestPage />}
+              {page === 'alerts' && <AlertRulesPage />}
+              {page === 'api-keys' && <ApiKeysPage />}
+              {page === 'batch' && <BatchPage />}
+              {page === 'experiments' && <ExperimentsPage />}
+              {page === 'audit' && <AuditLogPage />}
+              {page === 'users' && <UsersPage />}
+              {page === 'analytics' && <AdminAnalyticsPage />}
+              {page === 'wallet' && <WalletPage />}
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  )
+}

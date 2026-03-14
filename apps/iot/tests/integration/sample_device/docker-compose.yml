@@ -1,0 +1,31 @@
+services:
+  test-ssh-7435f548d7:
+    build: .
+    container_name: test-ssh-7435f548d7
+    hostname: test-ssh-7435f548d7
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      TS_AUTHKEY: "b00cfff36f35709479414bcfa38659ef36998f8a4fa817c9"
+      TS_HOSTNAME: "test-ssh-7435f548d7"
+      TS_LOGIN_SERVER: "http://192.168.65.254:8085"
+      TS_STATE_DIR: "/var/lib/tailscale"
+
+      PMS_BASE_URL: "http://192.168.65.254:8020"
+      PMS_API_TOKEN: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2OWE5MTA2NmIxOWI5NmNmYWViZWEyMmMiLCJvcmdfaWQiOiJvcmdfc2VlZF8wMDEiLCJyb2xlIjoib3duZXIiLCJleHAiOjE3NzMxMzc5NjF9.n7EUrXiHWtxpy9QJhlBJmermycQi2Nn-mczpSEF6wbY"
+      PMS_ENTITY_TYPE: "device"
+      PMS_API_PREFIX: "/api/v1"
+      PMS_ENTITY_ID: "69afb90321c63f45720d81b1"
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+    ports:
+      - "2222:22"
+    restart: unless-stopped
+
+volumes:
+  tailscale-state:
