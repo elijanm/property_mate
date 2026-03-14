@@ -7,7 +7,7 @@ WORKDIR /app
 # Virus DEFINITIONS are NOT downloaded here — freshclam runs at container startup
 # so definitions are always current (ClamAV updates several times per day).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl \
+    build-essential curl dos2unix \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
     clamav clamav-daemon \
     && rm -rf /var/lib/apt/lists/*
@@ -40,7 +40,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # ── Application code ──────────────────────────────────────────────────────────
 COPY app/ ./app/
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN dos2unix /entrypoint.sh && chmod +x /entrypoint.sh
 
 # Trainer plugins — built-in samples shipped with the image
 COPY trainers/ /app/trainers/
