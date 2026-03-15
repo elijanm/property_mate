@@ -68,14 +68,29 @@ async def release_and_charge(wallet: Wallet, job_id: str, actual_cost: float) ->
     )
     reserved_amount = reserve_tx.amount if reserve_tx else 0.0
 
+    # Guard: if a release tx already exists for this job, do nothing (idempotent)
+    already_released = await WalletTransaction.find_one(
+        WalletTransaction.job_id == job_id,
+        WalletTransaction.type == "release",
+        WalletTransaction.user_email == wallet.user_email,
+    )
+    if already_released:
+        logger.debug("release_and_charge_skipped_duplicate", job_id=job_id, user=wallet.user_email)
+        return 0.0
+
     # Cap actual at what was reserved
     actual = round(min(actual_cost, reserved_amount), 10)
     overage = round(reserved_amount - actual, 10)
 
-    # 1. Debit actual cost from reserved bucket (no balance change yet)
-    wallet.reserved = max(0.0, round(wallet.reserved - reserved_amount, 10))
-    # 2. Refund unused portion back to spendable balance
-    wallet.balance = round(wallet.balance + overage, 10)
+    # 1. Debit actual cost from reserved bucket — cap deduction to what's actually there
+    deductible = min(reserved_amount, wallet.reserved)
+    wallet.reserved = max(0.0, round(wallet.reserved - deductible, 10))
+    # 2. Refund unused portion back to spendable balance — only what was actually deducted
+    actual_overage = round(deductible - actual, 10)
+    wallet.balance = round(wallet.balance + max(0.0, actual_overage), 10)
+
+    # Adjust overage for transaction records to reflect what was actually returned
+    overage = actual_overage
     wallet.updated_at = utc_now()
     await wallet.save()
 

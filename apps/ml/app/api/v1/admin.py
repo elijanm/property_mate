@@ -1,4 +1,4 @@
-"""Super-admin analytics + email broadcast API."""
+"""Super-admin analytics, email broadcast, pricing, and plan management API."""
 from datetime import datetime, timezone
 from typing import Optional, List
 from fastapi import APIRouter, Query, Depends, HTTPException
@@ -15,6 +15,264 @@ from app.core.config import settings
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 RequireAdmin = Depends(require_roles("admin"))
+
+
+# ═══════════════════════════════════════════════════════════════
+# PRICING CONFIG
+# ═══════════════════════════════════════════════════════════════
+
+class PricingConfigUpdateRequest(BaseModel):
+    local_gpu_price_per_hour: Optional[float] = None   # e.g. 0.15
+    local_gpu_free: Optional[bool] = None               # True = always free
+    inference_price_per_call: Optional[float] = None   # e.g. 0.001
+    inference_free: Optional[bool] = None               # True = always free
+
+
+@router.get("/pricing", dependencies=[RequireAdmin])
+async def get_pricing(_=Depends(get_current_user)):
+    """Return current global ML pricing configuration."""
+    from app.services.ml_billing_service import get_pricing_config
+    cfg = await get_pricing_config()
+    return {
+        "local_gpu_price_per_hour": cfg.local_gpu_price_per_hour,
+        "local_gpu_free": cfg.local_gpu_free,
+        "inference_price_per_call": cfg.inference_price_per_call,
+        "inference_free": cfg.inference_free,
+        "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
+    }
+
+
+@router.put("/pricing", dependencies=[RequireAdmin])
+async def update_pricing(body: PricingConfigUpdateRequest, _=Depends(get_current_user)):
+    """Update global ML pricing configuration."""
+    from app.services.ml_billing_service import update_pricing_config
+    cfg = await update_pricing_config(**body.model_dump(exclude_none=True))
+    return {
+        "local_gpu_price_per_hour": cfg.local_gpu_price_per_hour,
+        "local_gpu_free": cfg.local_gpu_free,
+        "inference_price_per_call": cfg.inference_price_per_call,
+        "inference_free": cfg.inference_free,
+        "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# PLANS
+# ═══════════════════════════════════════════════════════════════
+
+class PlanCreateRequest(BaseModel):
+    name: str
+    description: str = ""
+    price_usd_per_month: float = 0.0
+    free_training_hours: float = 0.0
+    free_training_period: str = "month"    # "day" | "week" | "month" | "none"
+    free_inference_calls: int = 0
+    free_inference_period: str = "month"
+    new_customer_credit_usd: float = 0.0
+    is_default: bool = False
+
+
+class PlanUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    price_usd_per_month: Optional[float] = None
+    free_training_hours: Optional[float] = None
+    free_training_period: Optional[str] = None
+    free_inference_calls: Optional[int] = None
+    free_inference_period: Optional[str] = None
+    new_customer_credit_usd: Optional[float] = None
+    is_active: Optional[bool] = None
+    is_default: Optional[bool] = None
+
+
+def _plan_dict(plan) -> dict:
+    return {
+        "id": str(plan.id),
+        "name": plan.name,
+        "description": plan.description,
+        "price_usd_per_month": plan.price_usd_per_month,
+        "free_training_hours": plan.free_training_hours,
+        "free_training_period": plan.free_training_period,
+        "free_inference_calls": plan.free_inference_calls,
+        "free_inference_period": plan.free_inference_period,
+        "new_customer_credit_usd": plan.new_customer_credit_usd,
+        "is_active": plan.is_active,
+        "is_default": plan.is_default,
+        "created_at": plan.created_at.isoformat() if plan.created_at else None,
+        "updated_at": plan.updated_at.isoformat() if plan.updated_at else None,
+    }
+
+
+@router.get("/plans", dependencies=[RequireAdmin])
+async def list_plans(
+    include_inactive: bool = Query(False),
+    _=Depends(get_current_user),
+):
+    """List all billing plans."""
+    from app.services.ml_billing_service import list_plans
+    plans = await list_plans(include_inactive=include_inactive)
+    return {"plans": [_plan_dict(p) for p in plans]}
+
+
+@router.post("/plans", dependencies=[RequireAdmin])
+async def create_plan(body: PlanCreateRequest, _=Depends(get_current_user)):
+    """Create a new billing plan."""
+    from app.models.ml_plan import MLPlan
+    from app.utils.datetime import utc_now
+
+    if body.free_training_period not in ("day", "week", "month", "none"):
+        raise HTTPException(status_code=400, detail="free_training_period must be 'day', 'week', 'month', or 'none'")
+    if body.free_inference_period not in ("day", "week", "month", "none"):
+        raise HTTPException(status_code=400, detail="free_inference_period must be 'day', 'week', 'month', or 'none'")
+
+    # Only one default plan at a time
+    if body.is_default:
+        await MLPlan.find(MLPlan.is_default == True).update({"$set": {"is_default": False}})  # noqa: E712
+
+    plan = MLPlan(**body.model_dump())
+    await plan.insert()
+    return _plan_dict(plan)
+
+
+@router.put("/plans/{plan_id}", dependencies=[RequireAdmin])
+async def update_plan(plan_id: str, body: PlanUpdateRequest, _=Depends(get_current_user)):
+    """Update a billing plan."""
+    from app.models.ml_plan import MLPlan
+    from beanie import PydanticObjectId
+    from app.utils.datetime import utc_now
+
+    try:
+        plan = await MLPlan.get(PydanticObjectId(plan_id))
+    except Exception:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        return _plan_dict(plan)
+
+    if updates.get("free_training_period") and updates["free_training_period"] not in ("day", "week", "month", "none"):
+        raise HTTPException(status_code=400, detail="free_training_period must be 'day', 'week', 'month', or 'none'")
+    if updates.get("free_inference_period") and updates["free_inference_period"] not in ("day", "week", "month", "none"):
+        raise HTTPException(status_code=400, detail="free_inference_period must be 'day', 'week', 'month', or 'none'")
+
+    if updates.get("is_default"):
+        await MLPlan.find(MLPlan.is_default == True).update({"$set": {"is_default": False}})  # noqa: E712
+
+    updates["updated_at"] = utc_now()
+    await plan.set(updates)
+    return _plan_dict(plan)
+
+
+@router.delete("/plans/{plan_id}", dependencies=[RequireAdmin])
+async def delete_plan(plan_id: str, _=Depends(get_current_user)):
+    """Deactivate a plan (soft-delete — existing user plans are unaffected)."""
+    from app.models.ml_plan import MLPlan
+    from beanie import PydanticObjectId
+    from app.utils.datetime import utc_now
+
+    try:
+        plan = await MLPlan.get(PydanticObjectId(plan_id))
+    except Exception:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    await plan.set({"is_active": False, "is_default": False, "updated_at": utc_now()})
+    return {"deactivated": True}
+
+
+# ═══════════════════════════════════════════════════════════════
+# USER PLAN ASSIGNMENT
+# ═══════════════════════════════════════════════════════════════
+
+class AssignPlanRequest(BaseModel):
+    user_email: str
+    org_id: str = ""
+
+
+@router.post("/plans/{plan_id}/assign", dependencies=[RequireAdmin])
+async def assign_plan(plan_id: str, body: AssignPlanRequest, _=Depends(get_current_user)):
+    """Assign a plan to a user. Replaces their current plan and resets period counters."""
+    from app.services.ml_billing_service import assign_plan_to_user
+    try:
+        user_plan = await assign_plan_to_user(body.user_email, body.org_id, plan_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _user_plan_dict(user_plan)
+
+
+@router.get("/users/{user_email}/plan", dependencies=[RequireAdmin])
+async def get_user_plan_info(user_email: str, org_id: str = Query(""), _=Depends(get_current_user)):
+    """Get a user's current plan assignment and usage."""
+    from app.services.ml_billing_service import get_user_plan, get_pricing_config
+    from app.models.ml_plan import MLPlan
+    from beanie import PydanticObjectId
+
+    user_plan = await get_user_plan(user_email, org_id)
+    if not user_plan:
+        cfg = await get_pricing_config()
+        return {
+            "user_email": user_email,
+            "plan": None,
+            "pricing": {
+                "local_gpu_price_per_hour": cfg.local_gpu_price_per_hour,
+                "local_gpu_free": cfg.local_gpu_free,
+                "inference_price_per_call": cfg.inference_price_per_call,
+                "inference_free": cfg.inference_free,
+            },
+        }
+
+    plan = None
+    if user_plan.plan_id:
+        try:
+            plan = await MLPlan.get(PydanticObjectId(user_plan.plan_id))
+        except Exception:
+            pass
+
+    return {
+        "user_email": user_email,
+        "plan": _plan_dict(plan) if plan else None,
+        "usage": _user_plan_dict(user_plan),
+    }
+
+
+class SetExemptRequest(BaseModel):
+    org_id: str = ""
+    local_gpu_exempt: bool
+
+
+@router.patch("/users/{user_email}/exempt", dependencies=[RequireAdmin])
+async def set_user_exempt(user_email: str, body: SetExemptRequest, _=Depends(get_current_user)):
+    """Set or clear a user's local GPU training exemption."""
+    from app.services.ml_billing_service import get_user_plan
+    from app.utils.datetime import utc_now
+
+    user_plan = await get_user_plan(user_email, body.org_id)
+    if not user_plan:
+        raise HTTPException(status_code=404, detail="User has no plan record. Assign a plan first.")
+    await user_plan.set({"local_gpu_exempt": body.local_gpu_exempt, "updated_at": utc_now()})
+    return _user_plan_dict(user_plan)
+
+
+def _user_plan_dict(up) -> dict:
+    return {
+        "id": str(up.id),
+        "user_email": up.user_email,
+        "org_id": up.org_id,
+        "plan_id": up.plan_id,
+        "plan_name": up.plan_name,
+        "local_gpu_exempt": getattr(up, "local_gpu_exempt", False),
+        "free_training_used_seconds": up.free_training_used_seconds,
+        "free_training_used_hours": round(up.free_training_used_seconds / 3600, 3),
+        "free_training_period_reset_at": up.free_training_period_reset_at.isoformat() if up.free_training_period_reset_at else None,
+        "free_inference_used": up.free_inference_used,
+        "free_inference_period_reset_at": up.free_inference_period_reset_at.isoformat() if up.free_inference_period_reset_at else None,
+        "new_customer_credit_given": up.new_customer_credit_given,
+        "new_customer_credit_amount": up.new_customer_credit_amount,
+        "assigned_at": up.assigned_at.isoformat() if up.assigned_at else None,
+    }
 
 
 def _utc(dt: Optional[datetime]) -> Optional[datetime]:

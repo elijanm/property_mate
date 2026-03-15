@@ -76,6 +76,34 @@ export interface TrainingJob {
   remote_job_id?: string | null
   wallet_reserved: number       // USD reserved before job
   wallet_charged: number        // USD actually charged after completion
+  gpu_price_per_hour?: number | null  // marked-up $/hr stored at reservation time
+  pod_metrics?: {
+    uptime_seconds?: number
+    gpu_util_pct?: number
+    gpu_mem_util_pct?: number
+    cpu_pct?: number
+    memory_pct?: number
+  }
+  cost_log?: Array<{
+    ts: string
+    elapsed_s: number
+    accrued_usd: number
+    gpu_util_pct?: number
+    final?: boolean
+  }>
+}
+
+export interface LocalGpuInfo {
+  gpu_name: string
+  vram_gb: number
+  compute_capability: string | null
+  is_cuda_available: boolean
+  gpu_count: number
+  is_free: boolean
+  is_exempt: boolean
+  global_free: boolean
+  price_per_hour: number
+  free_secs_remaining: number | null
 }
 
 export interface GpuOption {

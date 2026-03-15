@@ -55,6 +55,7 @@ async def run_inference(trainer_name: str, body: PredictRequest, user=Depends(ge
             caller_org_id=user.org_id,
             session_id=body.session_id,
             org_id=user.org_id,
+            user_email=user.email,
         )
         return {"trainer_name": trainer_name, "prediction": result, "log_id": log_id}
     except ValueError as exc:
@@ -98,6 +99,7 @@ async def run_inference_upload(
             caller_org_id=user.org_id,
             session_id=session_id,
             org_id=user.org_id,
+            user_email=user.email,
         )
         return {"trainer_name": trainer_name, "prediction": result, "log_id": log_id}
     except ValueError as exc:

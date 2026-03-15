@@ -1,5 +1,5 @@
 import client from './client'
-import type { TrainerRegistration, ModelDeployment, TrainingJob, GpuOption } from '@/types/trainer'
+import type { TrainerRegistration, ModelDeployment, TrainingJob, GpuOption, LocalGpuInfo } from '@/types/trainer'
 
 export const trainersApi = {
   list: () => client.get<{ items: TrainerRegistration[] }>('/trainers').then(r => r.data.items ?? []),
@@ -22,6 +22,9 @@ export const trainersApi = {
 
   listGpuOptions: () =>
     client.get<{ options: GpuOption[]; available: boolean; source: string }>('/training/gpu-options').then(r => r.data),
+
+  getLocalInfo: () =>
+    client.get<LocalGpuInfo>('/training/local-info').then(r => r.data),
 
   startTraining: (
     trainerName: string,

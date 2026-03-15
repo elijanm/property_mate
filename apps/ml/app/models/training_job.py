@@ -42,8 +42,13 @@ class TrainingJob(Document):
     error: Optional[str] = None
 
     # Wallet billing (USD)
-    wallet_reserved: float = 0.0   # USD reserved in wallet before job starts
-    wallet_charged: float = 0.0    # USD actually charged after completion
+    wallet_reserved: float = 0.0        # USD reserved in wallet before job starts
+    wallet_charged: float = 0.0         # USD actually charged after completion
+    gpu_price_per_hour: Optional[float] = None  # marked-up price used for billing
+
+    # Pod runtime telemetry (populated during polling)
+    pod_metrics: Dict[str, Any] = {}    # GPU util %, memory %, CPU %, uptime, etc.
+    cost_log: List[Dict[str, Any]] = [] # [{ts, elapsed_s, accrued_usd}, …] snapshots
 
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None

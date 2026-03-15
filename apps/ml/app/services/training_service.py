@@ -270,14 +270,41 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
             })
             await _log(job, "Training complete.")
 
-            # Record local training time usage towards monthly quota
-            if job.compute_type == "local":
+            # Local training billing + plan usage recording
+            if job.compute_type == "local" and job.owner_email:
                 try:
-                    from app.services import wallet_service
-                    wallet = await wallet_service.get_or_create(job.owner_email, job.org_id)
-                    await wallet_service.consume_local_time(wallet, elapsed)
+                    from app.services import wallet_service, ml_billing_service
+
+                    # Charge wallet if funds were reserved for this job
+                    if job.wallet_reserved > 0 and job.gpu_price_per_hour:
+                        actual_cost = round(job.gpu_price_per_hour * (elapsed / 3600), 4)
+                        wallet = await wallet_service.get_or_create(job.owner_email, job.org_id)
+                        charged = await wallet_service.release_and_charge(
+                            wallet, str(job.id), actual_cost
+                        )
+                        await job.set({"wallet_charged": charged, "updated_at": utc_now()})
+                        logger.info(
+                            "local_training_charged",
+                            job_id=job_id,
+                            elapsed_s=round(elapsed, 1),
+                            price_per_hour=job.gpu_price_per_hour,
+                            actual_cost=actual_cost,
+                            charged=charged,
+                        )
+
+                    # Record plan usage (always, even for free jobs)
+                    user_plan = await ml_billing_service.get_or_create_user_plan(
+                        job.owner_email, job.org_id
+                    )
+                    if user_plan:
+                        await ml_billing_service.consume_training_seconds(user_plan, elapsed)
+
+                    # Legacy quota tracking (keep for backwards compat)
+                    wallet_q = await wallet_service.get_or_create(job.owner_email, job.org_id)
+                    await wallet_service.consume_local_time(wallet_q, elapsed)
+
                 except Exception as quota_exc:
-                    logger.warning("local_quota_record_failed", job_id=job_id, error=str(quota_exc))
+                    logger.warning("local_billing_record_failed", job_id=job_id, error=str(quota_exc))
 
         except Exception as exc:
             logger.error("training_failed", job_id=job_id, error=str(exc), exc_info=exc)

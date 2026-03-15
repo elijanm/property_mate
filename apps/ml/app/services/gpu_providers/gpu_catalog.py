@@ -159,7 +159,9 @@ async def get_gpu_options(api_key: Optional[str] = None) -> list[GpuOption]:
         cached = await _r.get(CACHE_KEY)
         await _r.aclose()
         if cached:
-            return json.loads(cached)
+            live = json.loads(cached)
+            _STATIC_BY_ID.update({o["id"]: o for o in live})
+            return live
     except Exception:
         pass
 
@@ -177,6 +179,8 @@ async def get_gpu_options(api_key: Optional[str] = None) -> list[GpuOption]:
                     await _r.aclose()
                 except Exception:
                     pass
+                # Populate sync lookup map with live data
+                _STATIC_BY_ID.update({o["id"]: o for o in options})
                 logger.info("gpu_catalog_live_fetched", count=len(options))
                 return options
         except Exception as exc:

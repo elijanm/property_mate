@@ -17,6 +17,8 @@ class RemoteJobStatus:
     progress: float = 0.0
     log_lines: list[str] = field(default_factory=list)
     error: Optional[str] = None
+    # RunPod runtime metrics (GPU/CPU/memory utilisation sampled during polling)
+    pod_metrics: dict = field(default_factory=dict)
 
 
 @dataclass

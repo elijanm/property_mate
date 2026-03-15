@@ -8,6 +8,7 @@ from app.models.training_job import TrainingJob
 from app.models.trainer_registration import TrainerRegistration
 from app.services.registry_service import get_trainer_class
 from app.services import wallet_service
+from app.services import ml_billing_service
 from app.services.gpu_providers.gpu_catalog import get_gpu_option
 from app.tasks.train_task import enqueue_training, enqueue_pretrained_deploy
 from app.utils.datetime import utc_now
@@ -30,6 +31,52 @@ class StartTrainingRequest(BaseModel):
     config_overrides: Optional[dict] = None
     compute_type: str = "local"          # local | cloud_gpu
     gpu_type_id: Optional[str] = None    # e.g. "NVIDIA GeForce RTX 3090"
+
+
+def _detect_local_gpu() -> dict:
+    """Return local GPU hardware info using PyTorch if available."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            return {
+                "gpu_name": props.name,
+                "vram_gb": round(props.total_memory / (1024 ** 3), 1),
+                "compute_capability": f"{props.major}.{props.minor}",
+                "is_cuda_available": True,
+                "gpu_count": torch.cuda.device_count(),
+            }
+    except Exception:
+        pass
+    return {
+        "gpu_name": "CPU only",
+        "vram_gb": 0,
+        "compute_capability": None,
+        "is_cuda_available": False,
+        "gpu_count": 0,
+    }
+
+
+@router.get("/local-info")
+async def get_local_training_info(user=Depends(get_current_user)):
+    """Return local compute availability + billing info for the current user."""
+    gpu_info = _detect_local_gpu()
+
+    is_free, free_secs, price_per_hour = await ml_billing_service.check_local_training(
+        user.email, user.org_id
+    )
+    cfg = await ml_billing_service.get_pricing_config()
+    user_plan = await ml_billing_service.get_user_plan(user.email, user.org_id)
+    is_exempt = bool(user_plan and getattr(user_plan, "local_gpu_exempt", False))
+
+    return {
+        **gpu_info,
+        "is_free": is_free,
+        "is_exempt": is_exempt,
+        "global_free": cfg.local_gpu_free,
+        "price_per_hour": price_per_hour,
+        "free_secs_remaining": free_secs if free_secs != float("inf") else None,
+    }
 
 
 @router.get("/gpu-options")
@@ -89,22 +136,31 @@ async def start_training(
                 ),
             )
     elif body.compute_type == "local":
-        # Check monthly local quota
-        wallet = await wallet_service.get_or_create(user.email, user.org_id)
-        wallet = await wallet_service.check_and_reset_local_quota(wallet)
-        remaining = wallet_service.local_quota_remaining(wallet)
-        if remaining <= 0:
-            raise HTTPException(
-                status_code=402,
-                detail=(
-                    "Monthly local training quota exhausted. "
-                    f"Used {wallet.local_used_seconds / 3600:.1f} hrs of "
-                    f"{wallet.local_quota_seconds / 3600:.0f} hrs. "
-                    "Quota resets on "
-                    f"{wallet.local_quota_reset_at.strftime('%b %d, %Y') if wallet.local_quota_reset_at else 'next month'}. "
-                    "Purchase more hours to continue training."
-                ),
-            )
+        is_free, free_secs, local_price = await ml_billing_service.check_local_training(
+            user.email, user.org_id
+        )
+        if not is_free:
+            # Need to reserve wallet for this local job
+            trainer_cls = get_trainer_class(body.trainer_name)
+            est_mins = getattr(trainer_cls, "estimated_duration_minutes", 60) if trainer_cls else 60
+            trainer_reg = await TrainerRegistration.find_one(TrainerRegistration.name == body.trainer_name)
+            if trainer_reg and trainer_reg.estimated_duration_minutes:
+                est_mins = trainer_reg.estimated_duration_minutes
+            est_cost = round(local_price * (est_mins / 60), 4)
+            reservation = round(est_cost * 1.5, 2)   # 1.5x buffer for local (more predictable than cloud)
+
+            wallet = await wallet_service.get_or_create(user.email, user.org_id)
+            if wallet_service.available(wallet) < reservation:
+                raise HTTPException(
+                    status_code=402,
+                    detail=(
+                        f"No free training hours remaining on your plan. "
+                        f"Local training costs ${local_price:.2f}/hr. "
+                        f"Need ${reservation:.2f} USD reserved, "
+                        f"available ${wallet_service.available(wallet):.2f} USD. "
+                        "Top up your wallet."
+                    ),
+                )
 
     job_id = await enqueue_training(
         trainer_name=body.trainer_name,
@@ -116,19 +172,24 @@ async def start_training(
         gpu_type_id=body.gpu_type_id,
     )
 
-    # Reserve wallet funds after job is created
+    # Reserve wallet funds after job is created (cloud GPU and paid local)
     if wallet is not None and reservation > 0:
-        gpu = get_gpu_option(body.gpu_type_id or "")
-        gpu_name = gpu["name"] if gpu else body.gpu_type_id or "GPU"
-        await wallet_service.reserve(
-            wallet,
-            reservation,
-            job_id,
-            f"GPU training reservation — {body.trainer_name} on {gpu_name}",
-        )
+        if body.compute_type == "cloud_gpu":
+            gpu = get_gpu_option(body.gpu_type_id or "")
+            gpu_name = gpu["name"] if gpu else body.gpu_type_id or "GPU"
+            price_per_hour = gpu["price_per_hour"] if gpu else None
+            desc = f"GPU training reservation — {body.trainer_name} on {gpu_name}"
+        else:
+            price_per_hour = local_price
+            desc = f"Local training reservation — {body.trainer_name} · ${local_price:.2f}/hr"
+        await wallet_service.reserve(wallet, reservation, job_id, desc)
         job = await TrainingJob.get(job_id)
         if job:
-            await job.set({"wallet_reserved": reservation, "updated_at": utc_now()})
+            await job.set({
+                "wallet_reserved": reservation,
+                "gpu_price_per_hour": price_per_hour,
+                "updated_at": utc_now(),
+            })
 
     return {"job_id": job_id, "status": "queued"}
 
@@ -173,21 +234,30 @@ async def start_training_with_file(
                 ),
             )
     elif compute_type == "local":
-        wallet = await wallet_service.get_or_create(user.email, user.org_id)
-        wallet = await wallet_service.check_and_reset_local_quota(wallet)
-        remaining = wallet_service.local_quota_remaining(wallet)
-        if remaining <= 0:
-            raise HTTPException(
-                status_code=402,
-                detail=(
-                    "Monthly local training quota exhausted. "
-                    f"Used {wallet.local_used_seconds / 3600:.1f} hrs of "
-                    f"{wallet.local_quota_seconds / 3600:.0f} hrs. "
-                    "Quota resets on "
-                    f"{wallet.local_quota_reset_at.strftime('%b %d, %Y') if wallet.local_quota_reset_at else 'next month'}. "
-                    "Purchase more hours to continue training."
-                ),
-            )
+        is_free, free_secs, local_price = await ml_billing_service.check_local_training(
+            user.email, user.org_id
+        )
+        if not is_free:
+            trainer_cls = get_trainer_class(trainer_name)
+            est_mins = getattr(trainer_cls, "estimated_duration_minutes", 60) if trainer_cls else 60
+            trainer_reg = await TrainerRegistration.find_one(TrainerRegistration.name == trainer_name)
+            if trainer_reg and trainer_reg.estimated_duration_minutes:
+                est_mins = trainer_reg.estimated_duration_minutes
+            est_cost = round(local_price * (est_mins / 60), 4)
+            reservation = round(est_cost * 1.5, 2)
+
+            wallet = await wallet_service.get_or_create(user.email, user.org_id)
+            if wallet_service.available(wallet) < reservation:
+                raise HTTPException(
+                    status_code=402,
+                    detail=(
+                        f"No free training hours remaining on your plan. "
+                        f"Local training costs ${local_price:.2f}/hr. "
+                        f"Need ${reservation:.2f} USD reserved, "
+                        f"available ${wallet_service.available(wallet):.2f} USD. "
+                        "Top up your wallet."
+                    ),
+                )
 
     data = await file.read()
     job_id = await enqueue_training(
@@ -200,19 +270,23 @@ async def start_training_with_file(
         gpu_type_id=gpu_type_id,
     )
 
-    # Reserve wallet funds after job is created
     if wallet is not None and reservation > 0:
-        gpu = get_gpu_option(gpu_type_id or "")
-        gpu_name = gpu["name"] if gpu else gpu_type_id or "GPU"
-        await wallet_service.reserve(
-            wallet,
-            reservation,
-            job_id,
-            f"GPU training reservation — {trainer_name} on {gpu_name}",
-        )
+        if compute_type == "cloud_gpu":
+            gpu = get_gpu_option(gpu_type_id or "")
+            gpu_name = gpu["name"] if gpu else gpu_type_id or "GPU"
+            price_per_hour = gpu["price_per_hour"] if gpu else None
+            desc = f"GPU training reservation — {trainer_name} on {gpu_name}"
+        else:
+            price_per_hour = local_price
+            desc = f"Local training reservation — {trainer_name} · ${local_price:.2f}/hr"
+        await wallet_service.reserve(wallet, reservation, job_id, desc)
         job = await TrainingJob.get(job_id)
         if job:
-            await job.set({"wallet_reserved": reservation, "updated_at": utc_now()})
+            await job.set({
+                "wallet_reserved": reservation,
+                "gpu_price_per_hour": price_per_hour,
+                "updated_at": utc_now(),
+            })
 
     return {"job_id": job_id, "status": "queued", "data_size_bytes": len(data)}
 

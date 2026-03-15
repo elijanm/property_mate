@@ -60,17 +60,51 @@ def _get_trainer_source(trainer_name: str) -> str:
 
 async def _release_reserved(job: TrainingJob) -> None:
     """
-    Release any reserved wallet funds for a failed/cancelled job (charge $0).
+    Release reserved wallet funds, charging for actual GPU runtime when a pod
+    was launched.
+
+    - Pod was never launched (dispatch failed) → charge $0, return full reservation.
+    - Pod ran but job failed (e.g. S3 upload error, poll timeout) → charge for
+      actual wall-clock time from started_at → finished_at at gpu_price_per_hour.
+      RunPod bills from pod creation regardless of training outcome, so we do too.
+
     Safe to call multiple times — no-ops if nothing is reserved.
     """
     if not job.owner_email:
         return
     try:
         from app.services import wallet_service
+
+        actual_cost = 0.0
+        if job.remote_job_id and job.started_at and job.gpu_price_per_hour:
+            # Pod was launched — charge for wall-clock GPU time
+            finished = job.finished_at or utc_now()
+            if finished.tzinfo is None:
+                from datetime import timezone
+                finished = finished.replace(tzinfo=timezone.utc)
+            start = job.started_at
+            if start.tzinfo is None:
+                from datetime import timezone
+                start = start.replace(tzinfo=timezone.utc)
+            duration_hours = max(0.0, (finished - start).total_seconds() / 3600)
+            actual_cost = round(job.gpu_price_per_hour * duration_hours, 4)
+            logger.info(
+                "wallet_gpu_charge_on_failure",
+                job_id=str(job.id),
+                duration_hours=round(duration_hours, 4),
+                price_per_hour=job.gpu_price_per_hour,
+                actual_cost=actual_cost,
+            )
+
         wallet = await wallet_service.get_or_create(job.owner_email, job.org_id)
-        if wallet.reserved > 0:
-            await wallet_service.release_and_charge(wallet, str(job.id), actual_cost=0.0)
-            logger.info("wallet_reservation_released", job_id=str(job.id), owner=job.owner_email)
+        if wallet.reserved > 0 or actual_cost > 0:
+            await wallet_service.release_and_charge(wallet, str(job.id), actual_cost=actual_cost)
+            logger.info(
+                "wallet_reservation_released",
+                job_id=str(job.id),
+                owner=job.owner_email,
+                actual_cost=actual_cost,
+            )
     except Exception as exc:
         logger.warning("wallet_release_failed", job_id=str(job.id), error=str(exc))
 
@@ -161,6 +195,43 @@ async def run_cloud_training(job: TrainingJob, injected_data: Optional[bytes] = 
             "log_lines": [f"[cloud_gpu] Dispatching to {provider_name} · gpu={job.gpu_type_id or 'default'}…"],
         })
 
+        # Pre-fetch data source on the server side if no user-uploaded data was provided.
+        # RunPod pods have no access to PMS infrastructure (MongoDB, Redis, MinIO), so
+        # any DataSource that requires network connectivity must be loaded here and
+        # serialised as pickle bytes for injection into the pod.
+        if injected_data is None:
+            from app.services.registry_service import get_trainer_class as _get_tc
+            _trainer_cls = _get_tc(job.trainer_name)
+            _ds = getattr(_trainer_cls, "data_source", None) if _trainer_cls else None
+            if _ds is not None:
+                # Skip sources that are already in-memory or expect file injection —
+                # they either carry no data or will be handled by preprocess().
+                from app.abstract.data_source import InMemoryDataSource, UploadedFileDataSource
+                if not isinstance(_ds, (InMemoryDataSource, UploadedFileDataSource)):
+                    try:
+                        await job.set({
+                            "log_lines": [
+                                f"[cloud_gpu] Fetching data from {_ds.source_type} data source…"
+                            ],
+                            "updated_at": utc_now(),
+                        })
+                        _raw = await _ds.load()
+                        injected_data = pickle.dumps(_raw)
+                        logger.info(
+                            "cloud_gpu_datasource_prefetched",
+                            job_id=job_id,
+                            source_type=_ds.source_type,
+                            size_bytes=len(injected_data),
+                        )
+                    except Exception as _exc:
+                        logger.warning(
+                            "cloud_gpu_datasource_prefetch_failed",
+                            job_id=job_id,
+                            source_type=_ds.source_type,
+                            error=str(_exc),
+                        )
+                        # Proceed without data — preprocess() may handle None or raise
+
         try:
             handle = await provider.dispatch(
                 trainer_name=job.trainer_name,
@@ -190,49 +261,145 @@ async def run_cloud_training(job: TrainingJob, injected_data: Optional[bytes] = 
             "updated_at": utc_now(),
         })
 
-    # Poll until done
-    max_polls = 720   # 1h at 5s interval
-    status = None
-    for _ in range(max_polls):
+    # ── Poll loop ──────────────────────────────────────────────────────────────
+    # Every 5 s: fetch pod status (incl. GPU/CPU metrics from RunPod runtime).
+    # Every 6 polls (~30 s): fetch pod logs, parse training metrics from stdout,
+    # record a cost snapshot, and persist everything to the job document.
+    max_polls     = 720   # max 1 h at 5 s interval
+    log_every     = 6     # fetch logs every N polls
+    status        = None
+    seen_metrics: dict = {}         # training metrics parsed from pod stdout
+    inline_model_bytes: Optional[bytes] = None  # model recovered from pod stdout (S3 fallback)
+
+    def _accrued_usd(started_at, price_per_hour: float) -> float:
+        if not started_at or not price_per_hour:
+            return 0.0
+        if started_at.tzinfo is None:
+            from datetime import timezone
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        elapsed_h = (utc_now() - started_at).total_seconds() / 3600
+        return round(price_per_hour * max(0.0, elapsed_h), 6)
+
+    for poll_n in range(max_polls):
         await asyncio.sleep(5)
+
+        # ── Status (includes pod_metrics from RunPod runtime) ──────────────
         try:
             status = await provider.get_status(handle)
         except Exception:
             continue
 
+        now = utc_now()
+        update: dict = {"updated_at": now}
+
+        # Persist pod-level telemetry (GPU util, CPU, memory, uptime)
+        if status.pod_metrics:
+            update["pod_metrics"] = status.pod_metrics
+
+        # Cost snapshot every log_every polls
+        if poll_n % log_every == 0:
+            accrued = _accrued_usd(job.started_at, job.gpu_price_per_hour)
+            snapshot = {
+                "ts":         now.isoformat(),
+                "elapsed_s":  round((now - job.started_at).total_seconds(), 1) if job.started_at else 0,
+                "accrued_usd": accrued,
+            }
+            if status.pod_metrics.get("gpu_util_pct") is not None:
+                snapshot["gpu_util_pct"] = status.pod_metrics["gpu_util_pct"]
+            update["cost_log"] = (job.cost_log or []) + [snapshot]
+
+            logger.info(
+                "cloud_gpu_poll",
+                job_id=job_id,
+                pod_id=handle.remote_id,
+                state=status.state,
+                accrued_usd=accrued,
+                pod_metrics=status.pod_metrics,
+            )
+
+        # ── Logs + training metrics ────────────────────────────────────────
+        if poll_n % log_every == 0 and hasattr(provider, "fetch_logs"):
+            try:
+                pod_logs, train_metrics, model_bytes_from_log = await provider.fetch_logs(handle)
+                if pod_logs:
+                    update["log_lines"] = pod_logs[-100:]
+                # If bootstrap already printed metrics, store them on the job
+                # so they're visible even before S3 upload completes.
+                if train_metrics and train_metrics != seen_metrics:
+                    seen_metrics = train_metrics
+                    update["metrics"] = {k: float(v) for k, v in train_metrics.items()
+                                         if isinstance(v, (int, float))}
+                    logger.info("cloud_gpu_metrics_from_logs", job_id=job_id, metrics=seen_metrics)
+                # Capture inline model bytes from pod stdout (S3 fallback)
+                if model_bytes_from_log and not inline_model_bytes:
+                    inline_model_bytes = model_bytes_from_log
+                    logger.info("cloud_gpu_inline_model_captured", job_id=job_id, size_bytes=len(inline_model_bytes))
+            except Exception:
+                pass
+        elif status.log_lines:
+            update["log_lines"] = status.log_lines[-50:]
+
+        await job.set(update)
+
         if status.state in ("completed", "failed", "cancelled"):
+            # Final log + metrics capture
+            if hasattr(provider, "fetch_logs"):
+                try:
+                    final_logs, final_metrics, final_model_bytes = await provider.fetch_logs(handle)
+                    final_update: dict = {"updated_at": utc_now()}
+                    if final_logs:
+                        final_update["log_lines"] = final_logs[-100:]
+                    if final_metrics:
+                        final_update["metrics"] = {k: float(v) for k, v in final_metrics.items()
+                                                    if isinstance(v, (int, float))}
+                        seen_metrics = final_metrics
+                    if final_model_bytes and not inline_model_bytes:
+                        inline_model_bytes = final_model_bytes
+                        logger.info("cloud_gpu_inline_model_captured_final", job_id=job_id, size_bytes=len(inline_model_bytes))
+                    await job.set(final_update)
+                except Exception:
+                    pass
             break
-        if status.log_lines:
-            await job.set({
-                "log_lines": status.log_lines[-50:],
-                "updated_at": utc_now(),
-            })
 
     if status is None or status.state != "completed":
         error_msg = (status.error if status else None) or (
             f"Remote job ended with state: {status.state}" if status else "No status received from provider"
         )
+        finished_at = utc_now()
+        fail_update: dict = {
+            "status":      "failed",
+            "error":       error_msg,
+            "finished_at": finished_at,
+            "updated_at":  finished_at,
+        }
+        if seen_metrics:
+            fail_update["metrics"] = seen_metrics
+        await job.set(fail_update)
+        await _release_reserved(job)
+        return
+
+    # Attach any inline model bytes captured from pod stdout so get_result() can
+    # use them as fallback when S3 is unreachable.
+    if inline_model_bytes:
+        handle._inline_model_bytes = inline_model_bytes
+
+    # Fetch result (model.pkl + metrics.json from S3)
+    try:
+        result = await provider.get_result(handle)
+    except Exception as exc:
+        finished_at = utc_now()
         await job.set({
-            "status": "failed",
-            "error": error_msg,
-            "finished_at": utc_now(),
-            "updated_at": utc_now(),
+            "status":      "failed",
+            "error":       f"Failed to fetch result: {exc}",
+            "metrics":     seen_metrics or {},
+            "finished_at": finished_at,
+            "updated_at":  finished_at,
         })
         await _release_reserved(job)
         return
 
-    # Fetch result
-    try:
-        result = await provider.get_result(handle)
-    except Exception as exc:
-        await job.set({
-            "status": "failed",
-            "error": f"Failed to fetch result: {exc}",
-            "finished_at": utc_now(),
-            "updated_at": utc_now(),
-        })
-        await _release_reserved(job)
-        return
+    # Merge metrics: S3 metrics.json takes precedence; fill gaps from log-parsed metrics
+    merged_metrics = {**seen_metrics, **(result.metrics or {})}
 
     # Store model in MLflow
     try:
@@ -242,31 +409,75 @@ async def run_cloud_training(job: TrainingJob, injected_data: Optional[bytes] = 
         model_uri = None
 
     finished_at = utc_now()
+
+    # Final cost snapshot
+    final_cost_snapshot = {
+        "ts":          finished_at.isoformat(),
+        "elapsed_s":   round((finished_at - job.started_at).total_seconds(), 1) if job.started_at else 0,
+        "accrued_usd": round(
+            job.gpu_price_per_hour * max(0.0, (finished_at - job.started_at).total_seconds() / 3600), 6
+        ) if (job.gpu_price_per_hour and job.started_at) else 0,
+        "final": True,
+    }
+
     await job.set({
-        "status": "completed",
-        "metrics": result.metrics,
-        "model_uri": model_uri,
-        "log_lines": (result.log_lines or [])[-50:],
+        "status":      "completed",
+        "metrics":     merged_metrics,
+        "model_uri":   model_uri,
+        "log_lines":   (result.log_lines or [])[-50:],
         "finished_at": finished_at,
-        "updated_at": finished_at,
+        "updated_at":  finished_at,
+        "cost_log":    (job.cost_log or []) + [final_cost_snapshot],
     })
-    logger.info("cloud_gpu_training_completed", job_id=job_id, provider=provider_name, metrics=result.metrics)
+    logger.info(
+        "cloud_gpu_training_completed",
+        job_id=job_id,
+        provider=provider_name,
+        metrics=merged_metrics,
+        elapsed_s=final_cost_snapshot["elapsed_s"],
+        accrued_usd=final_cost_snapshot["accrued_usd"],
+    )
 
     # Charge actual GPU cost to wallet
-    if job.gpu_type_id and job.owner_email:
-        from app.services.gpu_providers.gpu_catalog import get_gpu_option
+    if job.owner_email:
         from app.services import wallet_service
 
-        gpu_opt = get_gpu_option(job.gpu_type_id)
-        if gpu_opt and job.started_at:
+        # Use price stored at reservation time — avoids dependency on live GPU catalog
+        # lookup in a fresh worker process where _STATIC_BY_ID may not be populated.
+        price_per_hour = job.gpu_price_per_hour
+        if price_per_hour is None and job.gpu_type_id:
+            # Fallback: try live catalog lookup (populates _STATIC_BY_ID as side-effect)
+            from app.services.gpu_providers.gpu_catalog import get_gpu_option_live
+            from app.core.config import settings as _s
+            _opt = await get_gpu_option_live(job.gpu_type_id, api_key=_s.RUNPOD_API_KEY or None)
+            price_per_hour = _opt["price_per_hour"] if _opt else None
+
+        if price_per_hour is not None and job.started_at:
             duration_hours = (finished_at - job.started_at).total_seconds() / 3600
-            actual_cost = round(gpu_opt["price_per_hour"] * duration_hours, 4)
+            actual_cost = round(price_per_hour * duration_hours, 4)
             try:
                 wallet = await wallet_service.get_or_create(job.owner_email, job.org_id)
                 charged = await wallet_service.release_and_charge(wallet, str(job.id), actual_cost)
                 await job.set({"wallet_charged": charged, "updated_at": utc_now()})
+                logger.info(
+                    "wallet_gpu_charged",
+                    job_id=job_id,
+                    duration_hours=round(duration_hours, 4),
+                    price_per_hour=price_per_hour,
+                    actual_cost=actual_cost,
+                    charged=charged,
+                )
             except Exception as exc:
                 logger.warning("wallet_charge_failed", job_id=job_id, error=str(exc))
+        elif job.wallet_reserved > 0:
+            # No price info available — release reservation without charging
+            try:
+                from app.services import wallet_service as _ws
+                wallet = await _ws.get_or_create(job.owner_email, job.org_id)
+                await _ws.release_and_charge(wallet, str(job.id), actual_cost=0.0)
+                logger.warning("wallet_charge_skipped_no_price", job_id=job_id)
+            except Exception as exc:
+                logger.warning("wallet_release_failed", job_id=job_id, error=str(exc))
 
     # Resource overrun detection
     try:

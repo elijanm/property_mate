@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { trainersApi } from '@/api/trainers'
 import type { TrainingJob } from '@/types/trainer'
 import StatusBadge from './StatusBadge'
-import { Trash2, RefreshCw, XCircle, ChevronDown, ChevronRight, ChevronLeft, Terminal, Loader2, Monitor, Zap, Clock, DollarSign } from 'lucide-react'
+import { Trash2, RefreshCw, XCircle, ChevronDown, ChevronRight, ChevronLeft, Terminal, Loader2, Monitor, Zap, Clock, DollarSign, Cpu, Activity } from 'lucide-react'
 import clsx from 'clsx'
 
 const JOBS_PER_PAGE = 10
@@ -17,6 +17,68 @@ function formatDuration(startedAt: string | null, finishedAt: string | null): st
   const rem  = secs % 60
   if (mins < 60) return `${mins}m ${rem}s`
   return `${Math.floor(mins / 60)}h ${mins % 60}m`
+}
+
+function CloudCostBadge({ job }: { job: TrainingJob }) {
+  const [elapsed, setElapsed] = useState(0)
+
+  // Tick every second while job is running so cost updates live
+  useEffect(() => {
+    if (job.status !== 'running' || !job.started_at) return
+    const tick = () => setElapsed(Math.floor((Date.now() - new Date(job.started_at!).getTime()) / 1000))
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [job.status, job.started_at])
+
+  const ratePerSec = job.gpu_price_per_hour ? job.gpu_price_per_hour / 3600 : null
+  const isTerminal = job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled'
+
+  // Final charge shown after completion
+  if (job.wallet_charged > 0) {
+    return (
+      <span className="flex items-center gap-1 text-[10px] text-emerald-400">
+        <DollarSign size={9} /> ${job.wallet_charged.toFixed(12)} charged
+      </span>
+    )
+  }
+
+  // Live accruing cost while running
+  if (job.status === 'running' && job.started_at && ratePerSec) {
+    const accrued = ratePerSec * elapsed
+    return (
+      <span className="flex items-center gap-1 text-[10px] text-amber-400">
+        <DollarSign size={9} />
+        <span className="tabular-nums">${accrued.toFixed(12)}</span>
+        <span className="text-gray-600">/ ${job.wallet_reserved.toFixed(12)} reserved</span>
+        <span className="text-gray-700">· ${ratePerSec.toFixed(12)}/s</span>
+      </span>
+    )
+  }
+
+  // For terminal jobs with reserved but no charge yet (billing pending) — estimate from duration
+  if (isTerminal && job.wallet_reserved > 0 && ratePerSec && job.started_at && job.finished_at) {
+    const durationSecs = Math.max(1, Math.floor((new Date(job.finished_at).getTime() - new Date(job.started_at).getTime()) / 1000))
+    const estimated = ratePerSec * durationSecs
+    return (
+      <span className="flex items-center gap-1 text-[10px] text-emerald-400">
+        <DollarSign size={9} /> ~${estimated.toFixed(12)} est.
+        <span className="text-gray-600">({durationSecs}s × ${ratePerSec.toFixed(12)}/s)</span>
+      </span>
+    )
+  }
+
+  // Reserved — queued or running without a rate yet
+  if (!isTerminal && job.wallet_reserved > 0) {
+    return (
+      <span className="flex items-center gap-1 text-[10px] text-amber-500">
+        <DollarSign size={9} /> ${job.wallet_reserved.toFixed(12)} reserved
+        {ratePerSec && <span className="text-gray-600">· ${ratePerSec.toFixed(12)}/s</span>}
+      </span>
+    )
+  }
+
+  return null
 }
 
 interface Props {
@@ -165,21 +227,19 @@ export default function JobsPanel({ trainerName, onJobCompleted }: Props) {
                 })()}
 
                 {/* Cost */}
-                {job.compute_type === 'cloud_gpu' ? (
-                  job.wallet_charged > 0 ? (
-                    <span className="flex items-center gap-1 text-[10px] text-emerald-400">
-                      <DollarSign size={9} /> ${job.wallet_charged.toFixed(2)} USD
-                    </span>
-                  ) : job.wallet_reserved > 0 ? (
-                    <span className="flex items-center gap-1 text-[10px] text-amber-500">
-                      <DollarSign size={9} /> ${job.wallet_reserved.toFixed(2)} reserved
-                    </span>
-                  ) : null
-                ) : (
-                  <span className="flex items-center gap-1 text-[10px] text-emerald-600">
-                    <DollarSign size={9} /> Free
-                  </span>
-                )}
+                {(() => {
+                  const badge = <CloudCostBadge job={job} />
+                  if (badge) return badge
+                  // Only show "Free" once the job is terminal and nothing was charged
+                  if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+                    return (
+                      <span className="flex items-center gap-1 text-[10px] text-gray-600">
+                        <DollarSign size={9} /> Free
+                      </span>
+                    )
+                  }
+                  return null
+                })()}
               </div>
 
               {Object.keys(job.metrics ?? {}).length > 0 && (
@@ -217,6 +277,68 @@ export default function JobsPanel({ trainerName, onJobCompleted }: Props) {
               {job.model_uri && (
                 <div className="text-[10px] text-gray-600 font-mono truncate">model: {job.model_uri}</div>
               )}
+
+              {/* Pod / system runtime metrics */}
+              {job.pod_metrics && Object.keys(job.pod_metrics).length > 0 && (
+                <div>
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <Activity size={11} className="text-gray-600" />
+                    <span className="text-[10px] text-gray-500 uppercase tracking-widest">
+                      {job.compute_type === 'cloud_gpu' ? 'Pod metrics' : 'System metrics'}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    {job.pod_metrics.gpu_util_pct != null && (
+                      <span className="text-[10px] text-violet-400 flex items-center gap-1">
+                        <Zap size={9} /> GPU {job.pod_metrics.gpu_util_pct}%
+                      </span>
+                    )}
+                    {job.pod_metrics.gpu_mem_util_pct != null && (
+                      <span className="text-[10px] text-violet-300 flex items-center gap-1">
+                        <Zap size={9} /> VRAM {job.pod_metrics.gpu_mem_util_pct}%
+                      </span>
+                    )}
+                    {job.pod_metrics.cpu_pct != null && (
+                      <span className="text-[10px] text-blue-400 flex items-center gap-1">
+                        <Cpu size={9} /> CPU {job.pod_metrics.cpu_pct}%
+                      </span>
+                    )}
+                    {job.pod_metrics.memory_pct != null && (
+                      <span className="text-[10px] text-blue-300 flex items-center gap-1">
+                        <Cpu size={9} /> RAM {job.pod_metrics.memory_pct}%
+                      </span>
+                    )}
+                    {job.pod_metrics.uptime_seconds != null && (
+                      <span className="text-[10px] text-gray-500 flex items-center gap-1">
+                        <Clock size={9} /> uptime {job.pod_metrics.uptime_seconds}s
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Cost log */}
+              {job.cost_log && job.cost_log.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <DollarSign size={11} className="text-gray-600" />
+                    <span className="text-[10px] text-gray-500 uppercase tracking-widest">Cost log</span>
+                  </div>
+                  <div className="bg-gray-950 rounded-xl p-2 max-h-32 overflow-y-auto font-mono text-[10px] text-gray-500 space-y-0.5">
+                    {job.cost_log.map((snap, i) => (
+                      <div key={i} className={clsx('flex gap-3', snap.final && 'text-emerald-400')}>
+                        <span className="w-16 tabular-nums">{snap.elapsed_s}s</span>
+                        <span className="tabular-nums text-amber-400">${snap.accrued_usd.toFixed(12)}</span>
+                        {snap.gpu_util_pct != null && (
+                          <span className="text-violet-500">GPU {snap.gpu_util_pct}%</span>
+                        )}
+                        {snap.final && <span className="text-emerald-500">● final</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {job.log_lines?.length > 0 && (
                 <div>
                   <div className="flex items-center gap-1.5 mb-2">
@@ -225,7 +347,11 @@ export default function JobsPanel({ trainerName, onJobCompleted }: Props) {
                   </div>
                   <div className="bg-gray-950 rounded-xl p-3 max-h-48 overflow-y-auto font-mono text-[11px] text-gray-400 space-y-0.5">
                     {job.log_lines.slice(-100).map((line, i) => (
-                      <div key={i}>{line}</div>
+                      <div key={i} className={clsx(
+                        line.includes('[bootstrap]') && 'text-gray-600',
+                        line.includes('error') || line.includes('Error') ? 'text-red-400' : '',
+                        line.startsWith('{"metrics"') && 'text-emerald-400',
+                      )}>{line}</div>
                     ))}
                   </div>
                 </div>

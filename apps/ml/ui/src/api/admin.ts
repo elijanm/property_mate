@@ -1,4 +1,5 @@
 import client from './client'
+import type { MLPricingConfig, MLPlan, MLUserPlan, UserPlanInfo } from '../types/plan'
 
 export interface AnalyticsData {
   period: { from: string | null; to: string | null }
@@ -58,4 +59,39 @@ export const adminApi = {
 
   broadcast: (payload: BroadcastPayload) =>
     client.post<BroadcastResult>('/admin/broadcast', payload).then(r => r.data),
+
+  // ── Pricing ───────────────────────────────────────────────────────────────
+  getPricing: () =>
+    client.get<MLPricingConfig>('/admin/pricing').then(r => r.data),
+
+  updatePricing: (data: Partial<MLPricingConfig>) =>
+    client.put<MLPricingConfig>('/admin/pricing', data).then(r => r.data),
+
+  // ── Plans ─────────────────────────────────────────────────────────────────
+  getPlans: (includeInactive = false) =>
+    client.get<{ plans: MLPlan[] }>('/admin/plans', { params: { include_inactive: includeInactive } })
+      .then(r => r.data.plans),
+
+  createPlan: (data: Omit<MLPlan, 'id' | 'created_at' | 'updated_at'>) =>
+    client.post<MLPlan>('/admin/plans', data).then(r => r.data),
+
+  updatePlan: (planId: string, data: Partial<MLPlan>) =>
+    client.put<MLPlan>(`/admin/plans/${planId}`, data).then(r => r.data),
+
+  deletePlan: (planId: string) =>
+    client.delete<{ deactivated: boolean }>(`/admin/plans/${planId}`).then(r => r.data),
+
+  // ── User plan ─────────────────────────────────────────────────────────────
+  assignPlan: (planId: string, userEmail: string, orgId = '') =>
+    client.post(`/admin/plans/${planId}/assign`, { user_email: userEmail, org_id: orgId }).then(r => r.data),
+
+  getUserPlan: (userEmail: string, orgId = '') =>
+    client.get<UserPlanInfo>(`/admin/users/${encodeURIComponent(userEmail)}/plan`, { params: { org_id: orgId } })
+      .then(r => r.data),
+
+  setUserExempt: (userEmail: string, orgId: string, localGpuExempt: boolean) =>
+    client.patch<MLUserPlan>(`/admin/users/${encodeURIComponent(userEmail)}/exempt`, {
+      org_id: orgId,
+      local_gpu_exempt: localGpuExempt,
+    }).then(r => r.data),
 }

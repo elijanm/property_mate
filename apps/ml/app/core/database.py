@@ -32,6 +32,7 @@ async def init_db():
     from app.models.wallet import Wallet, WalletTransaction
     from app.models.dataset import DatasetProfile, DatasetCollector, DatasetEntry
     from app.models.platform_ledger import PlatformLedger
+    from app.models.ml_plan import MLPricingConfig, MLPlan, MLUserPlan
 
     client = AsyncIOMotorClient(settings.MONGODB_URL)
     await init_beanie(
@@ -61,6 +62,9 @@ async def init_db():
             DatasetCollector,
             DatasetEntry,
             PlatformLedger,
+            MLPricingConfig,
+            MLPlan,
+            MLUserPlan,
         ],
     )
     logger.info("ml_db_initialized", database=settings.MONGODB_DATABASE)

@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import { trainersApi } from '@/api/trainers'
 import { walletApi } from '@/api/wallet'
-import type { TrainerRegistration, GpuOption } from '@/types/trainer'
+import type { TrainerRegistration, GpuOption, LocalGpuInfo } from '@/types/trainer'
 import type { Wallet } from '@/types/wallet'
 import JobsPanel from './JobsPanel'
-import { Play, Upload, Loader2, CheckCircle2, AlertCircle, ChevronRight, X, Search, Zap } from 'lucide-react'
+import { Play, Upload, Loader2, CheckCircle2, AlertCircle, ChevronRight, X, Search, Zap, Cpu, ShieldCheck } from 'lucide-react'
 import clsx from 'clsx'
 
 const PRESETS = [
@@ -48,8 +48,6 @@ function GpuPickerModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.7)' }}>
       <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-2xl flex flex-col shadow-2xl" style={{ maxHeight: '85vh' }}>
-
-        {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
           <div>
             <h2 className="text-sm font-semibold text-white">Select GPU</h2>
@@ -62,16 +60,13 @@ function GpuPickerModal({
           </button>
         </div>
 
-        {/* Filter bar */}
         <div className="flex items-center gap-2 px-5 py-3 border-b border-gray-800 flex-wrap">
-          {/* Search */}
           <div className="flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1.5 flex-1 min-w-[140px]">
             <Search size={11} className="text-gray-500 flex-shrink-0" />
             <input value={search} onChange={e => setSearch(e.target.value)}
               placeholder="Search GPU…"
               className="bg-transparent text-xs text-gray-200 placeholder-gray-600 focus:outline-none w-full" />
           </div>
-          {/* Max price */}
           <div className="flex items-center gap-1 bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1.5">
             <span className="text-[10px] text-gray-500">Max</span>
             <span className="text-[10px] text-gray-600">$</span>
@@ -81,7 +76,6 @@ function GpuPickerModal({
               className="w-12 bg-transparent text-xs text-gray-200 focus:outline-none" />
             <span className="text-[10px] text-gray-500">/hr</span>
           </div>
-          {/* Min VRAM */}
           <div className="flex items-center gap-1 bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1.5">
             <span className="text-[10px] text-gray-500">≥</span>
             <input type="number" min={0} step={8} value={filterMinVram || ''}
@@ -90,7 +84,6 @@ function GpuPickerModal({
               className="w-10 bg-transparent text-xs text-gray-200 focus:outline-none" />
             <span className="text-[10px] text-gray-500">GB</span>
           </div>
-          {/* Sort */}
           <div className="flex gap-0.5 bg-gray-800 border border-gray-700 rounded-lg p-0.5">
             {(['price', 'vram'] as const).map(s => (
               <button key={s} onClick={() => setSortBy(s)}
@@ -102,7 +95,6 @@ function GpuPickerModal({
           </div>
         </div>
 
-        {/* GPU list — scrollable */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
           {loading ? (
             <div className="flex items-center justify-center gap-2 text-xs text-gray-500 py-10">
@@ -125,7 +117,7 @@ function GpuPickerModal({
                           'relative flex items-center justify-between p-3 rounded-xl border text-left transition-all',
                           isSelected
                             ? 'border-brand-500 bg-brand-900/30 ring-1 ring-brand-500/30'
-                            : `border-gray-700 hover:border-gray-500 bg-gray-800/50 hover:bg-gray-800`
+                            : 'border-gray-700 hover:border-gray-500 bg-gray-800/50 hover:bg-gray-800'
                         )}>
                         {isSelected && (
                           <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-brand-400" />
@@ -157,7 +149,6 @@ function GpuPickerModal({
           )}
         </div>
 
-        {/* Footer */}
         {source === 'live' && !loading && (
           <div className="px-5 py-2.5 border-t border-gray-800 text-[10px] text-gray-700">
             Live GPU prices · refreshed every 5 min · prices shown are final
@@ -168,14 +159,117 @@ function GpuPickerModal({
   )
 }
 
+// ── Local compute card ───────────────────────────────────────────────────────
+function LocalComputeCard({
+  info, wallet, priceOverride,
+}: {
+  info: LocalGpuInfo
+  wallet: Wallet | null
+  priceOverride: number
+}) {
+  const isFree      = info.is_free
+  const reservation = isFree ? 0 : priceOverride * 1.5
+  const hasBalance  = wallet == null || wallet.balance >= reservation
+
+  return (
+    <div className="mt-3 space-y-3">
+      {/* Hardware chip */}
+      <div className={clsx(
+        'w-full flex items-center justify-between px-3 py-2.5 rounded-xl border',
+        info.is_cuda_available
+          ? 'border-sky-600/60 bg-sky-900/20'
+          : 'border-gray-700 bg-gray-900',
+      )}>
+        <div className="flex items-center gap-2.5">
+          <Cpu size={13} className={info.is_cuda_available ? 'text-sky-400 flex-shrink-0' : 'text-gray-500 flex-shrink-0'} />
+          <div className="text-left">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-sm font-semibold text-white">{info.gpu_name}</span>
+              {info.vram_gb > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded border border-sky-800/40 bg-sky-900/20 text-sky-300 font-mono">
+                  {info.vram_gb} GB
+                </span>
+              )}
+              {info.compute_capability && (
+                <span className="text-[10px] text-gray-600">SM {info.compute_capability}</span>
+              )}
+            </div>
+            <div className="text-[10px] text-gray-500 mt-0.5">
+              {info.is_cuda_available ? `${info.gpu_count} device${info.gpu_count !== 1 ? 's' : ''} · CUDA` : 'CPU-only compute'}
+            </div>
+          </div>
+        </div>
+        <div className="text-right flex-shrink-0 ml-3">
+          {isFree ? (
+            <span className="text-sm font-bold text-emerald-400">Free</span>
+          ) : (
+            <div className="text-right">
+              <div className="text-sm font-bold text-white">${priceOverride.toFixed(2)}</div>
+              <div className="text-[10px] text-gray-600">USD / hr</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Billing detail card */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-3 space-y-1.5 text-xs">
+        {isFree ? (
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-emerald-400 font-medium">
+              <ShieldCheck size={13} />
+              {info.is_exempt
+                ? 'Your account is exempt — no charge for local training'
+                : info.global_free
+                  ? 'Free for all users — global override is ON'
+                  : 'Free — no charges apply'}
+            </div>
+            {(info.global_free || info.is_exempt) && (
+              <p className="text-[10px] text-gray-600 pl-5">
+                {info.global_free
+                  ? 'To start charging, go to Admin → Billing Settings → Pricing and turn off "Always free (global override)".'
+                  : 'To remove exemption, go to Admin → Billing Settings → User Plan and toggle off "Exempt from local GPU charges".'}
+              </p>
+            )}
+          </div>
+        ) : (
+          <>
+            <div className="flex justify-between text-gray-500">
+              <span>Rate</span>
+              <span className="text-gray-300">${priceOverride.toFixed(2)} USD / hr</span>
+            </div>
+            <div className="flex justify-between text-amber-500 font-medium">
+              <span>Reservation (1.5×)</span>
+              <span>${reservation.toFixed(2)} USD</span>
+            </div>
+            {wallet != null && (
+              <div className={clsx('flex justify-between font-semibold pt-1 border-t border-gray-800',
+                hasBalance ? 'text-emerald-400' : 'text-red-400')}>
+                <span>Wallet balance</span>
+                <span>${wallet.balance.toFixed(2)} USD</span>
+              </div>
+            )}
+            {wallet != null && !hasBalance && (
+              <p className="text-red-400 text-[10px]">Insufficient balance — top up your wallet.</p>
+            )}
+            <p className="text-gray-600 text-[10px] pt-0.5">
+              Charged on actual wall-clock time after job completes. Reservation released if less was used.
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Main component ──────────────────────────────────────────────────────────
 interface Props {
   onJobCompleted?: (trainerName: string) => void
+  initialTrainer?: string
 }
 
-export default function TrainingPage({ onJobCompleted }: Props) {
+export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) {
   const [trainers, setTrainers]         = useState<TrainerRegistration[]>([])
-  const [selected, setSelected]         = useState<string>('')
+  const [selected, setSelected]         = useState<string>(initialTrainer ?? '')
   const [mode, setMode]                 = useState<'simple' | 'with-data'>('simple')
   const [configOverrides, setConfigOverrides] = useState('')
   const [file, setFile]                 = useState<File | null>(null)
@@ -193,6 +287,15 @@ export default function TrainingPage({ onJobCompleted }: Props) {
   const [gpuLoading, setGpuLoading]     = useState(false)
   const [gpuModalOpen, setGpuModalOpen] = useState(false)
   const [wallet, setWallet]             = useState<Wallet | null>(null)
+  const [localInfo, setLocalInfo]       = useState<LocalGpuInfo | null>(null)
+  const [localInfoLoading, setLocalInfoLoading] = useState(false)
+  const [localInfoError, setLocalInfoError] = useState(false)
+  const [localPriceOverride, setLocalPriceOverride] = useState<number>(0.15)
+
+  // Auto-select trainer when coming from TrainersPage
+  useEffect(() => {
+    if (initialTrainer) setSelected(initialTrainer)
+  }, [initialTrainer])
 
   useEffect(() => {
     trainersApi.list().then(setTrainers).catch(() => {})
@@ -207,10 +310,20 @@ export default function TrainingPage({ onJobCompleted }: Props) {
     walletApi.get().then(setWallet).catch(() => {})
   }, [])
 
+  // Fetch local GPU + billing info on mount (always needed for local tab)
+  useEffect(() => {
+    setLocalInfoLoading(true)
+    trainersApi.getLocalInfo()
+      .then(info => { setLocalInfo(info); setLocalPriceOverride(info.price_per_hour) })
+      .catch(() => setLocalInfoError(true))
+      .finally(() => setLocalInfoLoading(false))
+  }, [])
+
   const selectedGpu = gpuOptions.find(g => g.id === gpuTypeId)
-  const estimatedCost  = selectedGpu ? selectedGpu.price_per_hour : 0
-  const reservation    = estimatedCost * 3
-  const insufficientBalance = wallet != null && wallet.balance < reservation
+  const cloudEstimatedCost  = selectedGpu ? selectedGpu.price_per_hour : 0
+  const cloudReservation    = cloudEstimatedCost * 3
+  const insufficientBalance = compute === 'cloud_gpu' && wallet != null && wallet.balance < cloudReservation
+  const localInsufficient   = compute === 'local' && !localInfo?.is_free && wallet != null && wallet.balance < localPriceOverride * 1.5
 
   const submit = async () => {
     if (!selected) return
@@ -300,19 +413,80 @@ export default function TrainingPage({ onJobCompleted }: Props) {
             </div>
           )}
 
-          {/* Compute selector */}
+          {/* Compute selector — tab style */}
           <div>
-            <label className="block text-xs text-gray-400 mb-2">Compute</label>
-            <div className="flex gap-1 bg-gray-900 rounded-xl p-1 w-fit">
-              {(['local', 'cloud_gpu'] as const).map(c => (
-                <button key={c} onClick={() => setCompute(c)}
-                  className={clsx('px-3 py-1.5 text-xs rounded-lg font-medium transition-colors',
-                    c === compute ? 'bg-brand-600 text-white' : 'text-gray-500 hover:text-gray-300')}>
-                  {c === 'local' ? '🖥 Local' : '⚡ Cloud GPU'}
+            <div className="flex gap-0.5 border-b border-gray-800 mb-4">
+              {([
+                { id: 'local',     label: '🖥 Local' },
+                { id: 'cloud_gpu', label: '⚡ Cloud GPU' },
+              ] as const).map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setCompute(tab.id)}
+                  className={clsx(
+                    'px-4 py-2.5 text-sm font-medium transition-colors relative',
+                    compute === tab.id
+                      ? 'text-white after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-brand-500 after:rounded-t'
+                      : 'text-gray-500 hover:text-gray-300',
+                  )}
+                >
+                  {tab.label}
                 </button>
               ))}
             </div>
 
+            {/* Local compute card */}
+            {compute === 'local' && (
+              localInfoLoading ? (
+                <div className="mt-3 flex items-center gap-2 text-xs text-gray-500">
+                  <Loader2 size={12} className="animate-spin" /> Loading compute info…
+                </div>
+              ) : localInfo ? (
+                <LocalComputeCard
+                  info={localInfo}
+                  wallet={wallet}
+                  priceOverride={localPriceOverride}
+                />
+              ) : (
+                /* Fallback: API failed — still show price card so user can proceed */
+                <div className="mt-3 space-y-3">
+                  <div className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl border border-gray-700 bg-gray-900">
+                    <div className="flex items-center gap-2.5">
+                      <Cpu size={13} className="text-gray-500 flex-shrink-0" />
+                      <div>
+                        <div className="text-sm font-semibold text-white">Local compute</div>
+                        <div className="text-[10px] text-gray-500 mt-0.5">
+                          {localInfoError ? 'Could not detect hardware' : 'Detecting…'}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-bold text-white">${localPriceOverride.toFixed(2)}</div>
+                      <div className="text-[10px] text-gray-600">USD / hr</div>
+                    </div>
+                  </div>
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-3 space-y-1.5 text-xs">
+                    <div className="flex justify-between text-gray-500">
+                      <span>Rate</span>
+                      <span className="text-gray-300">${localPriceOverride.toFixed(2)} USD / hr</span>
+                    </div>
+                    <div className="flex justify-between text-amber-500 font-medium">
+                      <span>Reservation (1.5×)</span>
+                      <span>${(localPriceOverride * 1.5).toFixed(2)} USD</span>
+                    </div>
+                    {wallet && (
+                      <div className={clsx('flex justify-between font-semibold pt-1 border-t border-gray-800',
+                        wallet.balance >= localPriceOverride * 1.5 ? 'text-emerald-400' : 'text-red-400')}>
+                        <span>Wallet balance</span>
+                        <span>${wallet.balance.toFixed(2)} USD</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            )}
+
+            {/* Cloud GPU */}
             {compute === 'cloud_gpu' && (
               <div className="mt-3 space-y-3">
                 {!gpuAvailable ? (
@@ -321,7 +495,6 @@ export default function TrainingPage({ onJobCompleted }: Props) {
                   </p>
                 ) : (
                   <>
-                    {/* Selected GPU chip + change button */}
                     <button onClick={() => setGpuModalOpen(true)}
                       className={clsx(
                         'w-full flex items-center justify-between px-3 py-2.5 rounded-xl border transition-all',
@@ -353,16 +526,15 @@ export default function TrainingPage({ onJobCompleted }: Props) {
                       </div>
                     </button>
 
-                    {/* Wallet estimate */}
                     {selectedGpu && wallet && (
                       <div className="bg-gray-900 border border-gray-800 rounded-xl p-3 space-y-1.5 text-xs">
                         <div className="flex justify-between text-gray-500">
                           <span>Est. cost (1 hr)</span>
-                          <span className="text-gray-300">${estimatedCost.toFixed(2)} USD</span>
+                          <span className="text-gray-300">${cloudEstimatedCost.toFixed(2)} USD</span>
                         </div>
                         <div className="flex justify-between text-amber-500 font-medium">
                           <span>Reservation (3×)</span>
-                          <span>${reservation.toFixed(2)} USD</span>
+                          <span>${cloudReservation.toFixed(2)} USD</span>
                         </div>
                         <div className={clsx('flex justify-between font-semibold pt-1 border-t border-gray-800',
                           insufficientBalance ? 'text-red-400' : 'text-emerald-400')}>
@@ -406,6 +578,7 @@ export default function TrainingPage({ onJobCompleted }: Props) {
             || !selected
             || (compute === 'cloud_gpu' && !gpuAvailable)
             || (compute === 'cloud_gpu' && insufficientBalance)
+            || localInsufficient
           }
             className="flex items-center gap-2 px-5 py-2.5 bg-brand-600 hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold text-white transition-colors">
             {loading ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} />}
@@ -415,7 +588,7 @@ export default function TrainingPage({ onJobCompleted }: Props) {
           {result && (
             <div className="bg-emerald-950/40 border border-emerald-800 rounded-xl p-3 flex items-center gap-2 text-sm text-emerald-300">
               <CheckCircle2 size={15} />
-              Job queued{compute === 'cloud_gpu' && selectedGpu ? ` · ⚡ ${selectedGpu.name}` : ''} ·
+              Job queued{compute === 'cloud_gpu' && selectedGpu ? ` · ⚡ ${selectedGpu.name}` : compute === 'local' && localInfo ? ` · 🖥 ${localInfo.gpu_name}` : ''} ·
               <code className="font-mono text-xs text-emerald-500">{result}</code>
             </div>
           )}

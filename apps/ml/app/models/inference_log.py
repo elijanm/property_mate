@@ -27,4 +27,5 @@ class InferenceLog(Document):
     caller_org_id: Optional[str] = None
     corrected_output: Any = None
     session_id: Optional[str] = None
+    cost_usd: float = 0.0              # amount charged to wallet for this call
     created_at: datetime = Field(default_factory=utc_now)

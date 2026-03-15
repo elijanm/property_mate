@@ -23,6 +23,7 @@ import ExperimentsPage from './components/ExperimentsPage'
 import UsersPage from './components/UsersPage'
 import WalletPage from './pages/WalletPage'
 import AdminAnalyticsPage from './pages/AdminAnalyticsPage'
+import BillingSettingsPage from './components/BillingSettingsPage'
 import DatasetPage from './pages/DatasetPage'
 import CodeEditorPage from './pages/CodeEditorPage'
 import CollectPage from './pages/CollectPage'
@@ -43,12 +44,12 @@ import {
   Upload, Play, Settings, List, Activity, Shield,
   FlaskConical, Bell, Key, Layers, ClipboardList, GitCompare,
   LogOut, User, Loader2, Users, Wallet, BarChart2, Database, Code2,
-  ChevronRight, ChevronDown,
+  ChevronRight, ChevronDown, DollarSign,
 } from 'lucide-react'
 import Logo from './components/Logo'
 import clsx from 'clsx'
 
-type Page = 'models' | 'trainers' | 'editor' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets'
+type Page = 'models' | 'trainers' | 'editor' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing'
 
 type NavGroup = {
   id: string
@@ -101,6 +102,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'security',  label: 'Security',  icon: <Shield size={14} /> },
       { id: 'audit',     label: 'Audit Log', icon: <ClipboardList size={14} /> },
       { id: 'analytics', label: 'Analytics', icon: <BarChart2 size={14} /> },
+      { id: 'billing',   label: 'Billing',   icon: <DollarSign size={14} /> },
       { id: 'api-keys',  label: 'API Keys',  icon: <Key size={14} /> },
       { id: 'config',    label: 'Config',    icon: <Settings size={14} /> },
     ],
@@ -131,6 +133,7 @@ const PAGE_TITLE: Record<Page, string> = {
   analytics:   'Platform Analytics',
   datasets:    'Datasets',
   wallet:      'Wallet',
+  billing:     'Billing Settings',
 }
 
 export default function App() {
@@ -156,6 +159,7 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [page, setPage] = useState<Page>('models')
+  const [trainingInitTrainer, setTrainingInitTrainer] = useState<string | undefined>()
   const [wallet, setWallet] = useState<WalletData | null>(null)
   const [navLayout, setNavLayout] = useState<1 | 2 | 3>(3)
   const [railActiveGroup, setRailActiveGroup] = useState<string>('build')
@@ -573,12 +577,12 @@ export default function App() {
                 <ModelGrid deployments={deployments} onSelect={setSelected} onDelete={handleDeleteDeployment} loading={loading} />
               )}
               {page === 'trainers' && (
-                <TrainersPage onStartTraining={() => { navigate('training') }} />
+                <TrainersPage onStartTraining={(name) => { setTrainingInitTrainer(name); navigate('training') }} />
               )}
               {page === 'deploy' && (
                 <DeployPage onJobCreated={() => navigate('jobs')} />
               )}
-              {page === 'training' && <TrainingPage onJobCompleted={handleTrainingCompleted} />}
+              {page === 'training' && <TrainingPage onJobCompleted={handleTrainingCompleted} initialTrainer={trainingInitTrainer} />}
               {page === 'jobs' && <JobsPanel />}
               {page === 'logs' && <InferenceLogsPage />}
               {page === 'monitoring' && <MonitoringPage />}
@@ -594,6 +598,7 @@ export default function App() {
               {page === 'analytics' && <AdminAnalyticsPage />}
               {page === 'datasets' && <DatasetPage />}
               {page === 'wallet' && <WalletPage />}
+              {page === 'billing' && <BillingSettingsPage />}
             </div>
           )}
         </div>

@@ -149,6 +149,7 @@ async def predict(
     caller_org_id: Optional[str] = None,
     session_id: Optional[str] = None,
     org_id: str = "",
+    user_email: Optional[str] = None,
 ) -> tuple:
     """Load the active deployment and run prediction. Returns (result, log_id)."""
     import mlflow
@@ -242,6 +243,18 @@ async def predict(
                 else:
                     clean_result[k] = v
 
+        # Inference billing — deduct from wallet if applicable
+        cost_usd = 0.0
+        if error_msg is None and user_email:
+            try:
+                from app.services.ml_billing_service import charge_inference
+                cost_usd = await charge_inference(user_email, org_id, trainer_name)
+            except ValueError as billing_exc:
+                # Re-raise as the prediction itself succeeded — but billing failed
+                raise RuntimeError(str(billing_exc)) from billing_exc
+            except Exception:
+                pass  # billing errors never block inference results
+
         log = InferenceLog(
             trainer_name=trainer_name,
             model_version=dep.mlflow_model_version,
@@ -254,6 +267,7 @@ async def predict(
             caller_org_id=caller_org_id,
             session_id=session_id,
             org_id=org_id,
+            cost_usd=cost_usd,
         )
         await log.insert()
 
