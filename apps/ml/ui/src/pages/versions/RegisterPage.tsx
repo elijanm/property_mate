@@ -1,5 +1,5 @@
 import { useState, FormEvent } from 'react'
-import { useAuth } from '../context/AuthContext'
+import { useAuth } from '../../context/AuthContext'
 import { Loader2 } from 'lucide-react'
 import Logo from '@/components/Logo'
 

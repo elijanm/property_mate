@@ -1,6 +1,6 @@
 import { useState, FormEvent } from 'react'
-import { useAuth } from '../context/AuthContext'
-import { authApi } from '../api/auth'
+import { useAuth } from '../../context/AuthContext'
+import { authApi } from '../../api/auth'
 import { Eye, EyeOff, Loader2, Mail } from 'lucide-react'
 import Logo from '@/components/Logo'
 
