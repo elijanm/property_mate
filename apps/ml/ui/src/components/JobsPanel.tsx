@@ -328,7 +328,7 @@ export default function JobsPanel({ trainerName, onJobCompleted }: Props) {
                     {job.cost_log.map((snap, i) => (
                       <div key={i} className={clsx('flex gap-3', snap.final && 'text-emerald-400')}>
                         <span className="w-16 tabular-nums">{snap.elapsed_s}s</span>
-                        <span className="tabular-nums text-amber-400">${snap.accrued_usd.toFixed(12)}</span>
+                        <span className="tabular-nums text-amber-400">${(snap.accrued_usd ?? 0).toFixed(12)}</span>
                         {snap.gpu_util_pct != null && (
                           <span className="text-violet-500">GPU {snap.gpu_util_pct}%</span>
                         )}

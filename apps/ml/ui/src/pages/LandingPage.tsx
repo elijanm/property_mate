@@ -184,10 +184,10 @@ export default function LandingPage({ onSignIn, onGetStarted, onApiDocs, onGetti
   useEffect(() => {
     adminApi.getPublicPricing().then(data => {
       setRates({
-        cpu: data.pricing.local_cpu_price_per_hour,
-        gpu: data.pricing.local_gpu_price_per_hour,
-        inference: data.pricing.inference_price_per_call,
-        cloudGpu: data.pricing.cloud_gpu_min_price_per_hour,
+        cpu: data.pricing.local_cpu_price_per_hour ?? DEFAULT_ONDEMAND.cpu,
+        gpu: data.pricing.local_gpu_price_per_hour ?? DEFAULT_ONDEMAND.gpu,
+        inference: data.pricing.inference_price_per_call ?? DEFAULT_ONDEMAND.inference,
+        cloudGpu: data.pricing.cloud_gpu_min_price_per_hour ?? DEFAULT_ONDEMAND.cloudGpu,
       })
       setDbPlans(data.plans)
     }).catch(() => {})  // silently fall back to defaults
