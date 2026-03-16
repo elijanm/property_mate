@@ -396,8 +396,8 @@ services:
       TRAINING_EARLY_STOPPING_PATIENCE: "5"
       TRAINER_PLUGIN_DIR: /app/trainers
       GIT_PYTHON_REFRESH: quiet
-      APP_BASE_URL: http://localhost:8030
-      FRONTEND_BASE_URL: https://localhost:5443
+      APP_BASE_URL: ${ML_APP_BASE_URL:-http://localhost:8030}
+      FRONTEND_BASE_URL: ${ML_FRONTEND_BASE_URL:-https://localhost:5443}
       # MLflow uses standard AWS env vars to load artifacts from MinIO
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin

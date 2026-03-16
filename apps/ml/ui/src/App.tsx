@@ -53,8 +53,10 @@ import {
 import Logo from './components/Logo'
 import clsx from 'clsx'
 
-// Read reset token once at module level — immune to StrictMode double-render and BrowserRouter re-runs
-const _RESET_TOKEN_FROM_URL = new URLSearchParams(window.location.search).get('reset_token')
+// Read tokens once at module level — immune to StrictMode double-render and URL-cleanup effect race
+const _params = new URLSearchParams(window.location.search)
+const _RESET_TOKEN_FROM_URL  = _params.get('reset_token')
+const _VERIFY_TOKEN_FROM_URL = _params.get('token') ?? _params.get('verify_token')
 
 type Page = 'models' | 'trainers' | 'editor' | 'annotate' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing' | 'usage'
 
@@ -166,11 +168,9 @@ export default function App() {
 
   // Handle ?token= query param for link-click activation
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const vtoken = params.get('token') ?? params.get('verify_token')
-    if (!vtoken) return
+    if (!_VERIFY_TOKEN_FROM_URL) return
     setLinkVerifying(true)
-    authApi.verifyToken(vtoken)
+    authApi.verifyToken(_VERIFY_TOKEN_FROM_URL)
       .then(res => { setLinkEmail(res.email); setLinkVerifying(false) })
       .catch(() => setLinkVerifying(false))
   }, [])
