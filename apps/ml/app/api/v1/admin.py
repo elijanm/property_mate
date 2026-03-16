@@ -1,5 +1,5 @@
 """Super-admin analytics, email broadcast, pricing, and plan management API."""
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 from fastapi import APIRouter, Query, Depends, HTTPException
 from pydantic import BaseModel
@@ -22,10 +22,24 @@ RequireAdmin = Depends(require_roles("admin"))
 # ═══════════════════════════════════════════════════════════════
 
 class PricingConfigUpdateRequest(BaseModel):
-    local_gpu_price_per_hour: Optional[float] = None   # e.g. 0.15
+    local_cpu_price_per_hour: Optional[float] = None   # e.g. 0.05
+    local_cpu_free: Optional[bool] = None               # True = CPU training always free
+    local_gpu_price_per_hour: Optional[float] = None   # e.g. 0.20
     local_gpu_free: Optional[bool] = None               # True = always free
     inference_price_per_call: Optional[float] = None   # e.g. 0.001
     inference_free: Optional[bool] = None               # True = always free
+
+
+def _pricing_dict(cfg) -> dict:
+    return {
+        "local_cpu_price_per_hour": cfg.local_cpu_price_per_hour,
+        "local_cpu_free": cfg.local_cpu_free,
+        "local_gpu_price_per_hour": cfg.local_gpu_price_per_hour,
+        "local_gpu_free": cfg.local_gpu_free,
+        "inference_price_per_call": cfg.inference_price_per_call,
+        "inference_free": cfg.inference_free,
+        "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
+    }
 
 
 @router.get("/pricing", dependencies=[RequireAdmin])
@@ -33,13 +47,7 @@ async def get_pricing(_=Depends(get_current_user)):
     """Return current global ML pricing configuration."""
     from app.services.ml_billing_service import get_pricing_config
     cfg = await get_pricing_config()
-    return {
-        "local_gpu_price_per_hour": cfg.local_gpu_price_per_hour,
-        "local_gpu_free": cfg.local_gpu_free,
-        "inference_price_per_call": cfg.inference_price_per_call,
-        "inference_free": cfg.inference_free,
-        "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
-    }
+    return _pricing_dict(cfg)
 
 
 @router.put("/pricing", dependencies=[RequireAdmin])
@@ -47,13 +55,7 @@ async def update_pricing(body: PricingConfigUpdateRequest, _=Depends(get_current
     """Update global ML pricing configuration."""
     from app.services.ml_billing_service import update_pricing_config
     cfg = await update_pricing_config(**body.model_dump(exclude_none=True))
-    return {
-        "local_gpu_price_per_hour": cfg.local_gpu_price_per_hour,
-        "local_gpu_free": cfg.local_gpu_free,
-        "inference_price_per_call": cfg.inference_price_per_call,
-        "inference_free": cfg.inference_free,
-        "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
-    }
+    return _pricing_dict(cfg)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -64,8 +66,10 @@ class PlanCreateRequest(BaseModel):
     name: str
     description: str = ""
     price_usd_per_month: float = 0.0
-    free_training_hours: float = 0.0
-    free_training_period: str = "month"    # "day" | "week" | "month" | "none"
+    included_period: str = "month"
+    included_cpu_hours: float = 0.0
+    included_local_gpu_hours: float = 0.0
+    included_cloud_gpu_credit_usd: float = 0.0
     free_inference_calls: int = 0
     free_inference_period: str = "month"
     new_customer_credit_usd: float = 0.0
@@ -76,8 +80,10 @@ class PlanUpdateRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     price_usd_per_month: Optional[float] = None
-    free_training_hours: Optional[float] = None
-    free_training_period: Optional[str] = None
+    included_period: Optional[str] = None
+    included_cpu_hours: Optional[float] = None
+    included_local_gpu_hours: Optional[float] = None
+    included_cloud_gpu_credit_usd: Optional[float] = None
     free_inference_calls: Optional[int] = None
     free_inference_period: Optional[str] = None
     new_customer_credit_usd: Optional[float] = None
@@ -86,13 +92,24 @@ class PlanUpdateRequest(BaseModel):
 
 
 def _plan_dict(plan) -> dict:
+    # Normalise: prefer new canonical fields, fall back to legacy fields
+    cpu_hrs = getattr(plan, "included_cpu_hours", None)
+    if cpu_hrs is None:
+        cpu_hrs = getattr(plan, "free_training_hours", 0.0)
+    gpu_hrs = getattr(plan, "included_local_gpu_hours", None)
+    if gpu_hrs is None:
+        gpu_hrs = getattr(plan, "free_local_gpu_hours", 0.0)
+    period = getattr(plan, "included_period", None) or getattr(plan, "free_training_period", "month")
+    cloud_credit = getattr(plan, "included_cloud_gpu_credit_usd", 0.0)
     return {
         "id": str(plan.id),
         "name": plan.name,
         "description": plan.description,
         "price_usd_per_month": plan.price_usd_per_month,
-        "free_training_hours": plan.free_training_hours,
-        "free_training_period": plan.free_training_period,
+        "included_period": period,
+        "included_cpu_hours": cpu_hrs,
+        "included_local_gpu_hours": gpu_hrs,
+        "included_cloud_gpu_credit_usd": cloud_credit,
         "free_inference_calls": plan.free_inference_calls,
         "free_inference_period": plan.free_inference_period,
         "new_customer_credit_usd": plan.new_customer_credit_usd,
@@ -163,6 +180,108 @@ async def update_plan(plan_id: str, body: PlanUpdateRequest, _=Depends(get_curre
     updates["updated_at"] = utc_now()
     await plan.set(updates)
     return _plan_dict(plan)
+
+
+@router.post("/plans/seed", dependencies=[RequireAdmin])
+async def seed_plans(_=Depends(get_current_user)):
+    """
+    Seed 3 profitability-optimised plans based on current pricing config.
+    CPU, local GPU, and cloud GPU credits are all paid — no free CPU tier.
+    Margins are calculated live from the current pricing config.
+    Skips any plan whose name already exists.
+    """
+    from app.models.ml_plan import MLPlan
+    from app.services.ml_billing_service import get_pricing_config
+
+    cfg = await get_pricing_config()
+    cpu_rate = cfg.local_cpu_price_per_hour        # e.g. 0.05
+    gpu_rate = cfg.local_gpu_price_per_hour        # e.g. 0.20
+    inf_rate = cfg.inference_price_per_call        # e.g. 0.001
+
+    # ── Compute cost of each plan's included compute ───────────────────────────
+    # Starter  ($0): acquisition tier — $5 credit one-time, 500 inference calls
+    #   cost = $5 (credit) + 500×inf_rate = $5 + $0.50 = ~$5.50 one-time; no recurring cost
+    # Developer ($19): 30h CPU + 10h GPU + $2 cloud credit + 2000 calls
+    #   cost = 30×cpu_rate + 10×gpu_rate + $2 + 2000×inf_rate
+    # Pro ($79): 100h CPU + 40h GPU + $8 cloud credit + 10000 calls
+    #   cost = 100×cpu_rate + 40×gpu_rate + $8 + 10000×inf_rate
+
+    dev_cost  = round(30*cpu_rate + 10*gpu_rate + 2.0 + 2000*inf_rate, 2)
+    pro_cost  = round(100*cpu_rate + 40*gpu_rate + 8.0 + 10000*inf_rate, 2)
+    dev_margin  = round((19.0 - dev_cost) / 19.0 * 100, 1)
+    pro_margin  = round((79.0 - pro_cost) / 79.0 * 100, 1)
+
+    SEED_PLANS = [
+        {
+            "name": "Starter",
+            "description": (
+                f"Pay-as-you-go. No monthly fee — just pre-fund your wallet and pay for what you use. "
+                f"CPU from ${cpu_rate}/hr, local GPU from ${gpu_rate}/hr. "
+                f"$5 welcome credit to get you started."
+            ),
+            "price_usd_per_month": 0.0,
+            "included_period": "month",
+            "included_cpu_hours": 0.0,
+            "included_local_gpu_hours": 0.0,
+            "included_cloud_gpu_credit_usd": 0.0,
+            "free_inference_calls": 500,
+            "free_inference_period": "month",
+            "new_customer_credit_usd": 5.0,
+            "is_default": True,
+        },
+        {
+            "name": "Developer",
+            "description": (
+                f"30 CPU hrs + 10 local GPU hrs + $2 cloud GPU credit every month. "
+                f"Included compute value: ~${dev_cost}. Monthly fee: $19 (~{dev_margin}% margin)."
+            ),
+            "price_usd_per_month": 19.0,
+            "included_period": "month",
+            "included_cpu_hours": 30.0,
+            "included_local_gpu_hours": 10.0,
+            "included_cloud_gpu_credit_usd": 2.0,
+            "free_inference_calls": 2000,
+            "free_inference_period": "month",
+            "new_customer_credit_usd": 10.0,
+            "is_default": False,
+        },
+        {
+            "name": "Pro",
+            "description": (
+                f"100 CPU hrs + 40 local GPU hrs + $8 cloud GPU credit every month. "
+                f"Included compute value: ~${pro_cost}. Monthly fee: $79 (~{pro_margin}% margin)."
+            ),
+            "price_usd_per_month": 79.0,
+            "included_period": "month",
+            "included_cpu_hours": 100.0,
+            "included_local_gpu_hours": 40.0,
+            "included_cloud_gpu_credit_usd": 8.0,
+            "free_inference_calls": 10000,
+            "free_inference_period": "month",
+            "new_customer_credit_usd": 25.0,
+            "is_default": False,
+        },
+    ]
+
+    existing_names = {p.name for p in await MLPlan.find_all().to_list()}
+
+    if "Starter" not in existing_names:
+        await MLPlan.find(MLPlan.is_default == True).update({"$set": {"is_default": False}})  # noqa: E712
+
+    created = []
+    for seed in SEED_PLANS:
+        if seed["name"] in existing_names:
+            continue
+        plan = MLPlan(**seed)
+        await plan.insert()
+        created.append(seed["name"])
+
+    return {
+        "created": created,
+        "skipped": [s["name"] for s in SEED_PLANS if s["name"] in existing_names],
+        "margins": {"Developer": f"{dev_margin}%", "Pro": f"{pro_margin}%"},
+        "rates_used": {"cpu": cpu_rate, "gpu": gpu_rate, "inference": inf_rate},
+    }
 
 
 @router.delete("/plans/{plan_id}", dependencies=[RequireAdmin])
@@ -272,6 +391,48 @@ def _user_plan_dict(up) -> dict:
         "new_customer_credit_given": up.new_customer_credit_given,
         "new_customer_credit_amount": up.new_customer_credit_amount,
         "assigned_at": up.assigned_at.isoformat() if up.assigned_at else None,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# PUBLIC PRICING (no auth — used by landing page)
+# ═══════════════════════════════════════════════════════════════
+
+@router.get("/public/pricing")
+async def public_pricing():
+    """Return current pricing + active plans for the public landing page. No auth required."""
+    from app.services.ml_billing_service import get_pricing_config
+    from app.models.ml_plan import MLPlan
+
+    cfg = await get_pricing_config()
+    plans = await MLPlan.find(MLPlan.is_active == True).sort("+price_usd_per_month").to_list()  # noqa: E712
+
+    # Annotate each plan with computed included compute value (so UI can show "value: $X")
+    cpu_rate = cfg.local_cpu_price_per_hour
+    gpu_rate = cfg.local_gpu_price_per_hour
+    inf_rate = cfg.inference_price_per_call
+
+    enriched = []
+    for p in plans:
+        d = _plan_dict(p)
+        included_value = round(
+            d["included_cpu_hours"] * cpu_rate
+            + d["included_local_gpu_hours"] * gpu_rate
+            + d["included_cloud_gpu_credit_usd"]
+            + d["free_inference_calls"] * inf_rate,
+            2,
+        )
+        d["included_compute_value_usd"] = included_value
+        enriched.append(d)
+
+    return {
+        "pricing": {
+            "local_cpu_price_per_hour": cfg.local_cpu_price_per_hour,
+            "local_gpu_price_per_hour": cfg.local_gpu_price_per_hour,
+            "inference_price_per_call": cfg.inference_price_per_call,
+            "cloud_gpu_min_price_per_hour": 0.28,  # lowest available RunPod tier
+        },
+        "plans": enriched,
     }
 
 
@@ -517,3 +678,279 @@ async def broadcast_email(
             skipped += 1
 
     return {"sent": sent, "skipped": skipped, "preview": False}
+
+
+# ═══════════════════════════════════════════════════════════════
+# USAGE TRACKER
+# ═══════════════════════════════════════════════════════════════
+
+def _period_start(reset_at: Optional[datetime], period: str) -> Optional[datetime]:
+    """Compute the start of the current period from the next reset date."""
+    if not reset_at:
+        return None
+    reset = reset_at.replace(tzinfo=None) if reset_at.tzinfo else reset_at
+    if period == "month":
+        # Go back one month
+        month = reset.month - 1 or 12
+        year = reset.year - (1 if reset.month == 1 else 0)
+        day = min(reset.day, [31,28+int(year%4==0),31,30,31,30,31,31,30,31,30,31][month-1])
+        return reset.replace(year=year, month=month, day=day)
+    elif period == "week":
+        return reset - timedelta(weeks=1)
+    elif period == "day":
+        return reset - timedelta(days=1)
+    return None
+
+
+def _compute_latency_stats(latency_values: list[float]) -> dict:
+    """Return avg and p95 latency from a list of ms values."""
+    if not latency_values:
+        return {}
+    s = sorted(latency_values)
+    avg = sum(s) / len(s)
+    p95_idx = max(0, int(len(s) * 0.95) - 1)
+    return {"avg": avg, "p95": s[p95_idx]}
+
+
+async def _build_user_usage(user: MLUser, user_plan, plan, now_naive: datetime,
+                             cloud_charges_by_org: dict, model_counts_by_org: dict,
+                             inf_counts_by_org: dict,
+                             inf_cost_by_org: dict | None = None,
+                             dataset_counts_by_org: dict | None = None,
+                             storage_bytes_by_org: dict | None = None,
+                             inf_latency_by_org: dict | None = None,
+                             inf_last_called_by_org: dict | None = None) -> dict:
+    """Build a single user's usage summary dict."""
+    # ── Local compute (CPU + local GPU combined) ────────────────────────────
+    used_seconds = user_plan.free_training_used_seconds if user_plan else 0.0
+    used_hours = round(used_seconds / 3600, 3)
+    cpu_hrs = (getattr(plan, "included_cpu_hours", 0.0) or 0.0) if plan else 0.0
+    gpu_hrs = (getattr(plan, "included_local_gpu_hours", 0.0) or 0.0) if plan else 0.0
+    limit_hours = cpu_hrs + gpu_hrs
+    training_period = (getattr(plan, "included_period", "month") or "month") if plan else "month"
+    training_reset_at = (
+        user_plan.free_training_period_reset_at.isoformat()
+        if user_plan and user_plan.free_training_period_reset_at else None
+    )
+
+    # ── Cloud GPU credit ────────────────────────────────────────────────────
+    cloud_used = round(cloud_charges_by_org.get(user.org_id or "", 0.0), 4)
+    cloud_limit = (getattr(plan, "included_cloud_gpu_credit_usd", 0.0) or 0.0) if plan else 0.0
+
+    # ── Inference calls (plan-period free quota) ────────────────────────────
+    inf_used_quota = user_plan.free_inference_used if user_plan else 0
+    inf_limit = (plan.free_inference_calls if plan else 0)
+    inf_period = (plan.free_inference_period if plan else "month") if plan else "month"
+    inf_reset_at = (
+        user_plan.free_inference_period_reset_at.isoformat()
+        if user_plan and user_plan.free_inference_period_reset_at else None
+    )
+
+    # ── Cumulative inferences this calendar month ───────────────────────────
+    month_start = now_naive.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    org_key = user.org_id or ""
+    inf_month_total = inf_counts_by_org.get(org_key, 0)
+    inf_month_cost = round((inf_cost_by_org or {}).get(org_key, 0.0), 4)
+
+    # ── Latency stats ────────────────────────────────────────────────────────
+    latency_stats = (inf_latency_by_org or {}).get(org_key, {})
+    avg_latency_ms = latency_stats.get("avg")
+    p95_latency_ms = latency_stats.get("p95")
+    last_called_at = (inf_last_called_by_org or {}).get(org_key)
+
+    # ── Storage ─────────────────────────────────────────────────────────────
+    model_count = model_counts_by_org.get(org_key, 0)
+    dataset_count = (dataset_counts_by_org or {}).get(org_key, 0)
+    storage_bytes = (storage_bytes_by_org or {}).get(org_key, 0)
+
+    return {
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": user.role,
+        "org_id": user.org_id,
+        "plan_name": (user_plan.plan_name if user_plan else None),
+        "local_compute": {
+            "used_hours": used_hours,
+            "limit_hours": limit_hours,
+            "pct": round(used_hours / limit_hours * 100, 1) if limit_hours > 0 else 0.0,
+            "period": training_period,
+            "reset_at": training_reset_at,
+        },
+        "cloud_gpu": {
+            "used_usd": cloud_used,
+            "limit_usd": cloud_limit,
+            "pct": round(cloud_used / cloud_limit * 100, 1) if cloud_limit > 0 else 0.0,
+            "reset_at": training_reset_at,
+        },
+        "inference": {
+            "quota_used": inf_used_quota,
+            "quota_limit": inf_limit,
+            "quota_pct": round(inf_used_quota / inf_limit * 100, 1) if inf_limit > 0 else 0.0,
+            "period": inf_period,
+            "reset_at": inf_reset_at,
+            "month_total": inf_month_total,
+            "month_cost_usd": inf_month_cost,
+            "avg_latency_ms": round(avg_latency_ms, 1) if avg_latency_ms is not None else None,
+            "p95_latency_ms": round(p95_latency_ms, 1) if p95_latency_ms is not None else None,
+            "last_called_at": last_called_at,
+        },
+        "storage": {
+            "model_count": model_count,
+            "dataset_count": dataset_count,
+            "storage_bytes": storage_bytes,
+        },
+    }
+
+
+@router.get("/usage", dependencies=[RequireAdmin])
+async def get_all_user_usage(_user=Depends(get_current_user)):
+    """Return per-user usage summary for all users (admin only)."""
+    from app.models.ml_plan import MLUserPlan, MLPlan
+    from beanie import PydanticObjectId
+
+    now_naive = datetime.utcnow()
+    month_start = now_naive.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    # Bulk-load users
+    users = await MLUser.find({"is_active": True}).sort("email").to_list()
+
+    # Bulk-load user plans (keyed by user_email)
+    user_plans: dict[str, MLUserPlan] = {}
+    for up in await MLUserPlan.find_all().to_list():
+        user_plans[up.user_email] = up
+
+    # Bulk-load distinct plans
+    plan_ids = {up.plan_id for up in user_plans.values() if up.plan_id}
+    plans: dict[str, MLPlan] = {}
+    for pid in plan_ids:
+        try:
+            p = await MLPlan.get(PydanticObjectId(pid))
+            if p:
+                plans[str(p.id)] = p
+        except Exception:
+            pass
+
+    # Cloud GPU charges per org in current training period
+    cloud_jobs = await TrainingJob.find(
+        {"compute_type": "cloud_gpu", "wallet_charged": {"$gt": 0}}
+    ).to_list()
+    cloud_charges_by_org: dict[str, float] = {}
+    for j in cloud_jobs:
+        org = getattr(j, "org_id", "") or ""
+        cloud_charges_by_org[org] = cloud_charges_by_org.get(org, 0.0) + j.wallet_charged
+
+    # Model count per org
+    model_counts_by_org: dict[str, int] = {}
+    for dep in await ModelDeployment.find_all().to_list():
+        org = getattr(dep, "org_id", "") or ""
+        model_counts_by_org[org] = model_counts_by_org.get(org, 0) + 1
+
+    # Cumulative inference calls + cost this calendar month
+    month_start_aware = month_start.replace(tzinfo=timezone.utc)
+    inf_logs = await InferenceLog.find({"created_at": {"$gte": month_start_aware}}).to_list()
+    inf_counts_by_org: dict[str, int] = {}
+    inf_cost_by_org: dict[str, float] = {}
+    inf_latencies_by_org: dict[str, list[float]] = {}
+    inf_last_called_by_org: dict[str, str] = {}
+    for log in inf_logs:
+        org = getattr(log, "org_id", "") or ""
+        inf_counts_by_org[org] = inf_counts_by_org.get(org, 0) + 1
+        inf_cost_by_org[org] = inf_cost_by_org.get(org, 0.0) + (log.cost_usd or 0.0)
+        if log.latency_ms is not None:
+            inf_latencies_by_org.setdefault(org, []).append(log.latency_ms)
+        ts = log.created_at.isoformat() if log.created_at else None
+        if ts and ts > inf_last_called_by_org.get(org, ""):
+            inf_last_called_by_org[org] = ts
+    inf_latency_by_org = {org: _compute_latency_stats(lats) for org, lats in inf_latencies_by_org.items()}
+
+    # Dataset entry count + storage bytes per org
+    from app.models.dataset import DatasetEntry
+    dataset_counts_by_org: dict[str, int] = {}
+    storage_bytes_by_org: dict[str, int] = {}
+    for entry in await DatasetEntry.find_all().to_list():
+        org = getattr(entry, "org_id", "") or ""
+        dataset_counts_by_org[org] = dataset_counts_by_org.get(org, 0) + 1
+        storage_bytes_by_org[org] = storage_bytes_by_org.get(org, 0) + (entry.file_size_bytes or 0)
+
+    # Model storage bytes per org
+    for dep in await ModelDeployment.find_all().to_list():
+        org = getattr(dep, "org_id", "") or ""
+        storage_bytes_by_org[org] = storage_bytes_by_org.get(org, 0) + (getattr(dep, "model_size_bytes", None) or 0)
+
+    results = []
+    for u in users:
+        up = user_plans.get(u.email)
+        plan = plans.get(up.plan_id) if up and up.plan_id else None
+        row = await _build_user_usage(u, up, plan, now_naive,
+                                      cloud_charges_by_org, model_counts_by_org, inf_counts_by_org,
+                                      inf_cost_by_org, dataset_counts_by_org, storage_bytes_by_org,
+                                      inf_latency_by_org, inf_last_called_by_org)
+        results.append(row)
+
+    return {"users": results, "total": len(results), "month_start": month_start.isoformat()}
+
+
+@router.get("/usage/me", dependencies=[Depends(get_current_user)])
+async def get_my_usage(current_user=Depends(get_current_user)):
+    """Return the current authenticated user's own usage summary."""
+    from app.models.ml_plan import MLUserPlan, MLPlan
+    from beanie import PydanticObjectId
+
+    now_naive = datetime.utcnow()
+    month_start = now_naive.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_start_aware = month_start.replace(tzinfo=timezone.utc)
+
+    user = await MLUser.find_one({"email": current_user.email})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    up = await MLUserPlan.find_one({"user_email": current_user.email})
+    plan = None
+    if up and up.plan_id:
+        try:
+            plan = await MLPlan.get(PydanticObjectId(up.plan_id))
+        except Exception:
+            pass
+
+    # Cloud GPU charges (this user's org)
+    org = user.org_id or ""
+    cloud_jobs = await TrainingJob.find(
+        {"compute_type": "cloud_gpu", "wallet_charged": {"$gt": 0},
+         **({"org_id": org} if org else {})}
+    ).to_list()
+    cloud_charges_by_org = {org: sum(j.wallet_charged for j in cloud_jobs)}
+
+    # Model count
+    model_deps = await ModelDeployment.find(
+        {"org_id": org} if org else {}
+    ).to_list()
+    model_counts_by_org = {org: len(model_deps)}
+
+    # Cumulative inferences this month + cost
+    inf_filter: dict = {"created_at": {"$gte": month_start_aware}}
+    if org:
+        inf_filter["org_id"] = org
+    inf_logs = await InferenceLog.find(inf_filter).to_list()
+    inf_counts_by_org = {org: len(inf_logs)}
+    inf_cost_by_org = {org: sum(log.cost_usd or 0.0 for log in inf_logs)}
+    lats = [log.latency_ms for log in inf_logs if log.latency_ms is not None]
+    inf_latency_by_org = {org: _compute_latency_stats(lats)}
+    last_ts = max((log.created_at.isoformat() for log in inf_logs if log.created_at), default=None)
+    inf_last_called_by_org = {org: last_ts} if last_ts else {}
+
+    # Dataset entries + storage bytes
+    from app.models.dataset import DatasetEntry
+    ds_filter: dict = {}
+    if org:
+        ds_filter["org_id"] = org
+    entries = await DatasetEntry.find(ds_filter).to_list()
+    dataset_counts_by_org = {org: len(entries)}
+    storage_bytes_by_org = {org: sum(e.file_size_bytes or 0 for e in entries)}
+    for dep in model_deps:
+        storage_bytes_by_org[org] = storage_bytes_by_org.get(org, 0) + (getattr(dep, "model_size_bytes", None) or 0)
+
+    row = await _build_user_usage(user, up, plan, now_naive,
+                                  cloud_charges_by_org, model_counts_by_org, inf_counts_by_org,
+                                  inf_cost_by_org, dataset_counts_by_org, storage_bytes_by_org,
+                                  inf_latency_by_org, inf_last_called_by_org)
+    return {**row, "month_start": month_start.isoformat()}

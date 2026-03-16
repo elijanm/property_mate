@@ -1,5 +1,5 @@
 import { useState, FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import AuthLayout from '@/layouts/AuthLayout'
 import apiClient from '@/api/client'
@@ -62,6 +62,12 @@ export default function LoginPage() {
         >
           {loading ? 'Signing in...' : 'Sign in'}
         </button>
+        <p className="text-center text-sm text-gray-500 mt-2">
+          Don&apos;t have an account?{' '}
+          <Link to="/signup" className="text-blue-600 hover:underline font-medium">
+            Sign up
+          </Link>
+        </p>
       </form>
     </AuthLayout>
   )

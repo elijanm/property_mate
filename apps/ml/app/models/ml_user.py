@@ -19,6 +19,9 @@ class MLUser(Document):
     verification_token: Optional[str] = None   # UUID for link-click activation
     verification_otp: Optional[str] = None     # 6-digit code
     otp_expires_at: Optional[datetime] = None
+    # Password reset
+    password_reset_token: Optional[str] = None
+    password_reset_expires_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
     last_login_at: Optional[datetime] = None
 

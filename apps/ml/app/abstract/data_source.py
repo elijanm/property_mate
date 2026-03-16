@@ -854,9 +854,25 @@ class DatasetDataSource(DataSource):
       captured_at, collector_id, collector_name
 
         data_source = DatasetDataSource(dataset_id="<dataset_id>")
+        data_source = DatasetDataSource(slug="churn-training-data")
+
+    Set ``auto_create_spec`` to have the dataset created automatically when
+    the slug is not found (happens on first training run for a new org):
+
+        data_source = DatasetDataSource(
+            slug="churn-training-data",
+            auto_create_spec={
+                "name": "Churn Training Data",
+                "description": "...",
+                "fields": [{"label": "Customer Data (CSV/Excel)", "type": "file", ...}],
+            },
+        )
     """
-    dataset_id: str
-    org_id: Optional[str] = None   # optional — leave None to skip org check
+    dataset_id: str = ""
+    org_id: Optional[str] = None        # injected at run time by training_service
+    slug: Optional[str] = None          # look up by slug instead of id
+    sample_csv_endpoint: Optional[str] = None  # included in describe() for UI
+    auto_create_spec: Optional[Dict] = None    # dataset to create if slug not found
 
     @property
     def source_type(self) -> str:
@@ -870,25 +886,63 @@ class DatasetDataSource(DataSource):
         client = AsyncIOMotorClient(_s.MONGODB_URL)
         db = client[_s.MONGODB_DATABASE]
         try:
-            try:
-                ds_filter: Dict = {"_id": BsonObjectId(self.dataset_id)}
-            except Exception as exc:
-                raise ValueError(f"Invalid dataset_id: {self.dataset_id!r}") from exc
+            # Resolve dataset: prefer slug, fall back to dataset_id
+            if self.slug:
+                profile = await db["dataset_profiles"].find_one({"slug": self.slug, "deleted_at": None})
+                if not profile:
+                    if self.auto_create_spec:
+                        profile = await self._auto_create_dataset(db, self.slug, self.org_id or "")
+                    else:
+                        raise ValueError(
+                            f"Dataset with slug {self.slug!r} not found. "
+                            "Create it in the Datasets section first."
+                        )
+                resolved_id = str(profile["_id"])
+            else:
+                try:
+                    ds_filter: Dict = {"_id": BsonObjectId(self.dataset_id)}
+                except Exception as exc:
+                    raise ValueError(f"Invalid dataset_id: {self.dataset_id!r}") from exc
 
-            profile = await db["dataset_profiles"].find_one(ds_filter)
-            if not profile:
-                raise ValueError(f"Dataset {self.dataset_id!r} not found")
-            if self.org_id and str(profile.get("org_id", "")) != self.org_id:
-                raise ValueError(f"Dataset {self.dataset_id!r} not accessible")
+                profile = await db["dataset_profiles"].find_one(ds_filter)
+                if not profile:
+                    raise ValueError(f"Dataset {self.dataset_id!r} not found")
+                resolved_id = self.dataset_id
+
+            # Only enforce org scoping when the dataset is explicitly scoped
+            # (org_id="") means it is a system/shared dataset accessible to all orgs
+            dataset_org_id = str(profile.get("org_id") or "")
+            dataset_visibility = profile.get("visibility", "private")
+            if self.org_id and dataset_org_id and dataset_org_id != self.org_id:
+                # Allow read if dataset is public OR if caller org is permitted
+                if dataset_visibility != "public":
+                    raise ValueError(f"Dataset not accessible")
+
+            # For referenced datasets, resolve entries from the source dataset
+            reference_type = profile.get("reference_type")
+            if reference_type == "reference" and profile.get("source_dataset_id"):
+                resolved_id = profile["source_dataset_id"]
+            # For all other cases (own, clone, public direct) use resolved_id as-is
+
+            # If the dataset has no fields but spec defines them, patch them in now
+            if not profile.get("fields") and self.auto_create_spec:
+                new_fields = self._build_fields_from_spec()
+                if new_fields:
+                    from app.utils.datetime import utc_now as _utc_now
+                    await db["dataset_profiles"].update_one(
+                        {"_id": profile["_id"]},
+                        {"$set": {"fields": new_fields, "updated_at": _utc_now()}},
+                    )
+                    profile["fields"] = new_fields
 
             field_map = {f["id"]: f for f in profile.get("fields", [])}
 
             entries = await db["dataset_entries"].find(
-                {"dataset_id": self.dataset_id}
+                {"dataset_id": resolved_id}
             ).to_list(length=None)
 
             collectors_raw = await db["dataset_collectors"].find(
-                {"dataset_id": self.dataset_id}
+                {"dataset_id": resolved_id}
             ).to_list(length=None)
             collectors = {str(c.get("id") or c.get("_id", "")): c.get("name", "") for c in collectors_raw}
 
@@ -914,5 +968,67 @@ class DatasetDataSource(DataSource):
         finally:
             client.close()
 
+    def _build_fields_from_spec(self) -> List[Dict]:
+        """Build a list of field dicts from auto_create_spec["fields"]."""
+        import uuid as _uuid
+
+        fields_raw = (self.auto_create_spec or {}).get("fields", [])
+        fields = []
+        for i, f in enumerate(fields_raw):
+            fields.append({
+                "id": str(_uuid.uuid4()),
+                "label": f.get("label", "Data File"),
+                "instruction": f.get("instruction", ""),
+                "type": f.get("type", "file"),
+                "capture_mode": f.get("capture_mode", "upload_only"),
+                "required": f.get("required", True),
+                "description_mode": "none",
+                "description_presets": [],
+                "description_required": False,
+                "order": i,
+                "repeatable": f.get("repeatable", False),
+                "max_repeats": f.get("max_repeats", 0),
+                "validation_model": None,
+                "validation_labels": [],
+                "validation_message": "",
+            })
+        return fields
+
+    async def _auto_create_dataset(self, db, slug: str, org_id: str) -> Dict:
+        """Create the dataset from auto_create_spec and return the new document."""
+        from app.utils.datetime import utc_now as _utc_now
+        from bson import ObjectId as _OID
+
+        spec = self.auto_create_spec or {}
+        fields = self._build_fields_from_spec()
+
+        now = _utc_now()
+        doc = {
+            "_id": _OID(),
+            "org_id": org_id,
+            "name": spec.get("name", slug.replace("-", " ").title()),
+            "slug": slug,
+            "description": spec.get("description", ""),
+            "category": spec.get("category", "training"),
+            "fields": fields,
+            "status": "active",
+            "points_enabled": False,
+            "points_per_entry": 1,
+            "points_redemption_info": "",
+            "created_by": "system",
+            "created_at": now,
+            "updated_at": now,
+            "deleted_at": None,
+        }
+        await db["dataset_profiles"].insert_one(doc)
+        return doc
+
     def describe(self) -> Dict:
-        return {"type": "dataset", "dataset_id": self.dataset_id}
+        d: Dict = {"type": "dataset"}
+        if self.slug:
+            d["dataset_slug"] = self.slug
+        elif self.dataset_id:
+            d["dataset_id"] = self.dataset_id
+        if self.sample_csv_endpoint:
+            d["sample_csv_endpoint"] = self.sample_csv_endpoint
+        return d

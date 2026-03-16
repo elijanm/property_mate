@@ -5,6 +5,7 @@ import { useOrgProfile } from '@/hooks/useOrgProfile'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { WebSocketProvider } from '@/context/WebSocketContext'
 import LoginPage from '@/pages/auth/LoginPage'
+import SignupPage from '@/pages/auth/SignupPage'
 import Forbidden from '@/pages/errors/Forbidden'
 import NotFound from '@/pages/NotFound'
 import OwnerDashboard from '@/pages/owner/OwnerDashboard'
@@ -131,6 +132,7 @@ export default function App() {
     <Routes>
       {/* Public */}
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/signup" element={<SignupPage />} />
       <Route path="/forbidden" element={<Forbidden />} />
       <Route path="/onboarding/:token" element={<OnboardingWizardPage />} />
       <Route path="/inspection/:token" element={<InspectionWizardPage />} />

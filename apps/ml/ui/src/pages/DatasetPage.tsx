@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck } from 'lucide-react'
+import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, Globe, Lock, GitFork, Link2 } from 'lucide-react'
 import clsx from 'clsx'
 import { datasetsApi } from '@/api/datasets'
 import { modelsApi } from '@/api/models'
@@ -296,6 +296,7 @@ function DatasetSlideOver({
   onSaved: (d: DatasetProfile) => void
 }) {
   const [name, setName] = useState(initial?.name ?? '')
+  const [slug, setSlug] = useState(initial?.slug ?? '')
   const [desc, setDesc] = useState(initial?.description ?? '')
   const [category, setCategory] = useState(initial?.category ?? '')
   const [fields, setFields] = useState<Omit<DatasetField, 'id'>[]>(
@@ -317,7 +318,8 @@ function DatasetSlideOver({
     setSaving(true); setErr('')
     try {
       const payload: DatasetCreatePayload = {
-        name, description: desc, category,
+        name, ...(slug.trim() ? { slug: slug.trim() } : {}),
+        description: desc, category,
         fields: fields.map((f, i) => ({ ...f, order: i })),
         points_enabled: pointsEnabled, points_per_entry: pointsPer,
         points_redemption_info: pointsInfo,
@@ -349,6 +351,18 @@ function DatasetSlideOver({
               <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Dataset Name *</label>
               <input className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
                 placeholder="e.g. Cattle Physique Dataset" value={name} onChange={e => setName(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">
+                Slug <span className="normal-case text-gray-600 font-normal">(optional — auto-generated from name)</span>
+              </label>
+              <div className="flex items-center gap-1">
+                <span className="text-gray-500 text-sm pl-2">#</span>
+                <input className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 font-mono"
+                  placeholder="e.g. cattle-physique-v1" value={slug}
+                  onChange={e => setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-'))} />
+              </div>
+              <p className="text-[10px] text-gray-600 mt-1">Used in trainer plugins: <code className="text-gray-500">DatasetDataSource(slug="…")</code></p>
             </div>
             <div>
               <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Description</label>
@@ -516,22 +530,17 @@ function InviteModal({ dataset, onClose }: { dataset: DatasetProfile; onClose: (
 // ── Dataset card ─────────────────────────────────────────────────────────────
 
 function DatasetCard({
-  dataset, onEdit, onDelete, onInvite, onView,
+  dataset, onEdit, onDelete, onInvite, onView, onVisibilityToggle,
 }: {
   dataset: DatasetProfile
   onEdit: () => void
   onDelete: () => void
   onInvite: () => void
   onView: () => void
+  onVisibilityToggle: (v: 'private' | 'public') => void
 }) {
-  const [copied, setCopied] = useState(false)
-  const collectBase = `${window.location.origin}/#collect/`
-
-  const copyLink = (token: string) => {
-    navigator.clipboard.writeText(`${collectBase}${token}`)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
+  const isRef   = dataset.reference_type === 'reference'
+  const isClone = dataset.reference_type === 'clone'
 
   return (
     <div className="bg-gray-800/50 border border-gray-700/50 rounded-2xl p-5 hover:border-gray-600/50 transition-colors">
@@ -539,14 +548,46 @@ function DatasetCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <h3 className="text-sm font-semibold text-white truncate">{dataset.name}</h3>
+            {dataset.slug && (
+              <button
+                onClick={e => { e.stopPropagation(); navigator.clipboard.writeText(dataset.slug!) }}
+                title="Click to copy slug"
+                className="flex items-center gap-1 text-[10px] font-mono text-indigo-400 bg-indigo-900/30 border border-indigo-800/40 px-1.5 py-0.5 rounded hover:bg-indigo-900/60 transition-colors">
+                #{dataset.slug}
+              </button>
+            )}
             <span className={clsx('text-[10px] px-2 py-0.5 rounded-full border font-semibold uppercase tracking-wide', STATUS_COLOR[dataset.status])}>
               {dataset.status}
             </span>
+            {/* Visibility badge */}
+            {dataset.visibility === 'public' ? (
+              <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-sky-900/50 border border-sky-800/50 text-sky-400 font-semibold">
+                <Globe size={9} /> Public
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-gray-700/50 border border-gray-600/50 text-gray-400 font-semibold">
+                <Lock size={9} /> Private
+              </span>
+            )}
+            {/* Derived badges */}
+            {isRef && (
+              <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-purple-900/40 border border-purple-800/40 text-purple-400 font-semibold">
+                <Link2 size={9} /> Referenced
+              </span>
+            )}
+            {isClone && (
+              <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-teal-900/40 border border-teal-800/40 text-teal-400 font-semibold">
+                <GitFork size={9} /> Cloned
+              </span>
+            )}
             {dataset.points_enabled && (
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-900/50 border border-amber-800/50 text-amber-400 font-semibold">🎁 Points</span>
             )}
           </div>
           {dataset.description && <p className="text-xs text-gray-500 line-clamp-2">{dataset.description}</p>}
+          {isRef && (
+            <p className="text-[10px] text-purple-500 mt-1">Read-only reference — entries come from the source dataset. No storage used.</p>
+          )}
         </div>
       </div>
 
@@ -576,22 +617,102 @@ function DatasetCard({
 
       {/* Actions */}
       <div className="flex items-center gap-2 flex-wrap">
-        <button onClick={onInvite}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-600/30 text-indigo-400 text-xs rounded-lg transition-colors">
-          <Mail size={11} /> Invite
-        </button>
+        {!isRef && (
+          <button onClick={onInvite}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-600/30 text-indigo-400 text-xs rounded-lg transition-colors">
+            <Mail size={11} /> Invite
+          </button>
+        )}
         <button onClick={onView}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-700/50 hover:bg-gray-700 text-gray-300 text-xs rounded-lg transition-colors">
           <Eye size={11} /> Entries
         </button>
-        <button onClick={onEdit}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-700/50 hover:bg-gray-700 text-gray-300 text-xs rounded-lg transition-colors">
-          Edit
-        </button>
+        {!isRef && (
+          <button onClick={onEdit}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-700/50 hover:bg-gray-700 text-gray-300 text-xs rounded-lg transition-colors">
+            Edit
+          </button>
+        )}
+        {/* Visibility toggle — not available for references */}
+        {!isRef && (
+          <button
+            onClick={() => onVisibilityToggle(dataset.visibility === 'public' ? 'private' : 'public')}
+            title={dataset.visibility === 'public' ? 'Make private' : 'Make public'}
+            className={clsx(
+              'flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg transition-colors',
+              dataset.visibility === 'public'
+                ? 'bg-sky-900/30 hover:bg-sky-900/50 text-sky-400 border border-sky-800/40'
+                : 'bg-gray-700/30 hover:bg-gray-700/60 text-gray-400 border border-gray-600/30',
+            )}>
+            {dataset.visibility === 'public' ? <><Lock size={11} /> Make Private</> : <><Globe size={11} /> Make Public</>}
+          </button>
+        )}
         <button onClick={onDelete}
           className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-red-900/30 text-gray-500 hover:text-red-400 text-xs rounded-lg transition-colors ml-auto">
           <Trash2 size={11} />
         </button>
+      </div>
+    </div>
+  )
+}
+
+// ── Public dataset gallery card ───────────────────────────────────────────────
+
+function PublicDatasetCard({
+  dataset, onClone, onReference, busy,
+}: {
+  dataset: DatasetProfile
+  onClone: () => void
+  onReference: () => void
+  busy: boolean
+}) {
+  return (
+    <div className="bg-gray-800/50 border border-sky-800/30 rounded-2xl p-5 hover:border-sky-700/50 transition-colors">
+      <div className="flex items-start gap-3 mb-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <h3 className="text-sm font-semibold text-white truncate">{dataset.name}</h3>
+            <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-sky-900/50 border border-sky-800/50 text-sky-400 font-semibold">
+              <Globe size={9} /> Public
+            </span>
+            {dataset.category && <span className="text-[10px] text-gray-600">#{dataset.category}</span>}
+          </div>
+          {dataset.description && <p className="text-xs text-gray-500 line-clamp-2">{dataset.description}</p>}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-4 mb-4 text-xs text-gray-500">
+        <span className="flex items-center gap-1"><Database size={11} /> {dataset.fields.length} fields</span>
+        <span className="flex items-center gap-1"><Users size={11} /> {dataset.entry_count_cache ?? 0} entries</span>
+      </div>
+
+      {dataset.fields.length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-4">
+          {dataset.fields.slice(0, 4).map(f => {
+            const Icon = FIELD_TYPE_ICONS[f.type]
+            return (
+              <span key={f.id} className="flex items-center gap-1 bg-gray-700/50 text-gray-400 text-[10px] px-2 py-0.5 rounded-full">
+                <Icon size={9} /> {f.label}
+              </span>
+            )
+          })}
+          {dataset.fields.length > 4 && <span className="text-[10px] text-gray-600 px-1">+{dataset.fields.length - 4} more</span>}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        <button onClick={onClone} disabled={busy}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-teal-600/20 hover:bg-teal-600/30 border border-teal-700/40 text-teal-400 text-xs rounded-lg transition-colors disabled:opacity-50">
+          <GitFork size={11} /> Clone
+        </button>
+        <button onClick={onReference} disabled={busy}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-700/40 text-purple-400 text-xs rounded-lg transition-colors disabled:opacity-50">
+          <Link2 size={11} /> Use as Reference
+        </button>
+        <div className="ml-auto text-[10px] text-gray-600 text-right">
+          <p>Clone = your own copy</p>
+          <p>Reference = read-only, no storage</p>
+        </div>
       </div>
     </div>
   )
@@ -753,19 +874,29 @@ function EntriesPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function DatasetPage() {
-  const [datasets, setDatasets] = useState<DatasetProfile[]>([])
-  const [loading, setLoading] = useState(true)
+  const [tab, setTab]               = useState<'mine' | 'public'>('mine')
+  const [datasets, setDatasets]     = useState<DatasetProfile[]>([])
+  const [publicDs, setPublicDs]     = useState<DatasetProfile[]>([])
+  const [loading, setLoading]       = useState(true)
+  const [publicLoading, setPublicLoading] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [editTarget, setEditTarget] = useState<DatasetProfile | null>(null)
   const [inviteTarget, setInviteTarget] = useState<DatasetProfile | null>(null)
   const [viewTarget, setViewTarget] = useState<DatasetProfile | null>(null)
+  const [busyId, setBusyId]         = useState<string | null>(null)
 
   const load = () => {
     setLoading(true)
     datasetsApi.list().then(setDatasets).finally(() => setLoading(false))
   }
 
+  const loadPublic = () => {
+    setPublicLoading(true)
+    datasetsApi.listPublic().then(setPublicDs).finally(() => setPublicLoading(false))
+  }
+
   useEffect(() => { load() }, [])
+  useEffect(() => { if (tab === 'public') loadPublic() }, [tab])
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this dataset? This cannot be undone.')) return
@@ -773,10 +904,36 @@ export default function DatasetPage() {
     setDatasets(ds => ds.filter(d => d.id !== id))
   }
 
+  const handleVisibilityToggle = async (id: string, visibility: 'private' | 'public') => {
+    setBusyId(id)
+    try {
+      const updated = await datasetsApi.setVisibility(id, visibility)
+      setDatasets(ds => ds.map(d => d.id === id ? updated : d))
+    } finally { setBusyId(null) }
+  }
+
+  const handleClone = async (sourceId: string) => {
+    setBusyId(sourceId)
+    try {
+      const cloned = await datasetsApi.clone(sourceId)
+      setDatasets(ds => [cloned, ...ds])
+      setTab('mine')
+    } finally { setBusyId(null) }
+  }
+
+  const handleReference = async (sourceId: string) => {
+    setBusyId(sourceId)
+    try {
+      const ref = await datasetsApi.reference(sourceId)
+      setDatasets(ds => [ref, ...ds])
+      setTab('mine')
+    } finally { setBusyId(null) }
+  }
+
   return (
     <div className="min-h-full">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+      <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
         <div>
           <h1 className="text-lg font-bold text-white">Datasets</h1>
           <p className="text-xs text-gray-500 mt-0.5">Collect labelled data from contributors via unique invite links</p>
@@ -787,30 +944,82 @@ export default function DatasetPage() {
         </button>
       </div>
 
-      {/* List */}
-      {loading ? (
-        <div className="text-center text-xs text-gray-500 py-20">Loading…</div>
-      ) : datasets.length === 0 ? (
-        <div className="text-center py-20">
-          <Database size={40} className="text-gray-700 mx-auto mb-3" />
-          <p className="text-sm text-gray-400 font-semibold">No datasets yet</p>
-          <p className="text-xs text-gray-600 mt-1">Create one to start collecting labelled data from contributors.</p>
-          <button onClick={() => setShowCreate(true)}
-            className="mt-4 px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-xl">
-            Create Dataset
+      {/* Tabs */}
+      <div className="flex gap-1 mb-5 border-b border-gray-800 pb-0">
+        {([['mine', 'My Datasets'], ['public', 'Public Gallery']] as const).map(([key, label]) => (
+          <button key={key} onClick={() => setTab(key)}
+            className={clsx(
+              'px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px',
+              tab === key
+                ? 'text-white border-indigo-500'
+                : 'text-gray-500 border-transparent hover:text-gray-300',
+            )}>
+            {key === 'public' && <Globe size={12} className="inline mr-1.5 -mt-0.5" />}
+            {label}
+            {key === 'mine' && datasets.length > 0 && (
+              <span className="ml-1.5 text-[10px] bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded-full">{datasets.length}</span>
+            )}
           </button>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {datasets.map(d => (
-            <DatasetCard key={d.id} dataset={d}
-              onEdit={() => setEditTarget(d)}
-              onDelete={() => handleDelete(d.id)}
-              onInvite={() => setInviteTarget(d)}
-              onView={() => setViewTarget(d)}
-            />
-          ))}
-        </div>
+        ))}
+      </div>
+
+      {/* ── My Datasets tab ── */}
+      {tab === 'mine' && (
+        loading ? (
+          <div className="text-center text-xs text-gray-500 py-20">Loading…</div>
+        ) : datasets.length === 0 ? (
+          <div className="text-center py-20">
+            <Database size={40} className="text-gray-700 mx-auto mb-3" />
+            <p className="text-sm text-gray-400 font-semibold">No datasets yet</p>
+            <p className="text-xs text-gray-600 mt-1">Create one or browse the Public Gallery to clone or reference shared datasets.</p>
+            <button onClick={() => setShowCreate(true)}
+              className="mt-4 px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-xl">
+              Create Dataset
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {datasets.map(d => (
+              <DatasetCard key={d.id} dataset={d}
+                onEdit={() => setEditTarget(d)}
+                onDelete={() => handleDelete(d.id)}
+                onInvite={() => setInviteTarget(d)}
+                onView={() => setViewTarget(d)}
+                onVisibilityToggle={v => handleVisibilityToggle(d.id, v)}
+              />
+            ))}
+          </div>
+        )
+      )}
+
+      {/* ── Public Gallery tab ── */}
+      {tab === 'public' && (
+        publicLoading ? (
+          <div className="text-center text-xs text-gray-500 py-20">Loading public datasets…</div>
+        ) : publicDs.length === 0 ? (
+          <div className="text-center py-20">
+            <Globe size={40} className="text-gray-700 mx-auto mb-3" />
+            <p className="text-sm text-gray-400 font-semibold">No public datasets yet</p>
+            <p className="text-xs text-gray-600 mt-1">
+              Publish one of your own datasets to make it discoverable by other users.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="mb-4 p-3 bg-sky-900/20 border border-sky-800/30 rounded-xl text-xs text-sky-300 space-y-1">
+              <p><strong className="text-sky-200">Clone</strong> — copies schema/fields into your workspace. You upload your own data. Counts against your storage.</p>
+              <p><strong className="text-sky-200">Use as Reference</strong> — read-only pointer to the source. Entries are always live from the original. Zero extra storage.</p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {publicDs.map(d => (
+                <PublicDatasetCard key={d.id} dataset={d} busy={busyId === d.id}
+                  onClone={() => handleClone(d.id)}
+                  onReference={() => handleReference(d.id)}
+                />
+              ))}
+            </div>
+          </>
+        )
       )}
 
       {/* Modals / slide-overs */}

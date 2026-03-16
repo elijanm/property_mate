@@ -22,14 +22,23 @@ export interface DatasetField {
   validation_message: string
 }
 
+export type DatasetVisibility = 'private' | 'public'
+export type ReferenceType = 'clone' | 'reference' | null
+
 export interface DatasetProfile {
   id: string
   org_id: string
   name: string
+  slug: string | null
   description: string
   category: string
   fields: DatasetField[]
   status: DatasetStatus
+  // Visibility & sharing
+  visibility: DatasetVisibility
+  source_dataset_id: string | null
+  reference_type: ReferenceType
+  entry_count_cache: number
   points_enabled: boolean
   points_per_entry: number
   points_redemption_info: string
@@ -89,9 +98,11 @@ export interface CollectFormDefinition {
 
 export interface DatasetCreatePayload {
   name: string
+  slug?: string
   description: string
   category: string
   fields: Omit<DatasetField, 'id'>[]
+  visibility?: DatasetVisibility
   points_enabled: boolean
   points_per_entry: number
   points_redemption_info: string

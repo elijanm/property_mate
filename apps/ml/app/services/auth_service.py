@@ -21,6 +21,7 @@ ALGORITHM = "HS256"
 _ITERATIONS = 260_000
 _OTP_EXPIRY_MINUTES = 30
 _TOKEN_EXPIRY_HOURS = 24
+_RESET_EXPIRY_HOURS = 1
 
 
 def _hash(password: str) -> str:
@@ -226,6 +227,60 @@ async def get_current_user(token: str) -> MLUser:
 
 
 _SYSTEM_ORG_ID = "system"
+
+
+async def forgot_password(email: str) -> None:
+    user = await MLUser.find_one({"email": email})
+    if not user:
+        return  # don't reveal existence
+    token = str(uuid.uuid4())
+    await user.set({
+        "password_reset_token": token,
+        "password_reset_expires_at": utc_now() + timedelta(hours=_RESET_EXPIRY_HOURS),
+    })
+    reset_url = f"{settings.FRONTEND_BASE_URL}?reset_token={token}"
+    try:
+        from app.core.email import send_email, _password_reset_html
+        name = user.full_name or email.split("@")[0]
+        import asyncio
+        asyncio.create_task(send_email(
+            to=email,
+            subject="Reset your MLDock.io password",
+            html=_password_reset_html(name, reset_url),
+        ))
+    except Exception as exc:
+        logger.warning("password_reset_email_failed", email=email, error=str(exc))
+    logger.info("ml_password_reset_requested", email=email)
+
+
+async def reset_password(token: str, new_password: str) -> None:
+    user = await MLUser.find_one({"password_reset_token": token})
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+    expires = user.password_reset_expires_at
+    if expires:
+        # Normalise both sides to naive UTC for comparison (MongoDB may strip tzinfo)
+        now_naive = utc_now().replace(tzinfo=None)
+        exp_naive = expires.replace(tzinfo=None) if expires.tzinfo else expires
+        if now_naive > exp_naive:
+            raise HTTPException(status_code=400, detail="Reset link has expired — please request a new one")
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    await user.set({
+        "hashed_password": _hash(new_password),
+        "password_reset_token": None,
+        "password_reset_expires_at": None,
+    })
+    logger.info("ml_password_reset", email=user.email)
+
+
+async def change_password(user: MLUser, current_password: str, new_password: str) -> None:
+    if not _verify(current_password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    await user.set({"hashed_password": _hash(new_password)})
+    logger.info("ml_password_changed", email=user.email)
 
 
 async def ensure_admin_exists():

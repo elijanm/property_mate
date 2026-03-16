@@ -22,6 +22,11 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+# Per-process dedup set — log each external host only once to avoid log spam
+# from libraries that open multiple connections to the same host (e.g. Ultralytics
+# downloading model weights, boto3 keep-alives, MLflow telemetry).
+_warned_hosts: set[str] = set()
+
 # ── Subprocess whitelist ──────────────────────────────────────────────────────
 # Basenames of executables that ML inference code legitimately needs.
 # Everything else is blocked.
@@ -37,7 +42,19 @@ _ALLOWED_EXECUTABLES: frozenset[str] = frozenset({
     "python",         # sub-interpreter calls (e.g. multiprocessing)
     "python3",
     "sh",             # restricted shell calls (rare but present in some libs)
+    "file",           # file-type detection (used by cpuinfo / Ultralytics on startup)
+    "git",            # MLflow captures git commit hash on each training run
 })
+
+
+def _exe_allowed(basename: str) -> bool:
+    """Return True if the executable basename is permitted to run."""
+    if basename in _ALLOWED_EXECUTABLES:
+        return True
+    # Allow any versioned Python interpreter: python3.11, python3.12, python3.13, …
+    if basename.startswith("python") and basename.replace(".", "").replace("python", "").isdigit():
+        return True
+    return False
 
 # ── Socket host whitelist ─────────────────────────────────────────────────────
 # Connections to hosts NOT in this set are logged as warnings but not blocked.
@@ -138,7 +155,7 @@ def _audit_hook(event: str, args: tuple) -> None:  # noqa: C901
             # Prefer the args list for the basename (more reliable than executable)
             cmd_list = popen_args if isinstance(popen_args, (list, tuple)) and popen_args else [executable]
             basename = _exe_basename(cmd_list)
-            if basename and basename not in _ALLOWED_EXECUTABLES:
+            if basename and not _exe_allowed(basename):
                 logger.warning(
                     "worker_security_subprocess_blocked",
                     executable=basename,
@@ -154,7 +171,7 @@ def _audit_hook(event: str, args: tuple) -> None:  # noqa: C901
         elif event == "os.system":
             cmd = str(args[0]) if args else ""
             exe = _exe_basename(cmd)
-            if exe not in _ALLOWED_EXECUTABLES:
+            if not _exe_allowed(exe):
                 logger.warning(
                     "worker_security_os_system_blocked",
                     command=cmd[:200],
@@ -187,11 +204,17 @@ def _audit_hook(event: str, args: tuple) -> None:  # noqa: C901
             host = addr[0] if isinstance(addr, (tuple, list)) and addr else str(addr)
             if not _host_allowed(str(host)):
                 port = addr[1] if isinstance(addr, (tuple, list)) and len(addr) > 1 else None
-                logger.warning(
-                    "worker_security_external_connect",
-                    host=host,
-                    port=port,
-                )
+                # Log each external host only once per process — libraries like
+                # Ultralytics (model weight downloads) and boto3 (S3 keep-alives)
+                # open many connections to the same IP and would flood the log.
+                host_key = f"{host}:{port}"
+                if host_key not in _warned_hosts:
+                    _warned_hosts.add(host_key)
+                    logger.warning(
+                        "worker_security_external_connect",
+                        host=host,
+                        port=port,
+                    )
                 # Log only — do not raise.  Hard network enforcement belongs
                 # at the iptables / network-namespace layer.  Raising here
                 # would break boto3 / MLflow / motor when they resolve

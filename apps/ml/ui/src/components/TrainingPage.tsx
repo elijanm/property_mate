@@ -1,10 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
 import { trainersApi } from '@/api/trainers'
+import { datasetsApi } from '@/api/datasets'
 import { walletApi } from '@/api/wallet'
 import type { TrainerRegistration, GpuOption, LocalGpuInfo } from '@/types/trainer'
 import type { Wallet } from '@/types/wallet'
+import type { DatasetProfile } from '@/types/dataset'
+import DatasetUploadModal from './DatasetUploadModal'
 import JobsPanel from './JobsPanel'
-import { Play, Upload, Loader2, CheckCircle2, AlertCircle, ChevronRight, X, Search, Zap, Cpu, ShieldCheck } from 'lucide-react'
+import { Play, Upload, Loader2, CheckCircle2, AlertCircle, ChevronRight, X, Search, Zap, Cpu, ShieldCheck, Database, Download, RefreshCw } from 'lucide-react'
 import clsx from 'clsx'
 
 const PRESETS = [
@@ -18,6 +21,136 @@ const TIER_ORDER  = ['budget', 'standard', 'performance', 'enterprise'] as const
 const TIER_LABEL: Record<string, string> = { budget: 'Budget', standard: 'Standard', performance: 'Performance', enterprise: 'Enterprise' }
 const TIER_COLOR: Record<string, string> = { budget: 'text-emerald-400', standard: 'text-blue-400', performance: 'text-violet-400', enterprise: 'text-amber-400' }
 const TIER_BG:    Record<string, string> = { budget: 'bg-emerald-900/20 border-emerald-800/40', standard: 'bg-blue-900/20 border-blue-800/40', performance: 'bg-violet-900/20 border-violet-800/40', enterprise: 'bg-amber-900/20 border-amber-800/40' }
+
+// ── Auto-loaded data source description panel ────────────────────────────────
+
+const SOURCE_ICONS: Record<string, string> = {
+  memory:        '🧠',
+  url:           '🌐',
+  mongodb:       '🍃',
+  postgresql:    '🐘',
+  sql:           '🗄️',
+  s3:            '☁️',
+  gcs:           '☁️',
+  azure_blob:    '☁️',
+  local_file:    '📁',
+  huggingface:   '🤗',
+  kafka:         '⚡',
+  paginated_api: '🔗',
+  redis:         '🔴',
+  ftp:           '📡',
+  sftp:          '📡',
+}
+
+function buildSourceLines(dsInfo: Record<string, unknown>): string[] {
+  const t = dsInfo.type as string
+  const lines: string[] = []
+  switch (t) {
+    case 'memory':
+      lines.push('Data is prepared directly inside the trainer code (in-memory).')
+      lines.push('No file upload is needed — just click Start Training.')
+      break
+    case 'url':
+      if (dsInfo.url) lines.push(`Fetches data from: ${dsInfo.url}`)
+      lines.push('The file is downloaded automatically when the training job starts.')
+      break
+    case 'mongodb':
+      if (dsInfo.database && dsInfo.collection)
+        lines.push(`Queries MongoDB collection: ${dsInfo.database}.${dsInfo.collection}`)
+      if (dsInfo.limit && Number(dsInfo.limit) > 0)
+        lines.push(`Row limit: ${dsInfo.limit}`)
+      lines.push('Records are pulled from the database when the job starts.')
+      break
+    case 'postgresql':
+    case 'sql':
+      if (dsInfo.query) lines.push(`Query: ${String(dsInfo.query).slice(0, 120)}${String(dsInfo.query).length > 120 ? '…' : ''}`)
+      lines.push('Rows are fetched from the database when the job starts.')
+      break
+    case 's3':
+      if (dsInfo.bucket && dsInfo.key) lines.push(`S3 path: s3://${dsInfo.bucket}/${dsInfo.key}`)
+      lines.push('Downloaded from S3 / MinIO when the job starts.')
+      break
+    case 'gcs':
+      if (dsInfo.bucket && dsInfo.blob) lines.push(`GCS path: gs://${dsInfo.bucket}/${dsInfo.blob}`)
+      lines.push('Downloaded from Google Cloud Storage when the job starts.')
+      break
+    case 'azure_blob':
+      if (dsInfo.container && dsInfo.blob) lines.push(`Azure path: ${dsInfo.container}/${dsInfo.blob}`)
+      lines.push('Downloaded from Azure Blob Storage when the job starts.')
+      break
+    case 'local_file':
+      if (dsInfo.path) lines.push(`Local path: ${dsInfo.path}`)
+      lines.push('Read from the server filesystem when the job starts.')
+      break
+    case 'huggingface':
+      if (dsInfo.dataset) lines.push(`HuggingFace dataset: ${dsInfo.dataset}${dsInfo.split ? ` (split: ${dsInfo.split})` : ''}`)
+      lines.push('Downloaded from the HuggingFace Hub when the job starts.')
+      break
+    case 'kafka':
+      if (dsInfo.topic) lines.push(`Kafka topic: ${dsInfo.topic}`)
+      if (dsInfo.max_messages) lines.push(`Max messages: ${dsInfo.max_messages}`)
+      lines.push('Messages are consumed when the job starts.')
+      break
+    case 'paginated_api':
+      if (dsInfo.url) lines.push(`API endpoint: ${String(dsInfo.url).slice(0, 80)}`)
+      lines.push('All pages are fetched when the job starts.')
+      break
+    case 'redis':
+      if (dsInfo.key) lines.push(`Redis key: ${dsInfo.key}`)
+      lines.push('Data is read from Redis when the job starts.')
+      break
+    case 'ftp':
+    case 'sftp':
+      if (dsInfo.host && dsInfo.path) lines.push(`${t.toUpperCase()} path: ${dsInfo.host}${dsInfo.path}`)
+      lines.push('File is downloaded when the job starts.')
+      break
+    default:
+      lines.push('Data is loaded automatically when the job starts.')
+  }
+  return lines
+}
+
+function AutoSourcePanel({
+  dsInfo,
+  trainerDescription,
+}: {
+  dsInfo: Record<string, unknown>
+  trainerDescription: string
+}) {
+  const type  = dsInfo.type as string
+  const icon  = SOURCE_ICONS[type] ?? '📦'
+  const lines = buildSourceLines(dsInfo)
+
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900/50 overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-800">
+        <span className="text-sm leading-none">{icon}</span>
+        <span className="text-xs font-semibold text-gray-200">Data Source</span>
+        <span className="ml-auto text-[10px] font-mono text-gray-600 bg-gray-800 border border-gray-700 px-1.5 py-0.5 rounded">{type}</span>
+      </div>
+      <div className="p-4 space-y-3">
+        {/* Trainer description (tells the user what data this trainer works with) */}
+        {trainerDescription && (
+          <p className="text-xs text-gray-300 leading-relaxed">{trainerDescription}</p>
+        )}
+        {/* Source-specific lines */}
+        <ul className="space-y-1">
+          {lines.map((line, i) => (
+            <li key={i} className="flex items-start gap-2 text-[11px] text-gray-500">
+              <span className="text-gray-700 mt-0.5 flex-shrink-0">•</span>
+              <span>{line}</span>
+            </li>
+          ))}
+        </ul>
+        {/* Positive call-to-action */}
+        <div className="flex items-center gap-2 px-3 py-2 bg-emerald-950/20 border border-emerald-900/40 rounded-lg text-[11px] text-emerald-400">
+          <CheckCircle2 size={11} className="flex-shrink-0" />
+          No upload needed — data is loaded automatically at training time.
+        </div>
+      </div>
+    </div>
+  )
+}
 
 // ── GPU picker modal ────────────────────────────────────────────────────────
 function GpuPickerModal({
@@ -218,7 +351,7 @@ function LocalComputeCard({
             <div className="flex items-center gap-2 text-emerald-400 font-medium">
               <ShieldCheck size={13} />
               {info.is_exempt
-                ? 'Your account is exempt — no charge for local training'
+                ? 'Your account is exempt — no charge for standard training'
                 : info.global_free
                   ? 'Free for all users — global override is ON'
                   : 'Free — no charges apply'}
@@ -292,6 +425,13 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
   const [localInfoError, setLocalInfoError] = useState(false)
   const [localPriceOverride, setLocalPriceOverride] = useState<number>(0.15)
 
+  // Dataset-datasource state
+  const [dsDataset, setDsDataset]         = useState<DatasetProfile | null>(null)
+  const [dsEntryCount, setDsEntryCount]   = useState<number | null>(null)
+  const [dsLoading, setDsLoading]         = useState(false)
+  const [dsError, setDsError]             = useState<string | null>(null)
+  const [showDsUpload, setShowDsUpload]   = useState(false)
+
   // Auto-select trainer when coming from TrainersPage
   useEffect(() => {
     if (initialTrainer) setSelected(initialTrainer)
@@ -309,6 +449,31 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
     }).catch(() => {}).finally(() => setGpuLoading(false))
     walletApi.get().then(setWallet).catch(() => {})
   }, [])
+
+  // Fetch dataset info whenever the selected trainer changes
+  const selectedTrainer = trainers.find(t => t.name === selected) ?? null
+  const dsInfo = selectedTrainer?.data_source_info as Record<string, unknown> | undefined
+  const isDatasetSource = dsInfo?.type === 'dataset'
+  // file/UploadedFileDataSource — user must supply data at run time
+  const isFileSource    = dsInfo?.type === 'file'
+  // All other types load data automatically — no upload needed
+  const isAutoSource    = !!selected && !!dsInfo?.type && !isDatasetSource && !isFileSource
+
+  useEffect(() => {
+    if (!isDatasetSource) { setDsDataset(null); setDsEntryCount(null); setDsError(null); return }
+    const slug = dsInfo?.dataset_slug as string | undefined
+    const id   = dsInfo?.dataset_id   as string | undefined
+    if (!slug && !id) return
+    setDsLoading(true); setDsDataset(null); setDsEntryCount(null); setDsError(null)
+    const fetchDataset = slug ? datasetsApi.getBySlug(slug) : datasetsApi.get(id!)
+    fetchDataset.then(async ds => {
+      setDsDataset(ds)
+      const { count } = await datasetsApi.getEntryCount(ds.id)
+      setDsEntryCount(count)
+    }).catch(() => {
+      setDsError('Dataset not found — it may not have been created yet. Install the trainer plugin first.')
+    }).finally(() => setDsLoading(false))
+  }, [selected, isDatasetSource]) // eslint-disable-line
 
   // Fetch local GPU + billing info on mount (always needed for local tab)
   useEffect(() => {
@@ -358,6 +523,22 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
 
   return (
     <>
+      {/* Dataset upload slide-over */}
+      {showDsUpload && dsDataset && (
+        <DatasetUploadModal
+          dataset={dsDataset}
+          onClose={() => setShowDsUpload(false)}
+          onUploaded={async () => {
+            setShowDsUpload(false)
+            // Refresh entry count
+            try {
+              const { count } = await datasetsApi.getEntryCount(dsDataset.id)
+              setDsEntryCount(count)
+            } catch {}
+          }}
+        />
+      )}
+
       {gpuModalOpen && (
         <GpuPickerModal
           options={gpuOptions}
@@ -386,21 +567,160 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
             </select>
           </div>
 
-          {/* Mode toggle */}
-          <div className="flex gap-1 bg-gray-900 rounded-xl p-1 w-fit">
-            {(['simple', 'with-data'] as const).map(m => (
-              <button key={m} onClick={() => setMode(m)}
-                className={clsx('px-3 py-1.5 text-xs rounded-lg font-medium transition-colors',
-                  m === mode ? 'bg-brand-600 text-white' : 'text-gray-500 hover:text-gray-300')}>
-                {m === 'simple' ? 'Standard' : 'Upload Data'}
-              </button>
-            ))}
-          </div>
+          {/* Mode toggle — only for file-source trainers (user supplies the data file) */}
+          {isFileSource && (
+            <div className="flex gap-1 bg-gray-900 rounded-xl p-1 w-fit">
+              {(['simple', 'with-data'] as const).map(m => (
+                <button key={m} onClick={() => setMode(m)}
+                  className={clsx('px-3 py-1.5 text-xs rounded-lg font-medium transition-colors',
+                    m === mode ? 'bg-brand-600 text-white' : 'text-gray-500 hover:text-gray-300')}>
+                  {m === 'simple' ? 'Standard' : 'Upload Data'}
+                </button>
+              ))}
+            </div>
+          )}
 
-          {/* File upload */}
-          {mode === 'with-data' && (
+          {/* ── Dataset datasource panel ─────────────────────────────────────── */}
+          {isDatasetSource && selected && (
+            <div className="rounded-xl border border-gray-800 bg-gray-900/50 overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+                <div className="flex items-center gap-2">
+                  <Database size={13} className="text-sky-400 flex-shrink-0" />
+                  <span className="text-xs font-semibold text-gray-200">Training Dataset</span>
+                </div>
+                {dsDataset && (
+                  <button
+                    onClick={() => {
+                      setDsLoading(true)
+                      const slug = dsInfo?.dataset_slug as string | undefined
+                      const id   = dsInfo?.dataset_id   as string | undefined
+                      const req  = slug ? datasetsApi.getBySlug(slug) : datasetsApi.get(id!)
+                      req.then(async ds => {
+                        setDsDataset(ds)
+                        const { count } = await datasetsApi.getEntryCount(ds.id)
+                        setDsEntryCount(count)
+                      }).catch(() => {}).finally(() => setDsLoading(false))
+                    }}
+                    className="text-gray-600 hover:text-gray-300 transition-colors"
+                    title="Refresh"
+                  >
+                    <RefreshCw size={12} className={dsLoading ? 'animate-spin' : ''} />
+                  </button>
+                )}
+              </div>
+
+              {/* Body */}
+              <div className="p-4 space-y-4">
+                {dsLoading ? (
+                  <div className="flex items-center gap-2 text-xs text-gray-500">
+                    <Loader2 size={12} className="animate-spin" /> Loading dataset info…
+                  </div>
+
+                ) : dsError ? (
+                  <div className="space-y-3">
+                    <div className="flex items-start gap-2 text-xs text-amber-300 bg-amber-950/30 border border-amber-800/40 rounded-lg px-3 py-2.5">
+                      <AlertCircle size={13} className="flex-shrink-0 mt-0.5" />
+                      <span>{dsError}</span>
+                    </div>
+                    <p className="text-[11px] text-gray-600">
+                      Slug: <code className="font-mono text-gray-500">{dsInfo?.dataset_slug as string}</code>
+                    </p>
+                  </div>
+
+                ) : dsDataset ? (
+                  <div className="space-y-3">
+                    {/* Dataset identity */}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-white truncate">{dsDataset.name}</p>
+                        {dsDataset.slug && (
+                          <p className="text-[11px] text-gray-600 font-mono mt-0.5">{dsDataset.slug}</p>
+                        )}
+                        {dsDataset.description && (
+                          <p className="text-[11px] text-gray-500 mt-1 leading-relaxed line-clamp-2">{dsDataset.description}</p>
+                        )}
+                      </div>
+                      {/* Entry count badge */}
+                      <div className={clsx(
+                        'flex-shrink-0 px-2.5 py-1 rounded-lg text-xs font-semibold border',
+                        dsEntryCount === null
+                          ? 'bg-gray-800 border-gray-700 text-gray-500'
+                          : dsEntryCount === 0
+                          ? 'bg-red-950/40 border-red-800/50 text-red-400'
+                          : 'bg-emerald-950/40 border-emerald-800/50 text-emerald-400',
+                      )}>
+                        {dsEntryCount === null ? '—' : dsEntryCount === 0 ? 'Empty' : `${dsEntryCount} entr${dsEntryCount === 1 ? 'y' : 'ies'}`}
+                      </div>
+                    </div>
+
+                    {/* Empty warning */}
+                    {dsEntryCount === 0 && (
+                      <div className="flex items-start gap-2 text-xs text-amber-300 bg-amber-950/30 border border-amber-800/40 rounded-lg px-3 py-2.5">
+                        <AlertCircle size={13} className="flex-shrink-0 mt-0.5" />
+                        <span>Dataset is empty — upload training data before starting a run.</span>
+                      </div>
+                    )}
+
+                    {/* Fields list */}
+                    {dsDataset.fields.length > 0 && (
+                      <div className="space-y-1.5">
+                        <p className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Fields</p>
+                        <div className="space-y-1">
+                          {dsDataset.fields.sort((a, b) => a.order - b.order).map(f => (
+                            <div key={f.id} className="flex items-center gap-2 px-2.5 py-1.5 bg-gray-800/60 rounded-lg">
+                              <Database size={10} className="text-sky-600 flex-shrink-0" />
+                              <span className="text-xs text-gray-200 flex-1 min-w-0 truncate">{f.label}</span>
+                              <span className="text-[10px] text-gray-600 bg-gray-900 border border-gray-700 px-1.5 py-0.5 rounded font-mono flex-shrink-0">{f.type}</span>
+                              {f.required && <span className="text-[10px] text-red-500 flex-shrink-0">*</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {dsDataset.fields.length === 0 && (
+                      <p className="text-xs text-gray-600">No fields defined on this dataset.</p>
+                    )}
+
+                    {/* Actions */}
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        onClick={() => setShowDsUpload(true)}
+                        className={clsx(
+                          'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors',
+                          dsEntryCount === 0
+                            ? 'bg-brand-600 hover:bg-brand-700 text-white'
+                            : 'bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700 hover:text-white',
+                        )}
+                      >
+                        <Upload size={11} />
+                        {dsEntryCount === 0 ? 'Upload Training Data' : 'Add More Data'}
+                      </button>
+                      {(dsInfo?.sample_csv_endpoint as string) && (
+                        <a
+                          href={dsInfo.sample_csv_endpoint as string}
+                          download
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-500 hover:text-gray-300 bg-gray-800 border border-gray-700 rounded-lg transition-colors"
+                        >
+                          <Download size={11} /> Sample CSV
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          )}
+
+          {/* ── Auto-loaded data source description ─────────────────────────── */}
+          {isAutoSource && selected && (
+            <AutoSourcePanel dsInfo={dsInfo!} trainerDescription={selectedTrainer?.description ?? ''} />
+          )}
+
+          {/* ── File upload (UploadedFileDataSource only) ────────────────────── */}
+          {isFileSource && mode === 'with-data' && (
             <div>
-              <label className="block text-xs text-gray-400 mb-2">Training Data File</label>
               <div onClick={() => fileRef.current?.click()}
                 className={clsx('border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-colors',
                   file ? 'border-brand-600 bg-brand-900/20' : 'border-gray-700 hover:border-gray-600')}>
@@ -417,8 +737,8 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
           <div>
             <div className="flex gap-0.5 border-b border-gray-800 mb-4">
               {([
-                { id: 'local',     label: '🖥 Local' },
-                { id: 'cloud_gpu', label: '⚡ Cloud GPU' },
+                { id: 'local',     label: '🖥 Standard' },
+                { id: 'cloud_gpu', label: '⚡ Accelerated' },
               ] as const).map(tab => (
                 <button
                   key={tab.id}
@@ -454,7 +774,7 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
                     <div className="flex items-center gap-2.5">
                       <Cpu size={13} className="text-gray-500 flex-shrink-0" />
                       <div>
-                        <div className="text-sm font-semibold text-white">Local compute</div>
+                        <div className="text-sm font-semibold text-white">Standard compute</div>
                         <div className="text-[10px] text-gray-500 mt-0.5">
                           {localInfoError ? 'Could not detect hardware' : 'Detecting…'}
                         </div>
@@ -573,22 +893,56 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
           </div>
 
           {/* Submit */}
-          <button onClick={submit} disabled={
-            loading
-            || !selected
-            || (compute === 'cloud_gpu' && !gpuAvailable)
-            || (compute === 'cloud_gpu' && insufficientBalance)
-            || localInsufficient
-          }
-            className="flex items-center gap-2 px-5 py-2.5 bg-brand-600 hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold text-white transition-colors">
-            {loading ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} />}
-            {loading ? 'Queueing…' : 'Start Training'}
-          </button>
+          {(() => {
+            const datasetEmpty = isDatasetSource && (dsEntryCount === 0 || (dsLoading && dsEntryCount === null))
+            const datasetNotFound = isDatasetSource && !!dsError
+            const isDisabled =
+              loading
+              || !selected
+              || (compute === 'cloud_gpu' && !gpuAvailable)
+              || (compute === 'cloud_gpu' && insufficientBalance)
+              || localInsufficient
+              || datasetEmpty
+              || datasetNotFound
+            return (
+              <div className="space-y-2">
+                <button
+                  onClick={submit}
+                  disabled={isDisabled}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-brand-600 hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold text-white transition-colors"
+                >
+                  {loading ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} />}
+                  {loading ? 'Queueing…' : 'Start Training'}
+                </button>
+                {datasetEmpty && (
+                  <div className="flex items-center gap-2 px-3 py-2 bg-amber-950/30 border border-amber-800/40 rounded-lg text-xs text-amber-300">
+                    <AlertCircle size={12} className="flex-shrink-0" />
+                    <span>
+                      Training is blocked — the dataset is empty.{' '}
+                      <button
+                        onClick={() => setShowDsUpload(true)}
+                        className="underline underline-offset-2 hover:text-amber-100 transition-colors"
+                      >
+                        Upload data
+                      </button>
+                      {' '}to continue.
+                    </span>
+                  </div>
+                )}
+                {datasetNotFound && (
+                  <div className="flex items-center gap-2 px-3 py-2 bg-red-950/30 border border-red-800/40 rounded-lg text-xs text-red-400">
+                    <AlertCircle size={12} className="flex-shrink-0" />
+                    <span>Dataset not found — install the trainer plugin first to create it.</span>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
 
           {result && (
             <div className="bg-emerald-950/40 border border-emerald-800 rounded-xl p-3 flex items-center gap-2 text-sm text-emerald-300">
               <CheckCircle2 size={15} />
-              Job queued{compute === 'cloud_gpu' && selectedGpu ? ` · ⚡ ${selectedGpu.name}` : compute === 'local' && localInfo ? ` · 🖥 ${localInfo.gpu_name}` : ''} ·
+              Job queued{compute === 'cloud_gpu' && selectedGpu ? ` · ⚡ ${selectedGpu.name}` : compute === 'local' && localInfo ? ` · 🖥 ${localInfo.gpu_name} (Standard)` : ''} ·
               <code className="font-mono text-xs text-emerald-500">{result}</code>
             </div>
           )}

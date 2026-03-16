@@ -28,6 +28,34 @@ export const datasetsApi = {
 
   getEntries: (id: string, params?: { field_id?: string; collector_id?: string; date_from?: string; date_to?: string }) =>
     client.get<DatasetEntry[]>(`/datasets/${id}/entries`, { params }).then(r => r.data),
+
+  getEntryCount: (id: string) =>
+    client.get<{ dataset_id: string; count: number }>(`/datasets/${id}/entry-count`).then(r => r.data),
+
+  uploadEntryDirect: (datasetId: string, fieldId: string, file: File | null, textValue?: string) => {
+    const fd = new FormData()
+    fd.append('field_id', fieldId)
+    if (file) fd.append('file', file)
+    if (textValue !== undefined && textValue !== null) fd.append('text_value', textValue)
+    return client.post<DatasetEntry>(`/datasets/${datasetId}/entries/upload`, fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then(r => r.data)
+  },
+
+  getBySlug: (slug: string) =>
+    client.get<DatasetProfile>(`/datasets/by-slug/${encodeURIComponent(slug)}`).then(r => r.data),
+
+  listPublic: () =>
+    client.get<DatasetProfile[]>('/datasets/public').then(r => r.data),
+
+  setVisibility: (id: string, visibility: 'private' | 'public') =>
+    client.patch<DatasetProfile>(`/datasets/${id}/visibility`, { visibility }).then(r => r.data),
+
+  clone: (id: string) =>
+    client.post<DatasetProfile>(`/datasets/${id}/clone`).then(r => r.data),
+
+  reference: (id: string) =>
+    client.post<DatasetProfile>(`/datasets/${id}/reference`).then(r => r.data),
 }
 
 // ── Public collect API (no auth) ────────────────────────────────────────────

@@ -99,16 +99,22 @@ class IPThreatDetector(BaseTrainer):
 
         try:
             loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        if loop.is_running():
+            # Already inside a running event loop (Celery worker with persistent loop).
+            # Run in a new thread with its own event loop to avoid "loop already running".
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(asyncio.run, _fetch())
+                docs = future.result()
+        else:
             if loop.is_closed():
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
             docs = loop.run_until_complete(_fetch())
-        except RuntimeError:
-            # Running inside existing event loop (e.g. during web request)
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(asyncio.run, _fetch())
-                docs = future.result()
 
         if len(docs) < 20:
             # Not enough real data yet — generate synthetic training set

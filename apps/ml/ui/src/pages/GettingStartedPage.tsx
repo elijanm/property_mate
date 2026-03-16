@@ -6,7 +6,7 @@ import Logo from '@/components/Logo'
 interface Props {
   onBack: () => void
   onSignIn: () => void
-  onApiDocs: () => void
+  onApiDocs: (section?: string) => void
   onPrivacy?: () => void
   onTerms?: () => void
 }
@@ -59,7 +59,7 @@ export default function GettingStartedPage({ onBack, onSignIn, onApiDocs, onPriv
             <Logo size="sm" />
           </button>
           <div className="flex items-center gap-3">
-            <button onClick={onApiDocs} className="text-xs text-gray-500 hover:text-gray-300 transition-colors">API Reference</button>
+            <button onClick={() => onApiDocs()} className="text-xs text-gray-500 hover:text-gray-300 transition-colors">API Reference</button>
             <button onClick={onSignIn} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white font-semibold rounded-lg transition-colors">
               Sign in
             </button>
@@ -203,7 +203,7 @@ class MyClassifier(BaseTrainer):
           <CodeBlock lang="bash" code={`# Optional: pass config overrides as JSON in the UI
 # or call the API directly:
 
-curl -X POST http://localhost:8030/api/v1/training/start \\
+curl -X POST https://api.mldock.io/api/v1/training/start \\
   -H "Authorization: Bearer YOUR_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -224,7 +224,7 @@ curl -X POST http://localhost:8030/api/v1/training/start \\
           <p className="text-gray-400 text-sm leading-relaxed">
             Switch Compute to <strong className="text-white">Cloud GPU</strong>, click the GPU selector, choose your GPU and budget. Make sure your wallet balance covers 3× the estimated hourly cost.
           </p>
-          <CodeBlock lang="bash" code={`curl -X POST http://localhost:8030/api/v1/training/start \\
+          <CodeBlock lang="bash" code={`curl -X POST https://api.mldock.io/api/v1/training/start \\
   -H "Authorization: Bearer YOUR_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -259,7 +259,7 @@ curl -X POST http://localhost:8030/api/v1/training/start \\
             Once training completes, your model is live. Grab an API key from <strong className="text-white">API Keys</strong> in the sidebar and start calling the inference endpoint.
           </p>
           <CodeBlock lang="bash" code={`# REST inference
-curl -X POST http://localhost:8030/api/v1/inference/my-classifier/predict \\
+curl -X POST https://api.mldock.io/api/v1/inference/my-classifier/predict \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -274,7 +274,7 @@ curl -X POST http://localhost:8030/api/v1/inference/my-classifier/predict \\
           <CodeBlock filename="example.py" code={`import requests
 
 API_KEY  = "mlv_your_api_key_here"
-BASE_URL = "http://localhost:8030/api/v1"
+BASE_URL = "https://api.mldock.io/api/v1"
 
 resp = requests.post(
     f"{BASE_URL}/inference/my-classifier/predict",
@@ -294,10 +294,10 @@ print(resp.json())  # {'species': 'setosa', 'latency_ms': 12}`} />
           <h2 className="text-sm font-bold text-white uppercase tracking-widest">Next steps</h2>
           <div className="grid sm:grid-cols-2 gap-3">
             {[
-              { icon: <Terminal size={13} />, title: 'API Reference', desc: 'Full REST API docs with all endpoints', action: onApiDocs },
-              { icon: <Zap size={13} />, title: 'A/B Testing', desc: 'Route traffic between model versions', action: undefined },
-              { icon: <BarChart3 size={13} />, title: 'Monitoring', desc: 'Drift detection, latency alerts, dashboards', action: undefined },
-              { icon: <Key size={13} />, title: 'Batch inference', desc: 'Submit bulk prediction jobs async', action: undefined },
+              { icon: <Terminal size={13} />, title: 'API Reference', desc: 'Full REST API docs with all endpoints', action: () => onApiDocs() },
+              { icon: <Zap size={13} />, title: 'A/B Testing', desc: 'Route traffic between model versions', action: () => onApiDocs('A/B Testing') },
+              { icon: <BarChart3 size={13} />, title: 'Monitoring', desc: 'Drift detection, latency alerts, dashboards', action: () => onApiDocs('Monitoring') },
+              { icon: <Key size={13} />, title: 'Batch inference', desc: 'Submit bulk prediction jobs async', action: () => onApiDocs('Batch Inference') },
             ].map(n => (
               <button key={n.title} onClick={n.action}
                 className="flex items-start gap-3 p-3 bg-gray-950 border border-gray-800 hover:border-gray-600 rounded-xl text-left transition-colors group">

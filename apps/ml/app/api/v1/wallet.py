@@ -39,11 +39,15 @@ class AdminRechargeRequest(BaseModel):
 
 
 def _wallet_dict(wallet: Wallet) -> dict:
+    std = round(wallet.standard_balance, 10)
+    general = round(wallet.balance - wallet.standard_balance, 10)
     return {
         "id": str(wallet.id),
         "user_email": wallet.user_email,
-        "balance": round(wallet.balance, 2),
-        "reserved": round(wallet.reserved, 2),
+        "balance": round(wallet.balance, 10),          # total available
+        "standard_balance": std,                       # earmarked for standard compute only
+        "general_balance": general,                    # usable for any compute (incl. cloud GPU)
+        "reserved": round(wallet.reserved, 10),
         "currency": wallet.currency,
         "local_quota_seconds": wallet.local_quota_seconds,
         "local_used_seconds": round(wallet.local_used_seconds, 2),
@@ -57,9 +61,11 @@ def _tx_dict(tx: WalletTransaction) -> dict:
     return {
         "id": str(tx.id),
         "type": tx.type,
-        "amount": round(tx.amount, 2),
-        "balance_after": round(tx.balance_after, 2),
-        "reserved_after": round(tx.reserved_after, 2),
+        "amount": round(tx.amount, 10),
+        "standard_amount": round(tx.standard_amount, 10),
+        "balance_after": round(tx.balance_after, 10),
+        "standard_balance_after": round(tx.standard_balance_after, 10),
+        "reserved_after": round(tx.reserved_after, 10),
         "description": tx.description,
         "reference": tx.reference,
         "job_id": tx.job_id,

@@ -14,8 +14,9 @@ class Wallet(Document):
 
     org_id: str = ""
     user_email: str
-    balance: float = 0.0      # total available (not including reserved)
-    reserved: float = 0.0     # held for pending GPU jobs
+    balance: float = 0.0           # total available (not including reserved) = standard_balance + general_balance
+    standard_balance: float = 0.0  # earmarked for standard compute (CPU/local GPU) only; ≤ balance
+    reserved: float = 0.0          # held for pending jobs (both compute types)
     currency: str = "USD"
 
     # Monthly local training quota
@@ -35,7 +36,9 @@ class WalletTransaction(Document):
     user_email: str
     type: str   # credit | debit | reserve | release
     amount: float
+    standard_amount: float = 0.0     # portion of amount that moved standard_balance (for reserve/release/credit)
     balance_after: float
+    standard_balance_after: float = 0.0
     reserved_after: float
     description: str
     reference: Optional[str] = None   # Paystack reference

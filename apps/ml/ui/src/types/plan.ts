@@ -1,4 +1,6 @@
 export interface MLPricingConfig {
+  local_cpu_price_per_hour: number  // CPU-only training rate
+  local_cpu_free: boolean           // admin override: CPU training free for ALL
   local_gpu_price_per_hour: number
   local_gpu_free: boolean           // admin override: free for ALL users
   inference_price_per_call: number
@@ -11,8 +13,10 @@ export interface MLPlan {
   name: string
   description: string
   price_usd_per_month: number
-  free_training_hours: number
-  free_training_period: 'day' | 'week' | 'month' | 'none'
+  included_period: 'day' | 'week' | 'month' | 'none'
+  included_cpu_hours: number
+  included_local_gpu_hours: number
+  included_cloud_gpu_credit_usd: number
   free_inference_calls: number
   free_inference_period: 'day' | 'week' | 'month' | 'none'
   new_customer_credit_usd: number
@@ -20,6 +24,12 @@ export interface MLPlan {
   is_default: boolean
   created_at: string | null
   updated_at: string | null
+  // computed server-side for public pricing endpoint
+  included_compute_value_usd?: number
+  // legacy (kept for compat)
+  free_training_hours?: number
+  free_training_period?: string
+  free_local_gpu_hours?: number
 }
 
 export interface MLUserPlan {

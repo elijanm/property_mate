@@ -1,5 +1,9 @@
+import axios from 'axios'
 import client from './client'
 import type { MLPricingConfig, MLPlan, MLUserPlan, UserPlanInfo } from '../types/plan'
+
+// Unauthenticated client for public endpoints
+const publicClient = axios.create({ baseURL: client.defaults.baseURL ?? '/api/v1' })
 
 export interface AnalyticsData {
   period: { from: string | null; to: string | null }
@@ -49,6 +53,47 @@ export interface BroadcastResult {
   preview: boolean
 }
 
+export interface UserUsageMetric {
+  used_hours?: number
+  limit_hours?: number
+  pct: number
+  period?: string
+  reset_at: string | null
+}
+
+export interface UserUsageRow {
+  email: string
+  full_name: string
+  role: string
+  org_id: string
+  plan_name: string | null
+  local_compute: UserUsageMetric & { used_hours: number; limit_hours: number }
+  cloud_gpu: { used_usd: number; limit_usd: number; pct: number; reset_at: string | null }
+  inference: {
+    quota_used: number
+    quota_limit: number
+    quota_pct: number
+    period: string
+    reset_at: string | null
+    month_total: number
+    month_cost_usd: number
+    avg_latency_ms: number | null
+    p95_latency_ms: number | null
+    last_called_at: string | null
+  }
+  storage: {
+    model_count: number
+    dataset_count: number
+    storage_bytes: number
+  }
+}
+
+export interface UsageResponse {
+  users: UserUsageRow[]
+  total: number
+  month_start: string
+}
+
 export const adminApi = {
   getAnalytics: (from?: string, to?: string) => {
     const params: Record<string, string> = {}
@@ -81,6 +126,15 @@ export const adminApi = {
   deletePlan: (planId: string) =>
     client.delete<{ deactivated: boolean }>(`/admin/plans/${planId}`).then(r => r.data),
 
+  seedPlans: () =>
+    client.post<{ created: string[]; skipped: string[] }>('/admin/plans/seed').then(r => r.data),
+
+  getPublicPricing: () =>
+    publicClient.get<{
+      pricing: Pick<MLPricingConfig, 'local_cpu_price_per_hour' | 'local_gpu_price_per_hour' | 'inference_price_per_call'> & { cloud_gpu_min_price_per_hour: number }
+      plans: (MLPlan & { included_compute_value_usd: number })[]
+    }>('/admin/public/pricing').then(r => r.data),
+
   // ── User plan ─────────────────────────────────────────────────────────────
   assignPlan: (planId: string, userEmail: string, orgId = '') =>
     client.post(`/admin/plans/${planId}/assign`, { user_email: userEmail, org_id: orgId }).then(r => r.data),
@@ -94,4 +148,11 @@ export const adminApi = {
       org_id: orgId,
       local_gpu_exempt: localGpuExempt,
     }).then(r => r.data),
+
+  // ── Usage tracker ─────────────────────────────────────────────────────────
+  getUsage: () =>
+    client.get<UsageResponse>('/admin/usage').then(r => r.data),
+
+  getMyUsage: () =>
+    client.get<UserUsageRow & { month_start: string }>('/admin/usage/me').then(r => r.data),
 }

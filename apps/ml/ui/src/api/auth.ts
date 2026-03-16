@@ -34,4 +34,13 @@ export const authApi = {
     client.post<{ access_token: string }>('/auth/refresh', { refresh_token }).then(r => r.data),
 
   me: () => client.get('/auth/me').then(r => r.data),
+
+  forgotPassword: (email: string) =>
+    client.post<{ ok: boolean }>('/auth/forgot-password', { email }).then(r => r.data),
+
+  resetPassword: (token: string, new_password: string) =>
+    client.post<{ ok: boolean }>('/auth/reset-password', { token, new_password }).then(r => r.data),
+
+  changePassword: (current_password: string, new_password: string) =>
+    client.post<{ ok: boolean }>('/auth/change-password', { current_password, new_password }).then(r => r.data),
 }

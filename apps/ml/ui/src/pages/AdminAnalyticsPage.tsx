@@ -80,7 +80,7 @@ const TEMPLATES: { id: string; name: string; subject: string; html: string; raw?
     <li>Pre-fund your wallet — no surprise charges</li>
     <li>Same GPUs as any global team</li>
     <li>Your models, your data — 100% ownership</li>
-    <li>Free local training tier — 10 hrs/month</li>
+    <li>Free standard training tier — 10 hrs/month</li>
   </ul>
 </div>
 <p style="margin:0 0 24px;font-size:13px;color:#9ca3af;line-height:1.6;">
@@ -558,12 +558,12 @@ export default function AdminAnalyticsPage() {
                 sub={`${d.training.failed} failed`} accent="green" />
               <StatCard icon={<Cpu size={15} />} label="GPU Hours" value={`~${d.training.gpu_hours_estimate.toFixed(1)} h`}
                 sub={`${d.training.cloud_jobs} cloud jobs`} accent="purple" />
-              <StatCard icon={<Server size={15} />} label="Local Jobs" value={d.training.local_jobs}
+              <StatCard icon={<Server size={15} />} label="Standard Jobs" value={d.training.local_jobs}
                 sub={`${d.training.local_hours_purchased.toFixed(1)} hrs purchased`} accent="amber" />
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-2 col-span-2 sm:col-span-1">
                 <div className="text-[11px] text-gray-500 uppercase tracking-widest font-semibold">Compute Split</div>
-                <MiniBar label="Local" value={d.training.local_jobs} max={d.training.total_jobs} color="bg-amber-500" />
-                <MiniBar label="Cloud GPU" value={d.training.cloud_jobs} max={d.training.total_jobs} color="bg-violet-500" />
+                <MiniBar label="Standard" value={d.training.local_jobs} max={d.training.total_jobs} color="bg-amber-500" />
+                <MiniBar label="Accelerated" value={d.training.cloud_jobs} max={d.training.total_jobs} color="bg-violet-500" />
                 <MiniBar label="Failed" value={d.training.failed} max={d.training.total_jobs} color="bg-red-500" />
               </div>
             </div>

@@ -171,6 +171,7 @@
     <li><a href="#trainer-overview">Overview</a></li>
     <li><a href="#base-trainer">BaseTrainer Contract</a></li>
     <li><a href="#data-sources">Data Sources (15+)</a></li>
+    <li><a href="#dataset-source">↳ MLDock Dataset</a></li>
     <li><a href="#trainer-lifecycle">Training Lifecycle</a></li>
     <li><a href="#example-classifier">Example: Classifier</a></li>
     <li><a href="#example-regressor">Example: Regressor</a></li>
@@ -541,11 +542,11 @@
 zip -r my_roboflow.zip config.json manifest.json inference.py
 
 <span class="cm"># Upload and deploy</span>
-curl -X POST http://localhost:8030/api/v1/models/deploy-pretrained/zip \
+curl -X POST https://api.mldock.io/api/v1/models/deploy-pretrained/zip \
   -F <span class="st">"file=@my_roboflow.zip"</span>
 
 <span class="cm"># Run inference</span>
-curl -X POST http://localhost:8030/api/v1/inference/my-roboflow-model/upload \
+curl -X POST https://api.mldock.io/api/v1/inference/my-roboflow-model/upload \
   -F <span class="st">"file=@image.jpg"</span> \
   -F <span class="st">'extra={"api_key": "YOUR_KEY"}'</span></code></pre>
   </section>
@@ -673,7 +674,7 @@ curl -X POST http://localhost:8030/api/v1/inference/my-roboflow-model/upload \
         <span class="kw">return</span> m.iloc[<span class="nu">0</span>].to_dict() <span class="kw">if</span> hasattr(m, <span class="st">"to_dict"</span>) <span class="kw">else</span> <span class="fn">dict</span>(m)</code></pre>
 
     <h3>Test inference</h3>
-    <pre><code>curl -X POST http://localhost:8030/api/v1/inference/tabular-classifier \
+    <pre><code>curl -X POST https://api.mldock.io/api/v1/inference/tabular-classifier \
   -H <span class="st">'Content-Type: application/json'</span> \
   -d <span class="st">'{"inputs": {"f1": 1.2, "f2": 3.4, "f3": 5.6}}'</span></code></pre>
   </section>
@@ -684,26 +685,26 @@ curl -X POST http://localhost:8030/api/v1/inference/my-roboflow-model/upload \
 
     <div class="endpoint"><span class="method post">POST</span><code>/api/v1/models/deploy-pretrained/zip</code><span>Recommended — full ZIP</span></div>
     <pre><code><span class="cm"># Multipart form upload</span>
-curl -X POST http://localhost:8030/api/v1/models/deploy-pretrained/zip \
+curl -X POST https://api.mldock.io/api/v1/models/deploy-pretrained/zip \
   -F <span class="st">"file=@my_model.zip"</span>
 
 <span class="cm"># Response</span>
 { <span class="st">"job_id"</span>: <span class="st">"6..."</span>, <span class="st">"model_name"</span>: <span class="st">"my-model"</span>, <span class="st">"status"</span>: <span class="st">"queued"</span> }</code></pre>
 
     <div class="endpoint"><span class="method post">POST</span><code>/api/v1/models/deploy-pretrained/upload</code><span>File + optional inference script</span></div>
-    <pre><code>curl -X POST http://localhost:8030/api/v1/models/deploy-pretrained/upload \
+    <pre><code>curl -X POST https://api.mldock.io/api/v1/models/deploy-pretrained/upload \
   -F <span class="st">"file=@model.pkl"</span> \
   -F <span class="st">"name=my-model"</span> \
   -F <span class="st">"inference_script=@inference.py"</span></code></pre>
 
     <div class="endpoint"><span class="method post">POST</span><code>/api/v1/models/deploy-pretrained</code><span>URI sources (HuggingFace / S3 / URL)</span></div>
     <pre><code><span class="cm"># HuggingFace</span>
-curl -X POST http://localhost:8030/api/v1/models/deploy-pretrained \
+curl -X POST https://api.mldock.io/api/v1/models/deploy-pretrained \
   -H <span class="st">'Content-Type: application/json'</span> \
   -d <span class="st">'{"name": "sentiment", "huggingface_model_id": "distilbert-base-uncased", "huggingface_task": "text-classification"}'</span>
 
 <span class="cm"># Poll job</span>
-curl http://localhost:8030/api/v1/training/jobs/{job_id}</code></pre>
+curl https://api.mldock.io/api/v1/training/jobs/{job_id}</code></pre>
 
     <div class="endpoint"><span class="method get">GET</span><code>/api/v1/inference/{name}/schema</code><span>See what inputs a model expects</span></div>
     <div class="endpoint"><span class="method get">GET</span><code>/api/v1/models</code><span>List active deployments</span></div>
@@ -847,6 +848,7 @@ curl http://localhost:8030/api/v1/training/jobs/{job_id}</code></pre>
     <table>
       <thead><tr><th>Class</th><th>Use case</th><th>Key params</th></tr></thead>
       <tbody>
+        <tr><td><code class="inline"><strong>DatasetDataSource</strong></code></td><td><strong>MLDock built-in Dataset</strong></td><td><code class="inline">dataset_id</code> or <code class="inline">slug</code></td></tr>
         <tr><td><code class="inline">S3DataSource</code></td><td>S3 / MinIO file or prefix</td><td><code class="inline">bucket, key</code></td></tr>
         <tr><td><code class="inline">URLDataSource</code></td><td>HTTP/HTTPS download</td><td><code class="inline">url, headers</code></td></tr>
         <tr><td><code class="inline">UploadedFileDataSource</code></td><td>Bytes injected via API</td><td>Auto-injected</td></tr>
@@ -865,7 +867,142 @@ curl http://localhost:8030/api/v1/training/jobs/{job_id}</code></pre>
       </tbody>
     </table>
 
-    <h3>Usage examples</h3>
+    <h3 id="dataset-source">MLDock Dataset as Data Source</h3>
+    <p>
+      <code class="inline">DatasetDataSource</code> connects your trainer directly to an MLDock <strong>Dataset</strong> —
+      a structured collection of field-based entries (images, files, text, numbers) gathered from collectors or uploaded
+      by admins. It's the recommended data source for trainers that are tightly coupled to a specific collection pipeline.
+    </p>
+
+    <h4>Why use DatasetDataSource?</h4>
+    <ul>
+      <li><strong>No S3 paths to manage</strong> — entries are stored and fetched automatically.</li>
+      <li><strong>Schema-aware</strong> — each <code class="inline">DatasetField</code> maps to a column in the loaded data.</li>
+      <li><strong>Live data</strong> — every training run fetches the latest entries; no stale CSV files.</li>
+      <li><strong>Collector-driven</strong> — you can invite contributors via email to submit entries from mobile or desktop.</li>
+      <li><strong>Empty-state guard</strong> — the Trainers page warns you when the dataset has no entries and lets you upload directly.</li>
+    </ul>
+
+    <h4>Creating a Dataset</h4>
+    <p>Go to <strong>Build → Datasets</strong>, click <strong>+ New Dataset</strong>, and define your fields:</p>
+    <table>
+      <thead><tr><th>Field type</th><th>Use for</th><th>Loaded as</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">image</code></td><td>Photos, scans, diagrams</td><td>S3 presigned URL or raw bytes</td></tr>
+        <tr><td><code class="inline">file</code></td><td>PDFs, audio, documents</td><td>S3 presigned URL or raw bytes</td></tr>
+        <tr><td><code class="inline">text</code></td><td>Labels, descriptions, sentences</td><td>String value</td></tr>
+        <tr><td><code class="inline">number</code></td><td>Measurements, scores, counts</td><td>Numeric string (parse in preprocess)</td></tr>
+      </tbody>
+    </table>
+    <p>Set a <strong>slug</strong> (e.g. <code class="inline">cattle-physique-v1</code>) — a short identifier you can use in code instead of the raw MongoDB ID. Slugs are auto-generated from the dataset name if left blank.</p>
+
+    <h4>Referencing the dataset in your trainer</h4>
+    <pre><code><span class="kw">from</span> app.abstract.data_source <span class="kw">import</span> DatasetDataSource
+
+<span class="kw">class</span> <span class="cl">CattleClassifier</span>(BaseTrainer):
+    name = <span class="st">"cattle-body-condition"</span>
+    description = <span class="st">"Classifies cattle body condition from photos"</span>
+    framework = <span class="st">"sklearn"</span>
+
+    <span class="cm"># Option A — reference by slug (human-readable, easier to maintain)</span>
+    data_source = <span class="cl">DatasetDataSource</span>(slug=<span class="st">"cattle-physique-v1"</span>)
+
+    <span class="cm"># Option B — reference by MongoDB ID (copy from the Dataset page)</span>
+    <span class="cm"># data_source = DatasetDataSource(dataset_id="6627a3f0e1b2c3d4e5f60001")</span></code></pre>
+
+    <h4>What <code class="inline">data_source.load()</code> returns</h4>
+    <p>A list of dicts, one per entry, keyed by field label (lowercased, spaces→underscores):</p>
+    <pre><code>[
+    {<span class="st">"front_view"</span>: <span class="st">"https://…presigned-url…"</span>, <span class="st">"body_condition_score"</span>: <span class="st">"3.5"</span>},
+    {<span class="st">"front_view"</span>: <span class="st">"https://…presigned-url…"</span>, <span class="st">"body_condition_score"</span>: <span class="st">"2.0"</span>},
+    <span class="cm"># …one dict per entry in the dataset</span>
+]</code></pre>
+    <p>For <code class="inline">image</code> / <code class="inline">file</code> fields the value is a presigned S3 URL (valid 1 hr). Download in <code class="inline">preprocess()</code>:</p>
+    <pre><code><span class="kw">import</span> requests, numpy <span class="kw">as</span> np
+<span class="kw">from</span> PIL <span class="kw">import</span> Image
+<span class="kw">from</span> io <span class="kw">import</span> BytesIO
+
+<span class="kw">def</span> <span class="fn">preprocess</span>(self, raw_data):
+    X, y = [], []
+    <span class="kw">for</span> row <span class="kw">in</span> raw_data:
+        resp = requests.<span class="fn">get</span>(row[<span class="st">"front_view"</span>])
+        img = Image.<span class="fn">open</span>(BytesIO(resp.content)).<span class="fn">resize</span>((<span class="nu">224</span>, <span class="nu">224</span>))
+        X.<span class="fn">append</span>(np.<span class="fn">array</span>(img).<span class="fn">flatten</span>())
+        y.<span class="fn">append</span>(<span class="fn">float</span>(row[<span class="st">"body_condition_score"</span>]))
+    <span class="kw">return</span> np.<span class="fn">array</span>(X), np.<span class="fn">array</span>(y)</code></pre>
+
+    <h4>Populating the dataset</h4>
+    <p>There are three ways to add entries:</p>
+    <ol>
+      <li>
+        <strong>Admin direct upload</strong> (easiest for quick starts) — go to <strong>Build → Trainers</strong>,
+        expand the trainer, and click <em>"Upload Training Data"</em> in the dataset alert. A form matching your
+        dataset fields appears. Fill it in and save. Repeat for each sample.
+      </li>
+      <li>
+        <strong>Invite collectors</strong> — go to <strong>Build → Datasets</strong>, open the dataset, and click
+        <em>Invite Collector</em>. Enter an email address. The recipient gets a link to a mobile-friendly form
+        where they can upload photos or enter values. Collector submissions are immediately available for training.
+      </li>
+      <li>
+        <strong>CollectPage</strong> — share the public link (<code class="inline">/collect/&lt;token&gt;</code>) with
+        any data labeller. No login required.
+      </li>
+    </ol>
+
+    <h4>Empty-state guard</h4>
+    <p>
+      If the linked dataset has <strong>zero entries</strong> the Trainers page shows an amber warning banner
+      on that trainer and disables the Train button. Click <em>"Upload Training Data"</em> to add your first entry
+      without leaving the page.
+    </p>
+
+    <h4>Full example — text classification trainer</h4>
+    <pre><code><span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> BaseTrainer
+<span class="kw">from</span> app.abstract.data_source <span class="kw">import</span> DatasetDataSource
+<span class="kw">from</span> sklearn.feature_extraction.text <span class="kw">import</span> TfidfVectorizer
+<span class="kw">from</span> sklearn.linear_model <span class="kw">import</span> LogisticRegression
+<span class="kw">from</span> sklearn.pipeline <span class="kw">import</span> Pipeline
+<span class="kw">import</span> numpy <span class="kw">as</span> np
+
+<span class="kw">class</span> <span class="cl">SentimentClassifier</span>(BaseTrainer):
+    name        = <span class="st">"review-sentiment"</span>
+    description = <span class="st">"Positive / negative review classification"</span>
+    framework   = <span class="st">"sklearn"</span>
+
+    <span class="cm"># Dataset has two fields:
+    #   "Review Text"  (type: text)
+    #   "Sentiment"    (type: text, values: "positive" | "negative")</span>
+    data_source = <span class="cl">DatasetDataSource</span>(slug=<span class="st">"review-sentiment-v1"</span>)
+
+    <span class="kw">def</span> <span class="fn">preprocess</span>(self, raw_data):
+        texts  = [r[<span class="st">"review_text"</span>]  <span class="kw">for</span> r <span class="kw">in</span> raw_data]
+        labels = [r[<span class="st">"sentiment"</span>]     <span class="kw">for</span> r <span class="kw">in</span> raw_data]
+        <span class="kw">return</span> texts, labels
+
+    <span class="kw">def</span> <span class="fn">train</span>(self, X_y):
+        texts, labels = X_y
+        pipe = Pipeline([
+            (<span class="st">"tfidf"</span>, TfidfVectorizer(max_features=<span class="nu">5000</span>)),
+            (<span class="st">"clf"</span>,  LogisticRegression()),
+        ])
+        pipe.<span class="fn">fit</span>(texts, labels)
+        acc = pipe.<span class="fn">score</span>(texts, labels)
+        <span class="kw">return</span> pipe, {<span class="st">"accuracy"</span>: acc}
+
+    <span class="kw">def</span> <span class="fn">predict</span>(self, model, inputs):
+        text = inputs.<span class="fn">get</span>(<span class="st">"text"</span>, <span class="st">""</span>)
+        label = model.<span class="fn">predict</span>([text])[<span class="nu">0</span>]
+        prob  = model.<span class="fn">predict_proba</span>([text]).<span class="fn">max</span>()
+        <span class="kw">return</span> {<span class="st">"label"</span>: label, <span class="st">"confidence"</span>: <span class="fn">round</span>(<span class="fn">float</span>(prob), <span class="nu">3</span>)}</code></pre>
+
+    <div class="note">
+      <strong>Tip — field key naming:</strong> field labels are lowercased and spaces are replaced with underscores
+      when used as dict keys. "Review Text" → <code class="inline">review_text</code>.
+      "Body Condition Score" → <code class="inline">body_condition_score</code>.
+    </div>
+
+    <h3>Usage examples (other sources)</h3>
     <pre><code><span class="kw">from</span> app.abstract.data_source <span class="kw">import</span> (
     S3DataSource, MongoDBDataSource, HuggingFaceDataSource,
     PaginatedAPIDataSource, RedisDataSource,
@@ -1142,7 +1279,7 @@ data_source = <span class="cl">PaginatedAPIDataSource</span>(
 
     <h3>Upload and register a trainer</h3>
     <div class="endpoint"><span class="method post">POST</span><code>/api/v1/trainers/upload</code><span>Upload .py file</span></div>
-    <pre><code>curl -X POST http://localhost:8030/api/v1/trainers/upload \
+    <pre><code>curl -X POST https://api.mldock.io/api/v1/trainers/upload \
   -F <span class="st">"file=@rent_predictor.py"</span>
 
 <span class="cm"># Response</span>
@@ -1150,7 +1287,7 @@ data_source = <span class="cl">PaginatedAPIDataSource</span>(
 
     <h3>Trigger training</h3>
     <div class="endpoint"><span class="method post">POST</span><code>/api/v1/training/start</code><span>Trigger with optional config overrides</span></div>
-    <pre><code>curl -X POST http://localhost:8030/api/v1/training/start \
+    <pre><code>curl -X POST https://api.mldock.io/api/v1/training/start \
   -H <span class="st">'Content-Type: application/json'</span> \
   -d <span class="st">'{"trainer_name": "rent-predictor", "config_overrides": {"max_epochs": 50}}'</span>
 
@@ -1158,22 +1295,22 @@ data_source = <span class="cl">PaginatedAPIDataSource</span>(
 { <span class="st">"job_id"</span>: <span class="st">"6..."</span>, <span class="st">"status"</span>: <span class="st">"queued"</span> }</code></pre>
 
     <div class="endpoint"><span class="method post">POST</span><code>/api/v1/training/start-with-data</code><span>Upload data file + start in one request</span></div>
-    <pre><code>curl -X POST http://localhost:8030/api/v1/training/start-with-data \
+    <pre><code>curl -X POST https://api.mldock.io/api/v1/training/start-with-data \
   -F <span class="st">"trainer_name=rent-predictor"</span> \
   -F <span class="st">"file=@new_data.csv"</span></code></pre>
 
     <h3>Monitor the job</h3>
     <pre><code><span class="cm"># Get job status</span>
-curl http://localhost:8030/api/v1/training/jobs/{job_id}
+curl https://api.mldock.io/api/v1/training/jobs/{job_id}
 
 <span class="cm"># List all jobs</span>
-curl http://localhost:8030/api/v1/training/jobs?trainer_name=rent-predictor
+curl https://api.mldock.io/api/v1/training/jobs?trainer_name=rent-predictor
 
 <span class="cm"># Rerun a failed or completed job</span>
-curl -X POST http://localhost:8030/api/v1/training/jobs/{job_id}/rerun</code></pre>
+curl -X POST https://api.mldock.io/api/v1/training/jobs/{job_id}/rerun</code></pre>
 
     <h3>Run inference after training</h3>
-    <pre><code>curl -X POST http://localhost:8030/api/v1/inference/rent-predictor \
+    <pre><code>curl -X POST https://api.mldock.io/api/v1/inference/rent-predictor \
   -H <span class="st">'Content-Type: application/json'</span> \
   -d <span class="st">'{"inputs": {"bedrooms": 2, "bathrooms": 1, "sq_ft": 850, "floor": 3}}'</span></code></pre>
   </section>
@@ -1567,10 +1704,10 @@ asyncio.run(go())
 "
 
 <span class="cm"># Check current ban status for an IP</span>
-curl http://localhost:8030/api/v1/security/ips/1.2.3.4
+curl https://api.mldock.io/api/v1/security/ips/1.2.3.4
 
 <span class="cm"># View security dashboard stats</span>
-curl http://localhost:8030/api/v1/security/dashboard</code></pre>
+curl https://api.mldock.io/api/v1/security/dashboard</code></pre>
   </section>
 
   <section id="ip-threat-trainer">
@@ -1597,12 +1734,12 @@ curl http://localhost:8030/api/v1/security/dashboard</code></pre>
     <p>Training labels are derived from the <code class="inline">ip_records</code> collection: <code class="inline">is_banned=True</code> or <code class="inline">threat_score ≥ 0.85</code> → malicious (1). <code class="inline">threat_score &lt; 0.3</code> → benign (0). Ambiguous rows are excluded.</p>
 
     <h3>Trigger manually</h3>
-    <pre><code>curl -X POST http://localhost:8030/api/v1/training/start \
+    <pre><code>curl -X POST https://api.mldock.io/api/v1/training/start \
   -H 'Content-Type: application/json' \
   -d '{"trainer_name": "ip_threat_detector"}'
 
 <span class="cm"># Run inference directly</span>
-curl -X POST http://localhost:8030/api/v1/inference/ip_threat_detector \
+curl -X POST https://api.mldock.io/api/v1/inference/ip_threat_detector \
   -H 'Content-Type: application/json' \
   -d '{"inputs": {"rate_1m": 5, "rate_10m": 20, "rate_1h": 80,
        "error_rate": 0.05, "susp_path_ratio": 0.0, "blocked_ratio": 0.0,
@@ -1869,13 +2006,13 @@ resp = http.<span class="fn">get</span>(<span class="st">"https://huggingface.co
 
     <h3>Reading the hourly snapshots</h3>
     <pre><code><span class="cm"># Fetch last 24 hours of hourly snapshots</span>
-curl http://localhost:8030/api/v1/monitoring/performance/water-meter-ocr
+curl https://api.mldock.io/api/v1/monitoring/performance/water-meter-ocr
 
 <span class="cm"># Live rolling summary (last 6 hours)</span>
-curl "http://localhost:8030/api/v1/monitoring/performance/water-meter-ocr/summary?hours=6"
+curl "https://api.mldock.io/api/v1/monitoring/performance/water-meter-ocr/summary?hours=6"
 
 <span class="cm"># Force a snapshot for the past 2 hours (e.g. after backfilling logs)</span>
-curl -X POST "http://localhost:8030/api/v1/monitoring/performance/water-meter-ocr/snapshot?hours_back=2"</code></pre>
+curl -X POST "https://api.mldock.io/api/v1/monitoring/performance/water-meter-ocr/snapshot?hours_back=2"</code></pre>
 
     <div class="callout info">
       <strong>Tip — integrate with Grafana</strong>
@@ -1960,7 +2097,7 @@ curl -X POST "http://localhost:8030/api/v1/monitoring/performance/water-meter-oc
 
     <h3>Quick start workflow</h3>
     <pre><code><span class="cm"># 1. After the model has processed ≥ 100 requests, set a baseline</span>
-curl -X POST http://localhost:8030/api/v1/monitoring/drift/water-meter-ocr/baseline \
+curl -X POST https://api.mldock.io/api/v1/monitoring/drift/water-meter-ocr/baseline \
   -H "Content-Type: application/json" \
   -d '{"sample_count": 200}'
 
@@ -1973,7 +2110,7 @@ curl -X POST http://localhost:8030/api/v1/monitoring/drift/water-meter-ocr/basel
 }
 
 <span class="cm"># 2. Run a manual drift check (normally done by the scheduler)</span>
-curl -X POST http://localhost:8030/api/v1/monitoring/drift/water-meter-ocr/check \
+curl -X POST https://api.mldock.io/api/v1/monitoring/drift/water-meter-ocr/check \
   -H "Content-Type: application/json" \
   -d '{"sample_count": 200, "hours": 6}'
 
@@ -1995,17 +2132,17 @@ curl -X POST http://localhost:8030/api/v1/monitoring/drift/water-meter-ocr/check
 }
 
 <span class="cm"># 3. Acknowledge the alert</span>
-curl -X PATCH http://localhost:8030/api/v1/monitoring/drift/alerts/&lt;alert_id&gt; \
+curl -X PATCH https://api.mldock.io/api/v1/monitoring/drift/alerts/&lt;alert_id&gt; \
   -H "Content-Type: application/json" \
   -d '{"status": "acknowledged", "notes": "Investigating — users changed default threshold"}'
 
 <span class="cm"># 4. After retraining, refresh the baseline</span>
-curl -X POST http://localhost:8030/api/v1/monitoring/drift/water-meter-ocr/baseline</code></pre>
+curl -X POST https://api.mldock.io/api/v1/monitoring/drift/water-meter-ocr/baseline</code></pre>
 
     <h3>SSE real-time notification</h3>
     <p>When a drift alert is raised the service publishes on the <code class="inline">ml:events</code> Redis channel (same channel used for inference events). Subscribe via the SSE endpoint:</p>
     <pre><code><span class="cm"># Stream all ML events including drift alerts</span>
-curl -N http://localhost:8030/api/v1/events
+curl -N https://api.mldock.io/api/v1/events
 
 <span class="cm"># Example drift_alert event</span>
 event: drift_alert
@@ -2167,7 +2304,7 @@ docker logs pms_mlflow --tail 20</code></pre>
 
     <h3>Clean up stale deployments</h3>
     <pre><code><span class="cm"># Delete all MongoDB deployment records</span>
-curl -X DELETE http://localhost:8030/api/v1/models
+curl -X DELETE https://api.mldock.io/api/v1/models
 
 <span class="cm"># Delete all MLflow registry versions</span>
 docker exec pms_mlflow python3 -c <span class="st">"

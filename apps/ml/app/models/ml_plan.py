@@ -19,9 +19,13 @@ class MLPricingConfig(Document):
 
     key: str = "global"   # always "global" — singleton
 
+    # Local CPU training
+    local_cpu_price_per_hour: float = 0.05   # USD/hr — charged for CPU-only training
+    local_cpu_free: bool = False             # override: if True, CPU training is always free
+
     # Local GPU training
-    local_gpu_price_per_hour: float = 0.15   # USD/hr charged when user has no free hours
-    local_gpu_free: bool = False             # override: if True, all local training is free
+    local_gpu_price_per_hour: float = 0.20   # USD/hr charged when user has no free hours
+    local_gpu_free: bool = False             # override: if True, all local GPU training is free
 
     # Inference
     inference_price_per_call: float = 0.001  # USD per inference call
@@ -42,13 +46,22 @@ class MLPlan(Document):
 
     price_usd_per_month: float = 0.0        # 0 = free tier; informational only (billing handled externally)
 
-    # Free local training hours per period
-    free_training_hours: float = 0.0        # hours included; 0 = none
-    free_training_period: str = "month"     # "day" | "week" | "month" | "none" (lifetime)
+    # Reset period (shared across all included compute types)
+    included_period: str = "month"          # "day" | "week" | "month" | "none"
 
-    # Free inference calls per period
-    free_inference_calls: int = 0           # calls included; 0 = none
-    free_inference_period: str = "month"    # "day" | "week" | "month" | "none"
+    # Included compute hours per period (all charged at configured rates; plan covers the cost)
+    included_cpu_hours: float = 0.0         # CPU training hours covered by plan
+    included_local_gpu_hours: float = 0.0   # local GPU training hours covered by plan
+    included_cloud_gpu_credit_usd: float = 0.0  # cloud GPU wallet credit added each period
+
+    # Included inference calls per period
+    free_inference_calls: int = 0
+    free_inference_period: str = "month"
+
+    # ── Legacy fields (kept for backward compat with existing user plans) ──────
+    free_training_hours: float = 0.0        # old CPU hours — maps to included_cpu_hours
+    free_training_period: str = "month"
+    free_local_gpu_hours: float = 0.0       # old local GPU hours — maps to included_local_gpu_hours
 
     # One-time new-customer credit
     new_customer_credit_usd: float = 0.0    # added to wallet on first assignment

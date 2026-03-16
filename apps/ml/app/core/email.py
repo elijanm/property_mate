@@ -91,3 +91,55 @@ def _welcome_html(full_name: str, email: str, otp: str, token: str) -> str:
 </body>
 </html>
 """
+
+
+def _password_reset_html(name: str, reset_url: str) -> str:
+    return f"""
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0a0a0a;padding:40px 20px;">
+    <tr><td align="center">
+      <table width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;">
+
+        <tr><td align="center" style="padding-bottom:32px;">
+          <div style="display:inline-flex;align-items:center;gap:10px;">
+            <div style="width:40px;height:40px;border-radius:12px;background:#6366f1;display:inline-block;text-align:center;line-height:40px;font-size:20px;">🧠</div>
+            <span style="font-size:20px;font-weight:700;color:#ffffff;">MLDock.io</span>
+          </div>
+        </td></tr>
+
+        <tr><td style="background:#111111;border:1px solid #222222;border-radius:16px;padding:36px;">
+          <h2 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#ffffff;">Reset your password</h2>
+          <p style="margin:0 0 28px;font-size:14px;color:#9ca3af;line-height:1.6;">
+            Hi {name},<br><br>
+            We received a request to reset the password for your MLDock.io account.
+            Click the button below to choose a new password.
+          </p>
+
+          <div style="text-align:center;margin-bottom:28px;">
+            <a href="{reset_url}" style="display:inline-block;background:#6366f1;color:#ffffff;font-size:14px;font-weight:600;padding:12px 32px;border-radius:10px;text-decoration:none;">
+              Reset password
+            </a>
+          </div>
+
+          <p style="margin:0 0 16px;font-size:12px;color:#6b7280;text-align:center;">
+            This link expires in <strong style="color:#9ca3af;">1 hour</strong>.
+          </p>
+          <p style="margin:0;font-size:12px;color:#4b5563;text-align:center;line-height:1.6;">
+            If you didn't request a password reset, you can safely ignore this email.<br>
+            Your password will not be changed.
+          </p>
+        </td></tr>
+
+        <tr><td style="padding-top:24px;text-align:center;">
+          <p style="margin:0;font-size:11px;color:#374151;">MLDock.io · Internal Platform</p>
+        </td></tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+"""

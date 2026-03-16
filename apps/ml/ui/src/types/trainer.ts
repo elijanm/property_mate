@@ -6,6 +6,7 @@ export interface TrainerRegistration {
   framework: string
   schedule: string | null
   tags: string[]
+  data_source_info: Record<string, unknown>
   status: 'active' | 'inactive'
   is_active: boolean
   last_trained_at: string | null

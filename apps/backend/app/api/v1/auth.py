@@ -13,6 +13,8 @@ from app.schemas.auth import (
     LogoutResponse,
     RefreshRequest,
     RefreshResponse,
+    SignupRequest,
+    SignupVerifyRequest,
 )
 from app.services import auth_service
 
@@ -68,3 +70,26 @@ async def logout(
 ) -> LogoutResponse:
     await auth_service.logout(request.refresh_token, redis)
     return LogoutResponse(ok=True)
+
+
+@router.post("/signup", status_code=200)
+async def signup(
+    request: SignupRequest,
+    redis: Redis = Depends(get_redis_dep),
+) -> dict:
+    return await auth_service.signup_request(
+        request.email,
+        request.password,
+        request.first_name,
+        request.last_name,
+        request.org_name,
+        redis,
+    )
+
+
+@router.post("/signup/verify-otp", response_model=LoginResponse, status_code=200)
+async def signup_verify_otp(
+    request: SignupVerifyRequest,
+    redis: Redis = Depends(get_redis_dep),
+) -> LoginResponse:
+    return await auth_service.signup_verify(request.email, request.otp, redis)

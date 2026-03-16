@@ -66,6 +66,9 @@ async def get_local_training_info(user=Depends(get_current_user)):
         user.email, user.org_id
     )
     cfg = await ml_billing_service.get_pricing_config()
+    # Use CPU price when the server has no CUDA-capable GPU
+    if not gpu_info["is_cuda_available"] and not is_free:
+        price_per_hour = cfg.local_cpu_price_per_hour
     user_plan = await ml_billing_service.get_user_plan(user.email, user.org_id)
     is_exempt = bool(user_plan and getattr(user_plan, "local_gpu_exempt", False))
 
@@ -126,13 +129,13 @@ async def start_training(
         reservation = round(est_cost * 3.0, 2)
 
         wallet = await wallet_service.get_or_create(user.email, user.org_id)
-        if wallet_service.available(wallet) < reservation:
+        if wallet_service.available_for_cloud(wallet) < reservation:
             raise HTTPException(
                 status_code=402,
                 detail=(
-                    f"Insufficient wallet balance. Need ${reservation:.2f} USD, "
-                    f"available ${wallet_service.available(wallet):.2f} USD. "
-                    "Top up your wallet."
+                    f"Insufficient balance for accelerated compute. Need ${reservation:.2f} USD, "
+                    f"available ${wallet_service.available_for_cloud(wallet):.2f} USD. "
+                    "Top up your wallet for accelerated compute."
                 ),
             )
     elif body.compute_type == "local":
@@ -182,7 +185,7 @@ async def start_training(
         else:
             price_per_hour = local_price
             desc = f"Local training reservation — {body.trainer_name} · ${local_price:.2f}/hr"
-        await wallet_service.reserve(wallet, reservation, job_id, desc)
+        await wallet_service.reserve(wallet, reservation, job_id, desc, compute_type=body.compute_type)
         job = await TrainingJob.get(job_id)
         if job:
             await job.set({
@@ -224,13 +227,13 @@ async def start_training_with_file(
         reservation = round(est_cost * 3.0, 2)
 
         wallet = await wallet_service.get_or_create(user.email, user.org_id)
-        if wallet_service.available(wallet) < reservation:
+        if wallet_service.available_for_cloud(wallet) < reservation:
             raise HTTPException(
                 status_code=402,
                 detail=(
-                    f"Insufficient wallet balance. Need ${reservation:.2f} USD, "
-                    f"available ${wallet_service.available(wallet):.2f} USD. "
-                    "Top up your wallet."
+                    f"Insufficient balance for accelerated compute. Need ${reservation:.2f} USD, "
+                    f"available ${wallet_service.available_for_cloud(wallet):.2f} USD. "
+                    "Top up your wallet for accelerated compute."
                 ),
             )
     elif compute_type == "local":
@@ -279,7 +282,7 @@ async def start_training_with_file(
         else:
             price_per_hour = local_price
             desc = f"Local training reservation — {trainer_name} · ${local_price:.2f}/hr"
-        await wallet_service.reserve(wallet, reservation, job_id, desc)
+        await wallet_service.reserve(wallet, reservation, job_id, desc, compute_type=compute_type)
         job = await TrainingJob.get(job_id)
         if job:
             await job.set({

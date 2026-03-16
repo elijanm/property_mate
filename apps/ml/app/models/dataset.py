@@ -1,11 +1,21 @@
 """Dataset collection models — profile, collectors, entries."""
 import uuid
+import re
 import secrets
 from typing import Optional, List
 from datetime import datetime
 from beanie import Document
 from pydantic import BaseModel, Field
 from app.utils.datetime import utc_now
+
+
+def slugify(text: str) -> str:
+    """Convert text to a URL-safe slug: lowercase, spaces/underscores→hyphens, strip specials."""
+    s = text.lower().strip()
+    s = re.sub(r"[^\w\s-]", "", s)
+    s = re.sub(r"[\s_]+", "-", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s or "dataset"
 
 
 class DatasetField(BaseModel):
@@ -34,10 +44,19 @@ class DatasetField(BaseModel):
 class DatasetProfile(Document):
     org_id: str = ""
     name: str
+    slug: Optional[str] = None                    # URL-friendly identifier, unique per org
     description: str = ""
     category: str = ""
     fields: List[DatasetField] = []
     status: str = "active"                        # draft | active | closed
+
+    # Visibility & sharing
+    visibility: str = "private"                   # private | public
+    # Derived datasets — set when cloned or referenced from a public dataset
+    source_dataset_id: Optional[str] = None       # original dataset this was cloned/referenced from
+    reference_type: Optional[str] = None          # clone | reference
+    # Cached stats for public listing (updated on entry submit)
+    entry_count_cache: int = 0
 
     # Points / incentive system
     points_enabled: bool = False
@@ -77,6 +96,7 @@ class DatasetEntry(Document):
     field_id: str
     file_key: Optional[str] = None               # S3 object key
     file_mime: Optional[str] = None
+    file_size_bytes: Optional[int] = None        # raw file size in bytes (set at upload time)
     text_value: Optional[str] = None             # text / number fields
     description: Optional[str] = None            # collector-provided description
     points_awarded: int = 0

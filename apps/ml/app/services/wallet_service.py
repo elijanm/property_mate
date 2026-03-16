@@ -24,18 +24,47 @@ async def get_or_create(user_email: str, org_id: str) -> Wallet:
 
 
 def available(wallet: Wallet) -> float:
-    """Return the spendable balance (balance is already the available amount)."""
+    """Return the total spendable balance (standard + general). For standard compute jobs."""
     return round(wallet.balance, 2)
 
 
-async def reserve(wallet: Wallet, amount: float, job_id: str, description: str) -> None:
+def available_for_cloud(wallet: Wallet) -> float:
+    """Return the general (non-earmarked) spendable balance. Cloud GPU jobs may only use this."""
+    return round(wallet.balance - wallet.standard_balance, 2)
+
+
+async def reserve(
+    wallet: Wallet,
+    amount: float,
+    job_id: str,
+    description: str,
+    compute_type: str = "local",
+) -> None:
     """
-    Hold `amount` for a pending GPU job.
-    Deducts from balance and adds to reserved.
-    Raises ValueError if balance is insufficient.
+    Hold `amount` for a pending job.
+
+    compute_type="cloud_gpu":
+        Can only draw from the general (non-earmarked) portion: balance - standard_balance.
+        standard_balance is NOT touched.
+
+    compute_type="local" (default, standard compute):
+        Can draw from the full balance. standard_balance is reduced proportionally —
+        standard portion used = min(standard_balance, amount).
     """
-    if round(wallet.balance, 10) < round(amount, 10):
-        raise ValueError("INSUFFICIENT_BALANCE")
+    amount = round(amount, 10)
+
+    if compute_type == "cloud_gpu":
+        general_available = round(wallet.balance - wallet.standard_balance, 10)
+        if general_available < amount:
+            raise ValueError("INSUFFICIENT_BALANCE")
+        # standard_balance stays the same — cloud draws from general bucket only
+        std_used = 0.0
+    else:
+        if round(wallet.balance, 10) < amount:
+            raise ValueError("INSUFFICIENT_BALANCE")
+        # Standard compute drains standard_balance first, then spills into general
+        std_used = round(min(wallet.standard_balance, amount), 10)
+        wallet.standard_balance = round(wallet.standard_balance - std_used, 10)
 
     wallet.balance = round(wallet.balance - amount, 10)
     wallet.reserved = round(wallet.reserved + amount, 10)
@@ -47,7 +76,9 @@ async def reserve(wallet: Wallet, amount: float, job_id: str, description: str) 
         user_email=wallet.user_email,
         type="reserve",
         amount=amount,
+        standard_amount=std_used,
         balance_after=wallet.balance,
+        standard_balance_after=wallet.standard_balance,
         reserved_after=wallet.reserved,
         description=description,
         job_id=job_id,
@@ -59,6 +90,11 @@ async def release_and_charge(wallet: Wallet, job_id: str, actual_cost: float) ->
     """
     Release the reserved amount for `job_id` and charge actual cost.
     Returns the actual amount charged.
+
+    Precision guarantee:
+    - All arithmetic is done at 10-decimal precision internally.
+    - standard_balance is restored proportionally: if X% of the reservation came from
+      standard_balance, then X% of the refund goes back to standard_balance.
     """
     # Find the reserve transaction for this job
     reserve_tx = await WalletTransaction.find_one(
@@ -66,7 +102,8 @@ async def release_and_charge(wallet: Wallet, job_id: str, actual_cost: float) ->
         WalletTransaction.type == "reserve",
         WalletTransaction.user_email == wallet.user_email,
     )
-    reserved_amount = reserve_tx.amount if reserve_tx else 0.0
+    reserved_amount = round(reserve_tx.amount, 10) if reserve_tx else 0.0
+    std_reserved = round(reserve_tx.standard_amount, 10) if reserve_tx else 0.0
 
     # Guard: if a release tx already exists for this job, do nothing (idempotent)
     already_released = await WalletTransaction.find_one(
@@ -78,23 +115,34 @@ async def release_and_charge(wallet: Wallet, job_id: str, actual_cost: float) ->
         logger.debug("release_and_charge_skipped_duplicate", job_id=job_id, user=wallet.user_email)
         return 0.0
 
-    # Cap actual at what was reserved
+    # Cap actual at what was reserved (never charge more than was held)
     actual = round(min(actual_cost, reserved_amount), 10)
-    overage = round(reserved_amount - actual, 10)
 
-    # 1. Debit actual cost from reserved bucket — cap deduction to what's actually there
-    deductible = min(reserved_amount, wallet.reserved)
+    # Debit from reserved bucket — cap deduction to what's physically there (race-condition safety)
+    deductible = round(min(reserved_amount, wallet.reserved), 10)
     wallet.reserved = max(0.0, round(wallet.reserved - deductible, 10))
-    # 2. Refund unused portion back to spendable balance — only what was actually deducted
-    actual_overage = round(deductible - actual, 10)
-    wallet.balance = round(wallet.balance + max(0.0, actual_overage), 10)
 
-    # Adjust overage for transaction records to reflect what was actually returned
-    overage = actual_overage
+    # Refund unused portion back to spendable balance
+    actual_overage = max(0.0, round(deductible - actual, 10))
+    wallet.balance = round(wallet.balance + actual_overage, 10)
+
+    # Restore standard_balance proportionally.
+    # If the reservation consumed std_reserved of standard_balance, the refund returns
+    # that same proportion of the overage back to standard_balance.
+    if reserved_amount > 0 and std_reserved > 0:
+        std_proportion = round(std_reserved / reserved_amount, 10)
+        std_refund = round(actual_overage * std_proportion, 10)
+        # Never let standard_balance exceed balance (invariant)
+        wallet.standard_balance = min(
+            round(wallet.standard_balance + std_refund, 10),
+            wallet.balance,
+        )
+
     wallet.updated_at = utc_now()
     await wallet.save()
 
     short_id = job_id[:8]
+    overage_for_log = actual_overage   # local alias for transaction records
 
     # Record debit transaction (actual cost charged)
     if actual > 0:
@@ -103,33 +151,39 @@ async def release_and_charge(wallet: Wallet, job_id: str, actual_cost: float) ->
             user_email=wallet.user_email,
             type="debit",
             amount=actual,
+            standard_amount=round(std_reserved - std_reserved * actual_overage / deductible, 10)
+                if deductible > 0 else 0.0,
             balance_after=wallet.balance,
+            standard_balance_after=wallet.standard_balance,
             reserved_after=wallet.reserved,
             description=(
-                f"GPU charge — ${actual:.4f} used of ${reserved_amount:.4f} reserved · job {short_id}"
+                f"Compute charge — ${actual:.6f} used of ${reserved_amount:.6f} reserved · job {short_id}"
             ),
             job_id=job_id,
         )
         await debit_tx.insert()
 
-    # Record release transaction (unused reservation refunded) — always write when
-    # there was a reservation, so the user can see the refund even if overage == 0.
+    # Record release transaction (unused reservation refunded)
     if reserved_amount > 0:
-        if overage > 0:
+        std_refund_val = round(wallet.standard_balance, 10) if actual_overage > 0 else 0.0
+        if overage_for_log > 0:
             refund_desc = (
-                f"Unused GPU time refunded — reserved ${reserved_amount:.4f}, "
-                f"used ${actual:.4f}, refund ${overage:.4f} · job {short_id}"
+                f"Unused compute time refunded — reserved ${reserved_amount:.6f}, "
+                f"used ${actual:.6f}, refund ${overage_for_log:.6f} · job {short_id}"
             )
         else:
             refund_desc = (
-                f"GPU job completed — fully consumed reservation ${reserved_amount:.4f} · job {short_id}"
+                f"Compute job completed — fully consumed reservation ${reserved_amount:.6f} · job {short_id}"
             )
         release_tx = WalletTransaction(
             org_id=wallet.org_id,
             user_email=wallet.user_email,
             type="release",
-            amount=overage,          # 0.0 when fully consumed — visible as $0.00 refund
+            amount=overage_for_log,
+            standard_amount=round(actual_overage * (std_reserved / reserved_amount), 10)
+                if reserved_amount > 0 and actual_overage > 0 else 0.0,
             balance_after=wallet.balance,
+            standard_balance_after=wallet.standard_balance,
             reserved_after=wallet.reserved,
             description=refund_desc,
             job_id=job_id,
@@ -139,9 +193,25 @@ async def release_and_charge(wallet: Wallet, job_id: str, actual_cost: float) ->
     return actual
 
 
-async def credit(wallet: Wallet, amount: float, reference: str, description: str) -> None:
-    """Credit the wallet with a top-up amount."""
+async def credit(
+    wallet: Wallet,
+    amount: float,
+    reference: str,
+    description: str,
+    is_standard: bool = False,
+) -> None:
+    """
+    Credit the wallet.
+
+    is_standard=True  → earmarked for standard compute (admin grants, plan credits).
+                        Both balance and standard_balance increase.
+    is_standard=False → general credit (user self-top-up via Paystack).
+                        Only balance increases; standard_balance unchanged.
+    """
+    amount = round(amount, 10)
     wallet.balance = round(wallet.balance + amount, 10)
+    if is_standard:
+        wallet.standard_balance = round(wallet.standard_balance + amount, 10)
     wallet.updated_at = utc_now()
     await wallet.save()
 
@@ -150,7 +220,9 @@ async def credit(wallet: Wallet, amount: float, reference: str, description: str
         user_email=wallet.user_email,
         type="credit",
         amount=amount,
+        standard_amount=amount if is_standard else 0.0,
         balance_after=wallet.balance,
+        standard_balance_after=wallet.standard_balance,
         reserved_after=wallet.reserved,
         description=description,
         reference=reference,
@@ -203,6 +275,7 @@ async def admin_credit(
 ) -> tuple:
     """
     Admin recharges a user's wallet with `amount_usd`.
+    Always earmarked as standard compute credit (is_standard=True).
     Records a WalletTransaction (credit) and a PlatformLedger entry.
     Returns (wallet, ledger_entry).
     """
@@ -212,8 +285,9 @@ async def admin_credit(
     await credit(
         wallet=wallet,
         amount=amount_usd,
-        reference=f"admin:{performed_by}",
+        reference=f"admin:{performed_by}:{user_email}",
         description=f"Admin recharge by {performed_by}" + (f" — {note}" if note else ""),
+        is_standard=True,    # admin grants are standard compute credits
     )
 
     # Find the transaction we just wrote so we can cross-reference it

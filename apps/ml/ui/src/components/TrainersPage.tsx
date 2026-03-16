@@ -1,20 +1,239 @@
 import { useState, useEffect, useRef } from 'react'
 import { trainersApi } from '@/api/trainers'
+import { datasetsApi } from '@/api/datasets'
+import client from '@/api/client'
 import type { TrainerRegistration } from '@/types/trainer'
+import type { DatasetProfile } from '@/types/dataset'
 import StatusBadge from './StatusBadge'
 import JobsPanel from './JobsPanel'
-import { Upload, RefreshCw, Scan, Trash2, Brain, Loader2, ChevronDown, ChevronRight, ChevronLeft, Play } from 'lucide-react'
+import DatasetUploadModal from './DatasetUploadModal'
+import {
+  Upload, RefreshCw, Scan, Trash2, Brain, Loader2, ChevronDown, ChevronRight,
+  ChevronLeft, Play, Database, AlertTriangle, CheckCircle2, X, Plus, ExternalLink,
+  Download,
+} from 'lucide-react'
 import clsx from 'clsx'
 
 const PAGE_SIZE = 10
 
 interface Props {
   onStartTraining?: (trainerName: string) => void
+  onGoDatasets?: () => void
 }
 
 type Tab = 'trainers' | 'jobs'
 
-export default function TrainersPage({ onStartTraining }: Props) {
+// ─── Dataset status chip (for trainer card) ────────────────────────────────
+
+function DatasetChip({
+  datasetId,
+  datasetSlug,
+  onUpload,
+  onGoDatasets,
+}: {
+  datasetId?: string
+  datasetSlug?: string
+  onUpload: (dataset: DatasetProfile) => void
+  onGoDatasets?: () => void
+}) {
+  const [loading, setLoading] = useState(true)
+  const [count, setCount] = useState<number | null>(null)
+  const [dataset, setDataset] = useState<DatasetProfile | null>(null)
+  const [error, setError] = useState(false)
+
+  const fetchInfo = async () => {
+    setLoading(true)
+    setError(false)
+    try {
+      // Prefer slug-based lookup; fall back to id-based
+      let profile: DatasetProfile
+      if (datasetSlug) {
+        profile = await datasetsApi.getBySlug(datasetSlug)
+      } else if (datasetId) {
+        profile = await datasetsApi.get(datasetId)
+      } else {
+        setError(true)
+        setLoading(false)
+        return
+      }
+      const { count: c } = await datasetsApi.getEntryCount(profile.id)
+      setDataset(profile)
+      setCount(c)
+    } catch {
+      setError(true)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { fetchInfo() }, [datasetId, datasetSlug])
+
+  if (loading) return (
+    <div className="flex items-center gap-1.5 text-[11px] text-gray-600">
+      <Loader2 size={11} className="animate-spin" /> checking dataset…
+    </div>
+  )
+
+  if (error || !dataset) return (
+    <div className="flex items-center gap-1.5 text-[11px] text-amber-500">
+      <AlertTriangle size={11} />
+      Dataset not found
+      {datasetSlug && <span className="font-mono text-amber-400"> #{datasetSlug}</span>}
+      {!datasetSlug && datasetId && <span className="text-amber-400"> ({datasetId.slice(0, 8)}…)</span>}
+      {' — '}create it in Datasets first
+    </div>
+  )
+
+  if (count === 0) return (
+    <div className="flex items-start gap-3 p-3 bg-amber-950/30 border border-amber-800/40 rounded-xl">
+      <AlertTriangle size={14} className="text-amber-400 flex-shrink-0 mt-0.5" />
+      <div className="flex-1 min-w-0">
+        <p className="text-xs font-medium text-amber-300">Dataset is empty — training will fail</p>
+        <p className="text-[11px] text-amber-400/70 mt-0.5">
+          <span className="font-medium text-amber-200">{dataset.name}</span>
+          {dataset.slug && <span className="ml-1 text-amber-500/60">#{dataset.slug}</span>}
+          {' '}has no entries yet.
+        </p>
+        <div className="flex items-center gap-2 mt-2">
+          <button
+            onClick={() => onUpload(dataset)}
+            className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-[11px] font-medium text-white rounded-lg transition-colors"
+          >
+            <Upload size={10} /> Upload Training Data
+          </button>
+          {onGoDatasets && (
+            <button
+              onClick={onGoDatasets}
+              className="flex items-center gap-1 text-[11px] text-amber-500 hover:text-amber-300 transition-colors"
+            >
+              <ExternalLink size={10} /> Open Datasets
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+
+  return (
+    <div className="flex items-center gap-2 text-[11px]">
+      <CheckCircle2 size={12} className="text-emerald-400" />
+      <span className="text-gray-300 font-medium">{dataset.name}</span>
+      {dataset.slug && (
+        <span className="text-[10px] text-gray-600 bg-gray-800 border border-gray-700 px-1.5 py-0.5 rounded font-mono">
+          #{dataset.slug}
+        </span>
+      )}
+      <span className="text-gray-600">·</span>
+      <span className="text-emerald-400">{count?.toLocaleString()} entries</span>
+      {onGoDatasets && (
+        <button onClick={onGoDatasets} className="text-gray-600 hover:text-brand-400 transition-colors ml-1">
+          <ExternalLink size={10} />
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ─── Data source info row ──────────────────────────────────────────────────
+
+function autoDataDescription(type: string, info: Record<string, unknown>): string {
+  switch (type) {
+    case 'memory':   return 'Uses built-in data — no upload needed.'
+    case 'inline':   return 'Data is embedded directly in the trainer.'
+    case 's3':       return `Fetches data from S3 bucket "${info.bucket ?? ''}${info.key ? `/${info.key}` : ''}".`
+    case 'mongodb':  return `Queries MongoDB collection "${info.collection ?? ''}"${info.database ? ` in database "${info.database}"` : ''}.`
+    case 'postgresql':
+    case 'sql':      return 'Runs a SQL query to load training data automatically.'
+    case 'url':      return `Downloads training data from: ${info.url ?? 'a remote URL'}.`
+    case 'huggingface': return `Loads the "${info.dataset ?? ''}" dataset from Hugging Face Hub.`
+    case 'kafka':    return `Consumes messages from Kafka topic "${info.topic ?? ''}".`
+    case 'redis':    return `Reads training data from Redis key "${info.key ?? ''}".`
+    case 'local_file': return `Reads training data from local path "${info.path ?? ''}".`
+    case 'paginated_api': return `Fetches training data from a paginated API.`
+    case 'file':     return 'Training data is uploaded when the training job is started.'
+    default:         return `Fetches its own training data automatically (source: ${type}).`
+  }
+}
+
+function DataSourceRow({
+  info,
+  onUpload,
+  onGoDatasets,
+}: {
+  info: Record<string, unknown>
+  onUpload: (dataset: DatasetProfile) => void
+  onGoDatasets?: () => void
+}) {
+  const type = (info.type as string) ?? 'unknown'
+  const [downloading, setDownloading] = useState(false)
+
+  const sampleCsvEndpoint = typeof info.sample_csv_endpoint === 'string' ? info.sample_csv_endpoint : null
+  const datasetId = typeof info.dataset_id === 'string' && info.dataset_id ? info.dataset_id : undefined
+  const datasetSlug = typeof info.dataset_slug === 'string' && info.dataset_slug ? info.dataset_slug : undefined
+  const isDataset = type === 'dataset' && (datasetId || datasetSlug)
+
+  const handleDownloadSample = async () => {
+    if (!sampleCsvEndpoint) return
+    setDownloading(true)
+    try {
+      const resp = await client.get(sampleCsvEndpoint, { responseType: 'blob' })
+      const url = URL.createObjectURL(new Blob([resp.data], { type: 'text/csv' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'sample_training_data.csv'
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {}
+    finally { setDownloading(false) }
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2 flex-wrap">
+        <Database size={12} className="text-brand-400" />
+        <span className="text-[10px] text-gray-600 uppercase tracking-widest">Training Data</span>
+
+        {isDataset ? (
+          /* Dataset source — show badge + optional sample download */
+          <>
+            <span className="text-[10px] text-brand-300 bg-brand-900/40 border border-brand-800/50 px-1.5 py-0.5 rounded">
+              MLDock Dataset
+            </span>
+            {sampleCsvEndpoint && (
+              <button
+                onClick={handleDownloadSample}
+                disabled={downloading}
+                className="flex items-center gap-1 text-[10px] text-emerald-500 hover:text-emerald-300 transition-colors disabled:opacity-50"
+              >
+                {downloading ? <Loader2 size={10} className="animate-spin" /> : <Download size={10} />}
+                Download Sample CSV
+              </button>
+            )}
+          </>
+        ) : (
+          /* Non-dataset source — describe where data comes from, no upload UI */
+          <span className="text-[11px] text-gray-500 italic">
+            {autoDataDescription(type, info)}
+          </span>
+        )}
+      </div>
+
+      {/* Dataset chip with empty-state upload — only for dataset sources */}
+      {isDataset && (
+        <DatasetChip
+          datasetId={datasetId}
+          datasetSlug={datasetSlug}
+          onUpload={onUpload}
+          onGoDatasets={onGoDatasets}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Main page ─────────────────────────────────────────────────────────────
+
+export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
   const [tab, setTab] = useState<Tab>('trainers')
   const [trainers, setTrainers] = useState<TrainerRegistration[]>([])
   const [loading, setLoading] = useState(true)
@@ -23,6 +242,10 @@ export default function TrainersPage({ onStartTraining }: Props) {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [uploadMsg, setUploadMsg] = useState<string | null>(null)
   const [page, setPage] = useState(1)
+  const [uploadDataset, setUploadDataset] = useState<DatasetProfile | null>(null)
+  // dataset entry counts per datasetId after upload (to force refresh)
+  const [refreshKeys, setRefreshKeys] = useState<Record<string, number>>({})
+  const [expandedTab, setExpandedTab] = useState<Record<string, 'details' | 'upload'>>({})
   const fileRef = useRef<HTMLInputElement>(null)
 
   const load = async () => {
@@ -164,57 +387,103 @@ export default function TrainersPage({ onStartTraining }: Props) {
           ) : (
             <>
               <div className="space-y-3">
-                {paginated.map(t => (
-                  <div key={t.id} className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
-                    <div className="flex items-center gap-3 px-5 py-4">
-                      <button onClick={() => setExpanded(expanded === t.id ? null : t.id)}
-                        className="text-gray-500 hover:text-gray-300">
-                        {expanded === t.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                      </button>
-                      <div className="w-9 h-9 rounded-xl bg-gray-800 border border-gray-700 flex items-center justify-center flex-shrink-0">
-                        <Brain size={16} className="text-brand-400" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-semibold text-sm text-gray-100">{t.name}</span>
-                          <span className="text-[10px] text-gray-600">v{t.version}</span>
-                          <span className={clsx('text-[10px] font-medium', frameworkColor(t.framework))}>{t.framework}</span>
-                          {!t.is_active && <StatusBadge status="inactive" />}
-                        </div>
-                        <p className="text-xs text-gray-500 truncate mt-0.5">{t.description || 'No description'}</p>
-                      </div>
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        {onStartTraining && (
-                          <button onClick={() => onStartTraining(t.name)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-brand-900/50 hover:bg-brand-900 text-brand-400 border border-brand-800/50 rounded-lg transition-colors">
-                            <Play size={11} /> Train
-                          </button>
-                        )}
-                        <button onClick={() => handleDeactivate(t.name)}
-                          className="p-1.5 text-gray-700 hover:text-red-400 rounded-lg hover:bg-gray-800 transition-colors">
-                          <Trash2 size={13} />
+                {paginated.map(t => {
+                  const dsInfo = t.data_source_info ?? {}
+                  const isDatasetSource = dsInfo.type === 'dataset' && Boolean(dsInfo.dataset_id || dsInfo.dataset_slug)
+                  return (
+                    <div key={t.id} className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+                      <div className="flex items-center gap-3 px-5 py-4">
+                        <button onClick={() => setExpanded(expanded === t.id ? null : t.id)}
+                          className="text-gray-500 hover:text-gray-300">
+                          {expanded === t.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                         </button>
-                      </div>
-                    </div>
-                    {expanded === t.id && (
-                      <div className="border-t border-gray-800 px-5 py-4 space-y-3">
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
-                          <Info label="Framework" value={t.framework} />
-                          <Info label="Schedule" value={t.schedule || 'Manual only'} />
-                          <Info label="Last Trained" value={t.last_trained_at ? new Date(t.last_trained_at).toLocaleDateString() : 'Never'} />
-                          <Info label="Registered" value={new Date(t.created_at).toLocaleDateString()} />
+                        <div className="w-9 h-9 rounded-xl bg-gray-800 border border-gray-700 flex items-center justify-center flex-shrink-0">
+                          <Brain size={16} className="text-brand-400" />
                         </div>
-                        {t.tags?.length > 0 && (
-                          <div className="flex flex-wrap gap-1.5">
-                            {t.tags.map(tag => (
-                              <span key={tag} className="text-[10px] bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full border border-gray-700">{tag}</span>
-                            ))}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-semibold text-sm text-gray-100">{t.name}</span>
+                            <span className="text-[10px] text-gray-600">v{t.version}</span>
+                            <span className={clsx('text-[10px] font-medium', frameworkColor(t.framework))}>{t.framework}</span>
+                            {isDatasetSource && (
+                              <span className="flex items-center gap-1 text-[10px] text-brand-300 bg-brand-900/30 border border-brand-800/40 px-1.5 py-0.5 rounded">
+                                <Database size={9} /> dataset
+                              </span>
+                            )}
+                            {!t.is_active && <StatusBadge status="inactive" />}
                           </div>
-                        )}
+                          <p className="text-xs text-gray-500 truncate mt-0.5">{t.description || 'No description'}</p>
+                        </div>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          {onStartTraining && (
+                            <button onClick={() => onStartTraining(t.name)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-brand-900/50 hover:bg-brand-900 text-brand-400 border border-brand-800/50 rounded-lg transition-colors">
+                              <Play size={11} /> Train
+                            </button>
+                          )}
+                          <button onClick={() => handleDeactivate(t.name)}
+                            className="p-1.5 text-gray-700 hover:text-red-400 rounded-lg hover:bg-gray-800 transition-colors">
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
                       </div>
-                    )}
-                  </div>
-                ))}
+                      {expanded === t.id && (() => {
+                        const activeTab = expandedTab[t.id] ?? 'details'
+                        const hasDataSource = typeof dsInfo.type === 'string' && dsInfo.type
+                        return (
+                          <div className="border-t border-gray-800">
+                            {/* Tab bar */}
+                            <div className="flex gap-0 border-b border-gray-800 px-5">
+                              {(['details', ...(hasDataSource ? ['upload'] : [])] as const).map(tab => (
+                                <button
+                                  key={tab}
+                                  onClick={() => setExpandedTab(prev => ({ ...prev, [t.id]: tab as 'details' | 'upload' }))}
+                                  className={clsx(
+                                    'px-3 py-2 text-[11px] font-medium transition-colors relative capitalize',
+                                    activeTab === tab
+                                      ? 'text-white after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-brand-500'
+                                      : 'text-gray-500 hover:text-gray-300'
+                                  )}
+                                >
+                                  {tab === 'upload' ? 'Training Data' : 'Details'}
+                                </button>
+                              ))}
+                            </div>
+
+                            {/* Tab content */}
+                            <div className="px-5 py-4 space-y-4">
+                              {activeTab === 'details' && (
+                                <>
+                                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+                                    <Info label="Framework" value={t.framework} />
+                                    <Info label="Schedule" value={t.schedule || 'Manual only'} />
+                                    <Info label="Last Trained" value={t.last_trained_at ? new Date(t.last_trained_at).toLocaleDateString() : 'Never'} />
+                                    <Info label="Registered" value={new Date(t.created_at).toLocaleDateString()} />
+                                  </div>
+                                  {t.tags?.length > 0 && (
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {t.tags.map(tag => (
+                                        <span key={tag} className="text-[10px] bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full border border-gray-700">{tag}</span>
+                                      ))}
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                              {activeTab === 'upload' && hasDataSource && (
+                                <DataSourceRow
+                                  info={dsInfo}
+                                  key={`${t.id}-${refreshKeys[dsInfo.dataset_id as string] ?? 0}`}
+                                  onUpload={ds => setUploadDataset(ds)}
+                                  onGoDatasets={onGoDatasets}
+                                />
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  )
+                })}
               </div>
 
               {/* Pagination */}
@@ -253,6 +522,18 @@ export default function TrainersPage({ onStartTraining }: Props) {
 
       {/* ── Jobs tab ── */}
       {tab === 'jobs' && <JobsPanel />}
+
+      {/* Dataset upload modal */}
+      {uploadDataset && (
+        <DatasetUploadModal
+          dataset={uploadDataset}
+          onClose={() => setUploadDataset(null)}
+          onUploaded={() => {
+            const dsId = uploadDataset.id
+            setRefreshKeys(prev => ({ ...prev, [dsId]: (prev[dsId] ?? 0) + 1 }))
+          }}
+        />
+      )}
     </div>
   )
 }

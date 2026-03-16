@@ -24,7 +24,9 @@ import UsersPage from './components/UsersPage'
 import WalletPage from './pages/WalletPage'
 import AdminAnalyticsPage from './pages/AdminAnalyticsPage'
 import BillingSettingsPage from './components/BillingSettingsPage'
+import UsageTrackerPage from './pages/UsageTrackerPage'
 import DatasetPage from './pages/DatasetPage'
+import AnnotatePage from './pages/AnnotatePage'
 import CodeEditorPage from './pages/CodeEditorPage'
 import CollectPage from './pages/CollectPage'
 import { walletApi } from './api/wallet'
@@ -32,6 +34,8 @@ import type { Wallet as WalletData } from './types/wallet'
 import { useAuth } from './context/AuthContext'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
+import ForgotPasswordPage from './pages/ForgotPasswordPage'
+import ResetPasswordPage from './pages/ResetPasswordPage'
 import VerifyEmailPage from './pages/VerifyEmailPage'
 import LandingPage from './pages/LandingPage'
 import GettingStartedPage from './pages/GettingStartedPage'
@@ -44,12 +48,15 @@ import {
   Upload, Play, Settings, List, Activity, Shield,
   FlaskConical, Bell, Key, Layers, ClipboardList, GitCompare,
   LogOut, User, Loader2, Users, Wallet, BarChart2, Database, Code2,
-  ChevronRight, ChevronDown, DollarSign,
+  ChevronRight, ChevronDown, DollarSign, Pencil,
 } from 'lucide-react'
 import Logo from './components/Logo'
 import clsx from 'clsx'
 
-type Page = 'models' | 'trainers' | 'editor' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing'
+// Read reset token once at module level — immune to StrictMode double-render and BrowserRouter re-runs
+const _RESET_TOKEN_FROM_URL = new URLSearchParams(window.location.search).get('reset_token')
+
+type Page = 'models' | 'trainers' | 'editor' | 'annotate' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing' | 'usage'
 
 type NavGroup = {
   id: string
@@ -65,6 +72,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: <Code2 size={16} />,
     items: [
       { id: 'datasets',    label: 'Datasets',     icon: <Database size={14} /> },
+      { id: 'annotate',    label: 'Annotate',     icon: <Pencil size={14} /> },
       { id: 'editor',      label: 'Code Editor',  icon: <Code2 size={14} /> },
       { id: 'trainers',    label: 'Trainers',     icon: <Brain size={14} /> },
       { id: 'experiments', label: 'Experiments',  icon: <GitCompare size={14} /> },
@@ -91,6 +99,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'monitoring', label: 'Monitoring',   icon: <Activity size={14} /> },
       { id: 'ab-tests',   label: 'A/B Tests',    icon: <FlaskConical size={14} /> },
       { id: 'alerts',     label: 'Alert Rules',  icon: <Bell size={14} /> },
+      { id: 'usage',      label: 'Usage',         icon: <BarChart2 size={14} /> },
     ],
   },
   {
@@ -132,15 +141,28 @@ const PAGE_TITLE: Record<Page, string> = {
   users:       'User Management',
   analytics:   'Platform Analytics',
   datasets:    'Datasets',
+  annotate:    'Auto-Annotate',
   wallet:      'Wallet',
   billing:     'Billing Settings',
+  usage:       'Usage Tracker',
 }
 
 export default function App() {
   const { user, logout, loading: authLoading, pendingEmail, clearPending, login } = useAuth()
-  const [authPage, setAuthPage] = useState<'login' | 'register' | 'landing' | 'getting-started' | 'api-docs' | 'privacy' | 'terms'>('landing')
+  const [resetToken, setResetToken] = useState<string | null>(_RESET_TOKEN_FROM_URL)
+  const [authPage, setAuthPage] = useState<'login' | 'register' | 'landing' | 'getting-started' | 'api-docs' | 'privacy' | 'terms' | 'forgot-password' | 'reset-password'>(
+    _RESET_TOKEN_FROM_URL ? 'reset-password' : 'landing'
+  )
+  const [docsSection, setDocsSection] = useState<string | undefined>()
   const [linkVerifying, setLinkVerifying] = useState(false)
   const [linkEmail, setLinkEmail] = useState('')
+
+  // Clean URL of any token params on mount
+  useEffect(() => {
+    if (window.location.search) {
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [])
 
   // Handle ?token= query param for link-click activation
   useEffect(() => {
@@ -151,9 +173,8 @@ export default function App() {
     authApi.verifyToken(vtoken)
       .then(res => { setLinkEmail(res.email); setLinkVerifying(false) })
       .catch(() => setLinkVerifying(false))
-    // Clean URL
-    window.history.replaceState({}, '', window.location.pathname)
   }, [])
+
   const [deployments, setDeployments] = useState<ModelDeployment[]>([])
   const [selected, setSelected] = useState<ModelDeployment | null>(null)
   const [loading, setLoading] = useState(true)
@@ -200,6 +221,7 @@ export default function App() {
     const group = NAV_GROUPS.find(g => g.items.some(i => i.id === p))
     if (group) setRailActiveGroup(group.id)
     if (p === 'wallet') refreshWallet()
+    if (p === 'models') load()
     trackPageView(`/${p}`)
   }
 
@@ -234,6 +256,11 @@ export default function App() {
     return m ? m[1] : null
   })()
   if (collectToken) return <CollectPage token={collectToken} />
+
+  // Reset password link — show form regardless of auth state
+  if (resetToken && authPage === 'reset-password') {
+    return <ResetPasswordPage token={resetToken} onDone={() => { setResetToken(null); setAuthPage('login') }} />
+  }
 
   if (authLoading || linkVerifying) {
     return (
@@ -281,7 +308,7 @@ export default function App() {
         <GettingStartedPage
           onBack={() => setAuthPage('landing')}
           onSignIn={() => setAuthPage('login')}
-          onApiDocs={() => setAuthPage('api-docs')}
+          onApiDocs={(section) => { setDocsSection(section); setAuthPage('api-docs') }}
           onPrivacy={() => setAuthPage('privacy')}
           onTerms={() => setAuthPage('terms')}
         />
@@ -295,6 +322,7 @@ export default function App() {
           onGettingStarted={() => setAuthPage('getting-started')}
           onPrivacy={() => setAuthPage('privacy')}
           onTerms={() => setAuthPage('terms')}
+          initialSection={docsSection}
         />
       )
     }
@@ -310,7 +338,7 @@ export default function App() {
           <LandingPage
             onSignIn={() => setAuthPage('login')}
             onGetStarted={() => setAuthPage('register')}
-            onApiDocs={() => setAuthPage('api-docs')}
+            onApiDocs={() => { setDocsSection(undefined); setAuthPage('api-docs') }}
             onGettingStarted={() => setAuthPage('getting-started')}
             onPrivacy={() => setAuthPage('privacy')}
             onTerms={() => setAuthPage('terms')}
@@ -319,8 +347,14 @@ export default function App() {
         </>
       )
     }
+    if (authPage === 'forgot-password') {
+      return <ForgotPasswordPage onBack={() => setAuthPage('login')} />
+    }
+    if (authPage === 'reset-password' && resetToken) {
+      return <ResetPasswordPage token={resetToken} onDone={() => { setResetToken(null); setAuthPage('login') }} />
+    }
     return authPage === 'login'
-      ? <LoginPage onGoRegister={() => setAuthPage('register')} />
+      ? <LoginPage onGoRegister={() => setAuthPage('register')} onForgotPassword={() => setAuthPage('forgot-password')} />
       : <RegisterPage onGoLogin={() => setAuthPage('login')} />
   }
 
@@ -458,6 +492,14 @@ export default function App() {
               </div>
               <div className="text-right">
                 <div className="text-[11px] font-semibold text-white">${wallet.balance.toFixed(2)} USD</div>
+                <div className="text-[9px] text-gray-500 flex gap-1.5">
+                  {wallet.standard_balance > 0 && (
+                    <span className="text-sky-500">${wallet.standard_balance.toFixed(2)} std</span>
+                  )}
+                  {wallet.general_balance > 0 && (
+                    <span className="text-violet-400">${wallet.general_balance.toFixed(2)} accel</span>
+                  )}
+                </div>
                 {wallet.reserved > 0 && (
                   <div className="text-[9px] text-amber-500">${wallet.reserved.toFixed(2)} held</div>
                 )}
@@ -539,6 +581,9 @@ export default function App() {
                 )}>
                 <Wallet size={12} />
                 ${wallet.balance.toFixed(2)} USD
+                {wallet.standard_balance > 0 && (
+                  <span className="text-[10px] text-sky-400 font-normal">{wallet.standard_balance.toFixed(2)} std</span>
+                )}
                 {wallet.reserved > 0 && (
                   <span className="text-[10px] text-amber-500 font-normal">·${wallet.reserved.toFixed(2)} held</span>
                 )}
@@ -566,18 +611,22 @@ export default function App() {
         </div>
 
         {/* Content */}
-        <div className={clsx('flex-1 min-h-0', page === 'editor' && !selected ? 'overflow-hidden flex flex-col' : 'overflow-y-auto')}>
+        <div className={clsx('flex-1 min-h-0', (page === 'editor' || page === 'annotate') && !selected ? 'overflow-hidden flex flex-col' : 'overflow-y-auto')}>
           {selected ? (
             <ModelWorkspace deployment={selected} onClose={() => setSelected(null)} />
           ) : page === 'editor' ? (
             <CodeEditorPage />
+          ) : page === 'annotate' ? (
+            <div className="flex-1 min-h-0 p-6 overflow-hidden flex flex-col">
+              <AnnotatePage />
+            </div>
           ) : (
             <div className="p-6">
               {page === 'models' && (
                 <ModelGrid deployments={deployments} onSelect={setSelected} onDelete={handleDeleteDeployment} loading={loading} />
               )}
               {page === 'trainers' && (
-                <TrainersPage onStartTraining={(name) => { setTrainingInitTrainer(name); navigate('training') }} />
+                <TrainersPage onStartTraining={(name) => { setTrainingInitTrainer(name); navigate('training') }} onGoDatasets={() => navigate('datasets')} />
               )}
               {page === 'deploy' && (
                 <DeployPage onJobCreated={() => navigate('jobs')} />
@@ -599,6 +648,7 @@ export default function App() {
               {page === 'datasets' && <DatasetPage />}
               {page === 'wallet' && <WalletPage />}
               {page === 'billing' && <BillingSettingsPage />}
+              {page === 'usage' && <UsageTrackerPage />}
             </div>
           )}
         </div>

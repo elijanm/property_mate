@@ -23,7 +23,11 @@ async def get_pricing_config() -> MLPricingConfig:
 
 async def update_pricing_config(**kwargs) -> MLPricingConfig:
     cfg = await get_pricing_config()
-    allowed = {"local_gpu_price_per_hour", "local_gpu_free", "inference_price_per_call", "inference_free"}
+    allowed = {
+        "local_cpu_price_per_hour", "local_cpu_free",
+        "local_gpu_price_per_hour", "local_gpu_free",
+        "inference_price_per_call", "inference_free",
+    }
     updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
     if updates:
         updates["updated_at"] = utc_now()
@@ -149,7 +153,7 @@ async def _assign_plan(user_email: str, org_id: str, plan: MLPlan) -> MLUserPlan
         )
         await user_plan.insert()
 
-    # New customer credit — given only once
+    # New customer credit — given only once; earmarked for standard compute
     if plan.new_customer_credit_usd > 0 and not user_plan.new_customer_credit_given:
         try:
             from app.services import wallet_service
@@ -157,8 +161,9 @@ async def _assign_plan(user_email: str, org_id: str, plan: MLPlan) -> MLUserPlan
             await wallet_service.credit(
                 wallet,
                 plan.new_customer_credit_usd,
-                reference=f"plan:new_customer:{plan_id_str}",
-                description=f"New customer credit — {plan.name} plan",
+                reference=f"plan:new_customer:{plan_id_str}:{user_email}",
+                description=f"New customer credit — {plan.name} plan (standard compute)",
+                is_standard=True,   # plan credits are for standard compute
             )
             await user_plan.set({
                 "new_customer_credit_given": True,

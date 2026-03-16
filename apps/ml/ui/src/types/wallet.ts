@@ -1,7 +1,9 @@
 export interface Wallet {
   id: string
   user_email: string
-  balance: number
+  balance: number            // total available = standard_balance + general_balance
+  standard_balance: number   // earmarked for standard compute (CPU/local GPU) only
+  general_balance: number    // usable for any compute including cloud GPU
   reserved: number
   currency: string
   local_quota_seconds: number
@@ -15,7 +17,9 @@ export interface WalletTransaction {
   id: string
   type: 'credit' | 'debit' | 'reserve' | 'release'
   amount: number
+  standard_amount: number    // portion of amount that moved standard_balance
   balance_after: number
+  standard_balance_after: number
   reserved_after: number
   description: string
   reference: string | null

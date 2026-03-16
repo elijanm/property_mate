@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import {
   DollarSign, Cpu, Zap, Users, Plus, Pencil, Trash2,
   CheckCircle2, Loader2, Search, Star, ToggleLeft, ToggleRight,
-  ChevronDown,
+  ChevronDown, Sparkles, Monitor,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { adminApi } from '../api/admin'
@@ -141,6 +141,7 @@ function PricingTab() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [computeView, setComputeView] = useState<'cpu' | 'gpu'>('gpu')
 
   useEffect(() => {
     adminApi.getPricing()
@@ -175,41 +176,80 @@ function PricingTab() {
   return (
     <div className="max-w-2xl space-y-6">
 
-      {/* Local GPU Training */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-5">
-        <div className="flex items-center gap-2.5 pb-3 border-b border-gray-800">
+      {/* Standard Training — CPU / GPU tabs */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div className="flex items-center gap-2.5 px-5 pt-4 pb-3 border-b border-gray-800">
           <div className="w-8 h-8 rounded-lg bg-sky-900/40 border border-sky-700/40 flex items-center justify-center">
             <Cpu size={15} className="text-sky-400" />
           </div>
-          <div>
-            <div className="text-sm font-semibold text-white">Local GPU Training</div>
-            <div className="text-xs text-gray-500">Charged at the configured rate. Per-user exceptions can be set in the User Plan tab.</div>
+          <div className="flex-1">
+            <div className="text-sm font-semibold text-white">Standard Training</div>
+            <div className="text-xs text-gray-500">Server compute rates — CPU-only and GPU. Users see the CPU rate when no GPU is detected; GPU rate when one is available.</div>
+          </div>
+          {/* CPU / GPU toggle */}
+          <div className="flex rounded-lg overflow-hidden border border-gray-700 text-xs font-medium">
+            <button
+              onClick={() => setComputeView('cpu')}
+              className={clsx('flex items-center gap-1 px-3 py-1.5 transition-colors',
+                computeView === 'cpu' ? 'bg-sky-800/60 text-sky-200' : 'text-gray-500 hover:text-gray-300')}
+            >
+              <Monitor size={11} /> CPU
+            </button>
+            <button
+              onClick={() => setComputeView('gpu')}
+              className={clsx('flex items-center gap-1 px-3 py-1.5 transition-colors border-l border-gray-700',
+                computeView === 'gpu' ? 'bg-violet-800/60 text-violet-200' : 'text-gray-500 hover:text-gray-300')}
+            >
+              <Zap size={11} /> GPU
+            </button>
           </div>
         </div>
 
-        <Field
-          label="Always free (global override)"
-          hint="All local training is free for every user. To exempt specific users only, use the User Plan tab."
-        >
-          <Toggle
-            value={form.local_gpu_free ?? false}
-            onChange={v => set('local_gpu_free', v)}
-          />
-        </Field>
-
-        <Field
-          label="Price per hour"
-          hint="Rate applied to actual wall-clock GPU time (not estimated)."
-        >
-          <NumberInput
-            value={form.local_gpu_price_per_hour ?? 0.15}
-            onChange={v => set('local_gpu_price_per_hour', v)}
-            prefix="$"
-            suffix="/ hr"
-            step={0.01}
-            disabled={form.local_gpu_free}
-          />
-        </Field>
+        <div className="p-5 space-y-5">
+          {computeView === 'cpu' ? (
+            <>
+              <div className="flex items-center gap-2 text-xs text-sky-400 bg-sky-950/40 border border-sky-800/40 rounded-lg px-3 py-2">
+                <Monitor size={12} />
+                Standard CPU — charged when the server has no CUDA-capable GPU.
+              </div>
+              <Field
+                label="Always free (global override)"
+                hint="All Standard CPU training is free for every user regardless of plan."
+              >
+                <Toggle value={form.local_cpu_free ?? false} onChange={v => set('local_cpu_free', v)} />
+              </Field>
+              <Field label="Price per hour" hint="Rate for CPU-only wall-clock training time.">
+                <NumberInput
+                  value={form.local_cpu_price_per_hour ?? 0.05}
+                  onChange={v => set('local_cpu_price_per_hour', v)}
+                  prefix="$" suffix="/ hr" step={0.01}
+                  disabled={form.local_cpu_free}
+                />
+              </Field>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-2 text-xs text-violet-400 bg-violet-950/40 border border-violet-800/40 rounded-lg px-3 py-2">
+                <Zap size={12} />
+                Standard GPU — charged when the server has a CUDA-capable GPU (~$0.20/hr typical).
+              </div>
+              <Field
+                label="Always free (global override)"
+                hint="All Standard GPU training is free for every user. Per-user exemptions can be set in User Plan tab."
+              >
+                <Toggle value={form.local_gpu_free ?? false} onChange={v => set('local_gpu_free', v)} />
+              </Field>
+              <Field label="Price per hour" hint="Rate applied to actual wall-clock GPU time (not estimated).">
+                <NumberInput
+                  value={form.local_gpu_price_per_hour ?? 0.20}
+                  onChange={v => set('local_gpu_price_per_hour', v)}
+                  prefix="$" suffix="/ hr" step={0.01}
+                  disabled={form.local_gpu_free}
+                />
+              </Field>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Inference */}
@@ -262,8 +302,10 @@ const BLANK_PLAN: Omit<MLPlan, 'id' | 'created_at' | 'updated_at'> = {
   name: '',
   description: '',
   price_usd_per_month: 0,
-  free_training_hours: 0,
-  free_training_period: 'month',
+  included_period: 'month',
+  included_cpu_hours: 0,
+  included_local_gpu_hours: 0,
+  included_cloud_gpu_credit_usd: 0,
   free_inference_calls: 0,
   free_inference_period: 'month',
   new_customer_credit_usd: 0,
@@ -286,8 +328,10 @@ function PlanModal({
       name: plan.name ?? '',
       description: plan.description ?? '',
       price_usd_per_month: plan.price_usd_per_month ?? 0,
-      free_training_hours: plan.free_training_hours ?? 0,
-      free_training_period: plan.free_training_period ?? 'month',
+      included_period: plan.included_period ?? 'month',
+      included_cpu_hours: plan.included_cpu_hours ?? 0,
+      included_local_gpu_hours: plan.included_local_gpu_hours ?? 0,
+      included_cloud_gpu_credit_usd: plan.included_cloud_gpu_credit_usd ?? 0,
       free_inference_calls: plan.free_inference_calls ?? 0,
       free_inference_period: plan.free_inference_period ?? 'month',
       new_customer_credit_usd: plan.new_customer_credit_usd ?? 0,
@@ -354,24 +398,39 @@ function PlanModal({
 
           <div className="border-t border-gray-800" />
 
-          {/* Free training */}
+          {/* Included compute — period selector */}
           <div>
-            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Free Training Hours</div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">Hours included</label>
-                <NumberInput value={form.free_training_hours} onChange={v => set('free_training_hours', v)} suffix="hrs" step={0.5} />
-              </div>
+            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Included Compute</div>
+            <div className="text-[11px] text-gray-500 mb-3">All compute is charged at the configured rates — plan covers those costs as part of the monthly fee.</div>
+            <div className="grid grid-cols-2 gap-3 mb-4">
               <div>
                 <label className="text-xs text-gray-500 block mb-1">Reset period</label>
-                <Select<PlanPeriod> value={form.free_training_period} onChange={v => set('free_training_period', v)} options={PERIOD_OPTIONS} />
+                <Select<PlanPeriod> value={form.included_period as PlanPeriod} onChange={v => set('included_period', v)} options={PERIOD_OPTIONS} />
               </div>
             </div>
-            {form.free_training_hours > 0 && (
-              <p className="text-[11px] text-gray-600 mt-2">
-                Users get {form.free_training_hours} free training hrs {PERIOD_LABELS[form.free_training_period]}.
-              </p>
-            )}
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <Monitor size={12} className="text-sky-400 flex-shrink-0" />
+                <div className="flex-1">
+                  <label className="text-xs text-gray-500 block mb-1">CPU hours / period</label>
+                  <NumberInput value={form.included_cpu_hours} onChange={v => set('included_cpu_hours', v)} suffix="hrs" step={1} />
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <Zap size={12} className="text-violet-400 flex-shrink-0" />
+                <div className="flex-1">
+                  <label className="text-xs text-gray-500 block mb-1">Standard GPU hours / period</label>
+                  <NumberInput value={form.included_local_gpu_hours} onChange={v => set('included_local_gpu_hours', v)} suffix="hrs" step={1} />
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <DollarSign size={12} className="text-amber-400 flex-shrink-0" />
+                <div className="flex-1">
+                  <label className="text-xs text-gray-500 block mb-1">Accelerated GPU credit / period (USD)</label>
+                  <NumberInput value={form.included_cloud_gpu_credit_usd} onChange={v => set('included_cloud_gpu_credit_usd', v)} prefix="$" step={1} />
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="border-t border-gray-800" />
@@ -443,6 +502,8 @@ function PlansTab() {
   const [editing, setEditing] = useState<Partial<MLPlan> | null>(null)  // null means closed, {} means new
   const [deleting, setDeleting] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<MLPlan | null>(null)
+  const [seeding, setSeeding] = useState(false)
+  const [seedResult, setSeedResult] = useState<string | null>(null)
 
   const load = async (inactive = showInactive) => {
     setLoading(true)
@@ -483,7 +544,7 @@ function PlansTab() {
   return (
     <div className="space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-3">
           <h3 className="text-sm font-semibold text-white">Subscription Plans</h3>
           <button
@@ -493,13 +554,43 @@ function PlansTab() {
             {showInactive ? 'Hide inactive' : 'Show inactive'}
           </button>
         </div>
-        <button
-          onClick={() => setEditing({} as MLPlan)}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium rounded-lg transition-colors"
-        >
-          <Plus size={13} /> New Plan
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={async () => {
+              setSeeding(true)
+              setSeedResult(null)
+              try {
+                const res = await adminApi.seedPlans()
+                const msg = res.created.length > 0
+                  ? `Created: ${res.created.join(', ')}`
+                  : `All plans already exist (${res.skipped.join(', ')})`
+                setSeedResult(msg)
+                if (res.created.length > 0) await load()
+                setTimeout(() => setSeedResult(null), 4000)
+              } finally {
+                setSeeding(false)
+              }
+            }}
+            disabled={seeding}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-800/40 hover:bg-amber-700/40 border border-amber-700/40 text-amber-300 text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
+          >
+            {seeding ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+            Seed suggested plans
+          </button>
+          <button
+            onClick={() => setEditing({} as MLPlan)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium rounded-lg transition-colors"
+          >
+            <Plus size={13} /> New Plan
+          </button>
+        </div>
       </div>
+
+      {seedResult && (
+        <div className="text-xs text-amber-300 bg-amber-900/20 border border-amber-700/30 rounded-lg px-3 py-2">
+          {seedResult}
+        </div>
+      )}
 
       {/* Plans table */}
       {loading ? (
@@ -515,21 +606,41 @@ function PlansTab() {
         <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-gray-800 text-xs text-gray-500 uppercase tracking-wider">
-                <th className="text-left px-4 py-3 font-medium">Plan</th>
-                <th className="text-right px-4 py-3 font-medium">Price</th>
-                <th className="text-right px-4 py-3 font-medium">Free Training</th>
-                <th className="text-right px-4 py-3 font-medium">Free Inference</th>
-                <th className="text-right px-4 py-3 font-medium">Credit</th>
+              <tr className="bg-gray-900/80 border-b border-gray-800">
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Plan</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Price</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  <span className="flex items-center gap-1"><Monitor size={11} className="text-sky-400" /> CPU hrs</span>
+                </th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  <span className="flex items-center gap-1"><Zap size={11} className="text-violet-400" /> Std GPU hrs</span>
+                </th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  <span className="flex items-center gap-1"><DollarSign size={11} className="text-amber-400" /> Accel. cr.</span>
+                </th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  <span className="flex items-center gap-1"><Zap size={11} className="text-blue-400" /> Inference</span>
+                </th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  <span className="flex items-center gap-1"><DollarSign size={11} className="text-green-400" /> Welcome $</span>
+                </th>
                 <th className="px-4 py-3" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-800">
-              {visiblePlans.map(plan => (
-                <tr key={plan.id} className={clsx('hover:bg-gray-800/40 transition-colors', !plan.is_active && 'opacity-50')}>
+            <tbody>
+              {visiblePlans.map((plan, idx) => (
+                <tr
+                  key={plan.id}
+                  className={clsx(
+                    'border-b border-gray-800/60 last:border-b-0 transition-colors',
+                    idx % 2 === 0 ? 'bg-gray-900/40' : 'bg-gray-900/20',
+                    !plan.is_active && 'opacity-50',
+                  )}
+                >
+                  {/* Name */}
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-white">{plan.name}</span>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-semibold text-white">{plan.name}</span>
                       {plan.is_default && (
                         <span className="flex items-center gap-0.5 text-[10px] font-semibold text-amber-400 bg-amber-900/30 border border-amber-700/40 rounded px-1.5 py-0.5">
                           <Star size={9} /> default
@@ -540,56 +651,61 @@ function PlansTab() {
                       )}
                     </div>
                     {plan.description && (
-                      <div className="text-xs text-gray-600 mt-0.5 truncate max-w-[200px]">{plan.description}</div>
+                      <div className="text-[11px] text-gray-600 mt-0.5 max-w-xs truncate">{plan.description}</div>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-right text-gray-300">
-                    {plan.price_usd_per_month > 0 ? `$${plan.price_usd_per_month}/mo` : <span className="text-green-400">Free</span>}
+                  {/* Price */}
+                  <td className="px-4 py-3 font-bold">
+                    {plan.price_usd_per_month > 0
+                      ? <span className="text-white">${plan.price_usd_per_month}<span className="text-gray-600 text-xs font-normal">/mo</span></span>
+                      : <span className="text-green-400">Free</span>}
                   </td>
-                  <td className="px-4 py-3 text-right">
-                    {plan.free_training_hours > 0 ? (
-                      <span className="text-sky-300">
-                        {plan.free_training_hours}h
-                        <span className="text-xs text-gray-500 ml-1">{PERIOD_LABELS[plan.free_training_period]}</span>
-                      </span>
-                    ) : (
-                      <span className="text-gray-600">—</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    {plan.free_inference_calls > 0 ? (
-                      <span className="text-violet-300">
-                        {plan.free_inference_calls.toLocaleString()}
-                        <span className="text-xs text-gray-500 ml-1">{PERIOD_LABELS[plan.free_inference_period]}</span>
-                      </span>
-                    ) : (
-                      <span className="text-gray-600">—</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    {plan.new_customer_credit_usd > 0 ? (
-                      <span className="text-green-400">${plan.new_customer_credit_usd}</span>
-                    ) : (
-                      <span className="text-gray-600">—</span>
-                    )}
-                  </td>
+                  {/* CPU hrs */}
                   <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1">
+                    {plan.included_cpu_hours > 0
+                      ? <span className="text-sky-300 font-medium">{plan.included_cpu_hours}h <span className="text-gray-600 text-[10px]">{PERIOD_LABELS[plan.included_period]}</span></span>
+                      : <span className="text-gray-600">—</span>}
+                  </td>
+                  {/* Standard GPU hrs */}
+                  <td className="px-4 py-3">
+                    {plan.included_local_gpu_hours > 0
+                      ? <span className="text-violet-300 font-medium">{plan.included_local_gpu_hours}h <span className="text-gray-600 text-[10px]">{PERIOD_LABELS[plan.included_period]}</span></span>
+                      : <span className="text-gray-600">—</span>}
+                  </td>
+                  {/* Cloud GPU credit */}
+                  <td className="px-4 py-3">
+                    {plan.included_cloud_gpu_credit_usd > 0
+                      ? <span className="text-amber-300 font-medium">${plan.included_cloud_gpu_credit_usd} <span className="text-gray-600 text-[10px]">{PERIOD_LABELS[plan.included_period]}</span></span>
+                      : <span className="text-gray-600">—</span>}
+                  </td>
+                  {/* Inference */}
+                  <td className="px-4 py-3">
+                    {plan.free_inference_calls > 0
+                      ? <span className="text-blue-300 font-medium">{plan.free_inference_calls.toLocaleString()} <span className="text-gray-600 text-[10px]">{PERIOD_LABELS[plan.free_inference_period]}</span></span>
+                      : <span className="text-gray-600">—</span>}
+                  </td>
+                  {/* Welcome credit */}
+                  <td className="px-4 py-3">
+                    {plan.new_customer_credit_usd > 0
+                      ? <span className="text-green-400 font-medium">${plan.new_customer_credit_usd}</span>
+                      : <span className="text-gray-600">—</span>}
+                  </td>
+                  {/* Actions */}
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-1">
                       <button
                         onClick={() => setEditing(plan)}
-                        className="p-1.5 text-gray-500 hover:text-gray-300 hover:bg-gray-800 rounded transition-colors"
-                        title="Edit"
+                        className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] text-gray-400 hover:text-gray-200 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors"
                       >
-                        <Pencil size={13} />
+                        <Pencil size={11} /> Edit
                       </button>
                       {plan.is_active && (
                         <button
                           onClick={() => setConfirmDelete(plan)}
                           disabled={deleting === plan.id}
-                          className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-900/20 rounded transition-colors disabled:opacity-40"
-                          title="Deactivate"
+                          className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] text-gray-600 hover:text-red-400 hover:bg-red-900/20 rounded-lg transition-colors disabled:opacity-40"
                         >
-                          {deleting === plan.id ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                          {deleting === plan.id ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
                         </button>
                       )}
                     </div>
@@ -776,7 +892,7 @@ function UserPlanTab() {
                     )}
                   </div>
                   <div className="text-xs text-gray-500 mt-0.5">
-                    {plan.free_training_hours}h training + {plan.free_inference_calls.toLocaleString()} inference {PERIOD_LABELS[plan.free_training_period]}
+                    {plan.included_cpu_hours}h CPU · {plan.included_local_gpu_hours}h GPU · {plan.free_inference_calls.toLocaleString()} calls {PERIOD_LABELS[plan.included_period]}
                   </div>
                 </div>
               </div>
@@ -801,7 +917,7 @@ function UserPlanTab() {
                   <UsageMeter
                     label="Training"
                     used={parseFloat(usage.free_training_used_hours.toFixed(2))}
-                    total={plan.free_training_hours}
+                    total={plan.included_cpu_hours}
                   />
                   {usage.free_training_period_reset_at && (
                     <div className="text-[11px] text-gray-600 mt-1">
@@ -829,8 +945,8 @@ function UserPlanTab() {
           {usage && (
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
               <Field
-                label="Exempt from local GPU charges"
-                hint="When enabled, this user's local training jobs are always free regardless of global pricing."
+                label="Exempt from Standard GPU charges"
+                hint="When enabled, this user's Standard GPU training jobs are always free regardless of global pricing."
               >
                 {exempting
                   ? <Loader2 size={16} className="animate-spin text-gray-500" />

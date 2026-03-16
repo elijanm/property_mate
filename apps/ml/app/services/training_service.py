@@ -167,6 +167,10 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
                 from app.abstract.data_source import UploadedFileDataSource
                 if isinstance(trainer.data_source, UploadedFileDataSource):
                     trainer.data_source.inject(injected_data)
+            # Inject org_id so DatasetDataSource can auto-create missing datasets
+            from app.abstract.data_source import DatasetDataSource
+            if isinstance(trainer.data_source, DatasetDataSource) and job.org_id:
+                trainer.data_source.org_id = job.org_id
             raw_data = await trainer.data_source.load(injected_data=injected_data)
             await _log(job, f"Data loaded ({len(raw_data) if isinstance(raw_data, (bytes, list)) else 'n/a'} bytes/items)")
 
@@ -415,7 +419,7 @@ def _log_confusion_matrix_artifacts(
         ]:
             fig, ax = plt.subplots(figsize=figsize)
             ConfusionMatrixDisplay(confusion_matrix=data, display_labels=labels).plot(
-                ax=ax, colormap="Blues", values_format=fmt
+                ax=ax, cmap="Blues", values_format=fmt
             )
             ax.set_title(title)
             plt.tight_layout()

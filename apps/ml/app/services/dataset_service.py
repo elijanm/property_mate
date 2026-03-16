@@ -5,7 +5,7 @@ from fastapi import UploadFile, HTTPException
 from beanie import PydanticObjectId
 import structlog
 
-from app.models.dataset import DatasetProfile, DatasetCollector, DatasetEntry, DatasetField
+from app.models.dataset import DatasetProfile, DatasetCollector, DatasetEntry, DatasetField, slugify
 from app.utils.s3_url import generate_presigned_url
 from app.utils.datetime import utc_now
 from app.core.config import settings
@@ -30,23 +30,155 @@ async def list_datasets(org_id: str) -> List[DatasetProfile]:
     ).to_list()
 
 
+async def list_public_datasets(exclude_org_id: str = "") -> List[DatasetProfile]:
+    """Return all public datasets, optionally excluding caller's own org."""
+    q = DatasetProfile.find(
+        DatasetProfile.visibility == "public",
+        DatasetProfile.deleted_at == None,
+        DatasetProfile.reference_type == None,   # originals only, not re-references
+    )
+    items = await q.to_list()
+    if exclude_org_id:
+        items = [p for p in items if p.org_id != exclude_org_id]
+    return items
+
+
+async def _unique_slug(org_id: str, base_slug: str, exclude_id: str | None = None) -> str:
+    """Return base_slug (or base_slug-2, base_slug-3 …) ensuring uniqueness per org."""
+    candidate = base_slug
+    n = 2
+    while True:
+        q = DatasetProfile.find(
+            DatasetProfile.org_id == org_id,
+            DatasetProfile.slug == candidate,
+            DatasetProfile.deleted_at == None,
+        )
+        if exclude_id:
+            existing = [p for p in await q.to_list() if str(p.id) != exclude_id]
+        else:
+            existing = await q.to_list()
+        if not existing:
+            return candidate
+        candidate = f"{base_slug}-{n}"
+        n += 1
+
+
 async def create_dataset(org_id: str, data: dict, created_by: str) -> DatasetProfile:
     fields_raw = data.pop("fields", [])
     fields = [DatasetField(**f) if isinstance(f, dict) else f for f in fields_raw]
-    profile = DatasetProfile(org_id=org_id, created_by=created_by, fields=fields, **data)
+    raw_slug = data.pop("slug", None)
+    slug = await _unique_slug(org_id, slugify(raw_slug or data.get("name", "dataset")))
+    profile = DatasetProfile(org_id=org_id, created_by=created_by, fields=fields, slug=slug, **data)
     await profile.insert()
-    logger.info("dataset_created", dataset_id=str(profile.id), org_id=org_id, name=profile.name)
+    logger.info("dataset_created", dataset_id=str(profile.id), org_id=org_id, name=profile.name, slug=slug)
     return profile
 
 
 async def get_dataset(org_id: str, dataset_id: str) -> DatasetProfile:
     profile = await DatasetProfile.find_one(
-        DatasetProfile.id == _oid(dataset_id),
-        DatasetProfile.org_id == org_id,
-        DatasetProfile.deleted_at == None,
+        {"_id": _oid(dataset_id), "org_id": {"$in": [org_id, ""]}, "deleted_at": None},
+    )
+    if not profile:
+        # Also allow read access to public datasets from any org
+        profile = await DatasetProfile.find_one(
+            {"_id": _oid(dataset_id), "visibility": "public", "deleted_at": None},
+        )
+    if not profile:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return profile
+
+
+async def get_public_dataset(dataset_id: str) -> DatasetProfile:
+    """Fetch a public dataset by ID (no org restriction)."""
+    profile = await DatasetProfile.find_one(
+        {"_id": _oid(dataset_id), "visibility": "public", "deleted_at": None},
+    )
+    if not profile:
+        raise HTTPException(status_code=404, detail="Dataset not found or not public")
+    return profile
+
+
+async def clone_dataset(org_id: str, source_id: str, created_by: str) -> DatasetProfile:
+    """
+    Clone a public dataset into the caller's org.
+    Copies the schema/fields — no entries are copied (user uploads their own data).
+    Creates an independent dataset; modifications don't affect the original.
+    """
+    source = await get_public_dataset(source_id)
+    slug = await _unique_slug(org_id, slugify(source.name))
+    clone = DatasetProfile(
+        org_id=org_id,
+        name=source.name,
+        slug=slug,
+        description=source.description,
+        category=source.category,
+        fields=source.fields,
+        status="active",
+        visibility="private",
+        source_dataset_id=str(source.id),
+        reference_type="clone",
+        points_enabled=source.points_enabled,
+        points_per_entry=source.points_per_entry,
+        points_redemption_info=source.points_redemption_info,
+        created_by=created_by,
+    )
+    await clone.insert()
+    logger.info("dataset_cloned", source_id=source_id, clone_id=str(clone.id), org_id=org_id)
+    return clone
+
+
+async def reference_dataset(org_id: str, source_id: str, created_by: str) -> DatasetProfile:
+    """
+    Add a read-only reference to a public dataset in the caller's org.
+    No entries are copied — reads always proxy to the source dataset.
+    The reference cannot be modified or have new entries added.
+    """
+    source = await get_public_dataset(source_id)
+
+    # Prevent duplicate references in the same org
+    existing = await DatasetProfile.find_one({
+        "org_id": org_id,
+        "source_dataset_id": str(source.id),
+        "reference_type": "reference",
+        "deleted_at": None,
+    })
+    if existing:
+        return existing
+
+    slug = await _unique_slug(org_id, slugify(f"ref-{source.name}"))
+    ref = DatasetProfile(
+        org_id=org_id,
+        name=source.name,
+        slug=slug,
+        description=source.description,
+        category=source.category,
+        fields=source.fields,
+        status="active",
+        visibility="private",
+        source_dataset_id=str(source.id),
+        reference_type="reference",
+        created_by=created_by,
+    )
+    await ref.insert()
+    logger.info("dataset_referenced", source_id=source_id, ref_id=str(ref.id), org_id=org_id)
+    return ref
+
+
+async def set_visibility(org_id: str, dataset_id: str, visibility: str) -> DatasetProfile:
+    """Toggle a dataset between private and public. References cannot be made public."""
+    if visibility not in ("private", "public"):
+        raise HTTPException(status_code=400, detail="visibility must be 'private' or 'public'")
+    profile = await DatasetProfile.find_one(
+        {"_id": _oid(dataset_id), "org_id": org_id, "deleted_at": None},
     )
     if not profile:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    if profile.reference_type == "reference":
+        raise HTTPException(status_code=400, detail="Referenced datasets cannot be made public")
+    profile.visibility = visibility
+    profile.updated_at = utc_now()
+    await profile.save()
+    logger.info("dataset_visibility_set", dataset_id=dataset_id, visibility=visibility, org_id=org_id)
     return profile
 
 
@@ -55,11 +187,30 @@ async def update_dataset(org_id: str, dataset_id: str, data: dict) -> DatasetPro
     if "fields" in data:
         fields_raw = data.pop("fields")
         data["fields"] = [DatasetField(**f) if isinstance(f, dict) else f for f in fields_raw]
+    if "slug" in data and data["slug"]:
+        data["slug"] = await _unique_slug(org_id, slugify(data["slug"]), exclude_id=dataset_id)
     for k, v in data.items():
         setattr(profile, k, v)
     profile.updated_at = utc_now()
     await profile.save()
     return profile
+
+
+async def get_dataset_by_slug(org_id: str, slug: str) -> DatasetProfile:
+    # Accept org-specific datasets OR system/shared datasets (org_id="")
+    profile = await DatasetProfile.find_one(
+        {"slug": slug, "org_id": {"$in": [org_id, ""]}, "deleted_at": None},
+    )
+    if not profile:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return profile
+
+
+async def get_entry_count(org_id: str, dataset_id: str) -> int:
+    profile = await get_dataset(org_id, dataset_id)
+    # For referenced datasets, count entries in the source
+    resolve_id = profile.source_dataset_id if profile.reference_type == "reference" and profile.source_dataset_id else dataset_id
+    return await DatasetEntry.find(DatasetEntry.dataset_id == resolve_id).count()
 
 
 async def delete_dataset(org_id: str, dataset_id: str) -> None:
@@ -124,8 +275,10 @@ async def get_entries(
     date_to: Optional[str] = None,
 ) -> List[dict]:
     from datetime import datetime, timezone
-    await get_dataset(org_id, dataset_id)
-    filters = [DatasetEntry.dataset_id == dataset_id]
+    profile = await get_dataset(org_id, dataset_id)
+    # For referenced datasets, read entries from the source
+    resolve_id = profile.source_dataset_id if profile.reference_type == "reference" and profile.source_dataset_id else dataset_id
+    filters = [DatasetEntry.dataset_id == resolve_id]
     if field_id:
         filters.append(DatasetEntry.field_id == field_id)
     if collector_id:
@@ -254,6 +407,10 @@ async def submit_entry(
         collector.points_earned += profile.points_per_entry
     collector.last_active_at = utc_now()
     await collector.save()
+    # Keep public entry count cache fresh
+    if profile.visibility == "public":
+        profile.entry_count_cache = (profile.entry_count_cache or 0) + 1
+        await profile.save()
 
     logger.info(
         "dataset_entry_submitted",
@@ -263,6 +420,55 @@ async def submit_entry(
         dataset_id=str(profile.id),
         points_awarded=entry.points_awarded,
     )
+    return _entry_to_dict(entry)
+
+
+_ADMIN_COLLECTOR_ID = "__admin__"
+
+
+async def upload_entry_direct(
+    org_id: str,
+    dataset_id: str,
+    field_id: str,
+    file: Optional[UploadFile],
+    text_value: Optional[str],
+    uploaded_by: str,
+) -> dict:
+    """Admin direct entry upload — bypasses collector token flow."""
+    profile = await get_dataset(org_id, dataset_id)
+    if profile.status == "closed":
+        raise HTTPException(status_code=410, detail="Dataset is closed")
+
+    field = next((f for f in profile.fields if f.id == field_id), None)
+    if not field:
+        raise HTTPException(status_code=400, detail=f"Field '{field_id}' not found in dataset")
+
+    file_key = None
+    file_mime = None
+    if file and file.filename:
+        content = await file.read()
+        mime = file.content_type or "application/octet-stream"
+        ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "bin"
+        s3_key = (
+            f"{profile.org_id}/datasets/{str(profile.id)}"
+            f"/entries/{_ADMIN_COLLECTOR_ID}/{field_id}/{uuid.uuid4()}.{ext}"
+        )
+        await _upload_to_s3(s3_key, content, mime)
+        file_key = s3_key
+        file_mime = mime
+
+    entry = DatasetEntry(
+        org_id=org_id,
+        dataset_id=dataset_id,
+        collector_id=_ADMIN_COLLECTOR_ID,
+        field_id=field_id,
+        file_key=file_key,
+        file_mime=file_mime,
+        text_value=text_value,
+        points_awarded=0,
+    )
+    await entry.insert()
+    logger.info("dataset_entry_admin_upload", dataset_id=dataset_id, field_id=field_id, uploaded_by=uploaded_by)
     return _entry_to_dict(entry)
 
 

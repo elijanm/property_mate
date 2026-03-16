@@ -360,6 +360,26 @@ def ai_outreach_html(
     return _base(f"Message from {sender_org}", body)
 
 
+def signup_otp_html(first_name: str, otp: str, org_name: str) -> str:
+    body = f"""
+<h2>Welcome to PMS, {first_name}!</h2>
+<p>Thank you for signing up for <strong>{org_name}</strong> on the PMS platform.</p>
+<p>Use the verification code below to complete your registration:</p>
+<div style="text-align:center;margin:32px 0;">
+  <div style="display:inline-block;background:#dbeafe;border:2px solid #1d4ed8;border-radius:12px;
+              padding:20px 40px;">
+    <span style="font-size:36px;font-weight:700;letter-spacing:8px;color:#1e40af;">{otp}</span>
+  </div>
+</div>
+<p style="text-align:center;color:#6b7280;font-size:13px;">
+  This code expires in <strong>10 minutes</strong>.
+</p>
+<p style="margin-top:24px;color:#6b7280;font-size:13px;">
+  If you did not create an account on PMS, please ignore this email.
+</p>"""
+    return _base("Verify your PMS account", body)
+
+
 def shipment_receiver_sign_html(
     receiver_name: str, sign_url: str, driver_name: str, reference_number: str, org_name: str
 ) -> str:

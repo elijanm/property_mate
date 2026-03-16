@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, FormEvent } from 'react'
 import { securityApi } from '../api/security'
+import { authApi } from '../api/auth'
 import {
   Shield, AlertTriangle, Ban, CheckCircle, RefreshCw,
-  Eye, Trash2, Search, Filter, Lock, Unlock
+  Eye, EyeOff, Trash2, Search, Filter, Lock, Unlock, KeyRound
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -241,6 +242,97 @@ function IPRow({
   )
 }
 
+// ── Change Password card ───────────────────────────────────────────────────────
+
+function ChangePasswordCard() {
+  const [currentPwd, setCurrentPwd] = useState('')
+  const [newPwd, setNewPwd] = useState('')
+  const [confirmPwd, setConfirmPwd] = useState('')
+  const [showNew, setShowNew] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [success, setSuccess] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    setError('')
+    setSuccess(false)
+    if (newPwd !== confirmPwd) { setError('New passwords do not match'); return }
+    if (newPwd.length < 8) { setError('New password must be at least 8 characters'); return }
+    setLoading(true)
+    try {
+      await authApi.changePassword(currentPwd, newPwd)
+      setSuccess(true)
+      setCurrentPwd('')
+      setNewPwd('')
+      setConfirmPwd('')
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+        ?? (err instanceof Error ? err.message : 'Failed to change password')
+      setError(msg)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <KeyRound size={15} className="text-brand-400" />
+        <h3 className="text-sm font-semibold text-white">Change password</h3>
+      </div>
+
+      {success && (
+        <div className="flex items-center gap-2 text-xs text-green-400 bg-green-900/20 border border-green-800/40 rounded-lg px-3 py-2 mb-4">
+          <CheckCircle size={13} /> Password changed successfully
+        </div>
+      )}
+      {error && (
+        <div className="text-xs text-red-400 bg-red-900/20 border border-red-800/40 rounded-lg px-3 py-2 mb-4">{error}</div>
+      )}
+
+      <form onSubmit={handleSubmit} className="space-y-3 max-w-sm">
+        <div className="space-y-1.5">
+          <label className="text-xs text-gray-400 font-medium">Current password</label>
+          <input
+            type="password" value={currentPwd} onChange={e => setCurrentPwd(e.target.value)} required
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500"
+            placeholder="••••••••"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="text-xs text-gray-400 font-medium">New password</label>
+          <div className="relative">
+            <input
+              type={showNew ? 'text' : 'password'} value={newPwd} onChange={e => setNewPwd(e.target.value)} required
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 pr-9 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500"
+              placeholder="Min. 8 characters"
+            />
+            <button type="button" onClick={() => setShowNew(!showNew)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300">
+              {showNew ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="text-xs text-gray-400 font-medium">Confirm new password</label>
+          <input
+            type="password" value={confirmPwd} onChange={e => setConfirmPwd(e.target.value)} required
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500"
+            placeholder="Repeat new password"
+          />
+        </div>
+
+        <button type="submit" disabled={loading}
+          className="flex items-center gap-2 px-4 py-2 text-xs font-medium bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50">
+          {loading ? 'Updating…' : 'Update password'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function SecurityPage() {
@@ -305,6 +397,9 @@ export default function SecurityPage() {
 
   return (
     <div className="space-y-6">
+      {/* Change password */}
+      <ChangePasswordCard />
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

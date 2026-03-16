@@ -34,6 +34,7 @@ class ModelDeployment(Document):
     # "viewer"   = visible to all roles (sample/demo models)
     # "engineer" = visible only to engineer and admin (production models, default)
     visibility: str = "engineer"
+    model_size_bytes: Optional[int] = None       # artifact size in bytes (set when artifact is saved)
     owner_email: Optional[str] = None
     deployed_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

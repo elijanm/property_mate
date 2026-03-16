@@ -21,6 +21,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -59,10 +60,21 @@ def _safe_path(rel: str) -> Path:
     return full
 
 
+def _should_hide(name: str) -> bool:
+    """Return True for system/cache entries that should not appear in the editor."""
+    return (
+        (name.startswith("__") and name.endswith("__"))  # __pycache__, __init__ dirs, etc.
+        or name.startswith(".")                          # .git, .DS_Store, hidden files
+    )
+
+
 def _file_node(p: Path, base: Path) -> Dict[str, Any]:
     rel = str(p.relative_to(base))
     if p.is_dir():
-        children = sorted(p.iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
+        children = sorted(
+            (c for c in p.iterdir() if not _should_hide(c.name)),
+            key=lambda x: (x.is_file(), x.name.lower()),
+        )
         return {
             "type": "dir",
             "name": p.name,
@@ -84,7 +96,13 @@ def _file_node(p: Path, base: Path) -> Dict[str, Any]:
 async def list_files(user=Depends(get_current_user)):
     """Return the full file tree of the trainer plugin directory."""
     base = _plugin_dir()
-    children: List[Path] = sorted(base.iterdir(), key=lambda x: (x.is_file(), x.name.lower())) if base.exists() else []
+    children: List[Path] = (
+        sorted(
+            (c for c in base.iterdir() if not _should_hide(c.name)),
+            key=lambda x: (x.is_file(), x.name.lower()),
+        )
+        if base.exists() else []
+    )
     return {"tree": [_file_node(c, base) for c in children], "root": str(base)}
 
 
@@ -333,6 +351,172 @@ async def validate_file(body: ValidateRequest, user=Depends(get_current_user)):
     return {"valid": True, "trainers": trainer_names, "error": None, "warnings": warnings}
 
 
+# ── AI trainer generation ─────────────────────────────────────────────────────
+
+_TRAINER_SYSTEM_PROMPT = """\
+You are an expert ML engineer who writes clean, production-ready Python trainer plugins for MLDock.
+You MUST output ONLY valid Python code — no prose, no markdown fences, no explanations.
+The code must follow the BaseTrainer pattern exactly as documented below.
+
+━━ BaseTrainer CONTRACT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+from app.abstract.base_trainer import BaseTrainer, TrainingConfig, EvaluationResult
+from app.abstract.data_source import (
+    DatasetDataSource, InMemoryDataSource, UploadedFileDataSource,
+    S3DataSource, URLDataSource, MongoDBDataSource, HuggingFaceDataSource,
+)
+
+class MyTrainer(BaseTrainer):
+    name        = "my_trainer"          # unique slug — used as inference endpoint path
+    version     = "1.0.0"
+    description = "..."
+    framework   = "sklearn"             # sklearn | pytorch | tensorflow | custom
+    category    = {"key": "...", "label": "..."}
+    schedule    = None                  # None = manual only; cron e.g. "0 3 * * 0"
+
+    data_source = DatasetDataSource(
+        slug="my-dataset",
+        auto_create_spec={
+            "name": "My Dataset",
+            "description": "...",
+            "fields": [
+                {"label": "...", "type": "file", "instruction": "...", "capture_mode": "upload_only"},
+            ],
+        },
+    )
+
+    input_schema  = { "field": {"type": "...", "label": "...", "required": True} }
+    output_schema = { "field": {"type": "...", "label": "..."} }
+
+    def preprocess(self, raw):  ...  # transform raw data_source output → training-ready form
+    def train(self, preprocessed, config: TrainingConfig):  ...  # return model or (model, test_data)
+    def predict(self, model, inputs: dict) -> dict:  ...  # return JSON-serialisable dict
+    def evaluate(self, model, test_data) -> EvaluationResult:  ...  # optional
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DataSource options the user may choose:
+  DatasetDataSource(slug=..., auto_create_spec={...})   — MLDock dataset (preferred)
+  UploadedFileDataSource()                               — file uploaded per run
+  S3DataSource(bucket=..., key=...)                      — S3/MinIO path
+  URLDataSource(url=...)                                 — HTTP/HTTPS download
+  MongoDBDataSource(database=..., collection=..., query={}) — MongoDB query
+  HuggingFaceDataSource(dataset_name=..., split="train") — HF Hub
+  InMemoryDataSource()                                   — preprocess() fetches data itself
+
+Built-in helpers inside train():
+  self.auto_train_tabular(df, "label_col", config)   → (best_model, (X_test, y_test))
+  self.auto_train_torch(model, train_loader, config, val_loader) → trained_model
+  self.split_data(X, y, config)      → (X_tr, X_val, X_te, y_tr, y_val, y_te)
+  self.build_dataloader(dataset, config)
+  self.get_amp_context(config)
+  self.build_optimizer(params, config)
+  self.build_scheduler(opt, config, n_steps)
+  self.log_device_info(config)
+
+Rules:
+- Class name must be PascalCase; name attribute must be snake_case.
+- All S3 writes go to /tmp/. Never write outside /tmp in trainer code.
+- Imports inside methods (not module-level) for optional heavy deps (torch, sklearn, etc.).
+- Docstring at top of file: explain what the trainer does, dataset format, inference I/O.
+- input_schema and output_schema MUST be defined for the UI to render forms correctly.
+- If data_source uses DatasetDataSource, always set auto_create_spec so the dataset is
+  auto-created on first run without manual setup.
+"""
+
+
+class GenerateTrainerRequest(BaseModel):
+    description: str                 # what the trainer should do
+    data_source_type: str = "dataset" # dataset | upload | s3 | url | mongodb | huggingface | memory
+    framework: str = "auto"          # auto | sklearn | pytorch | tensorflow | custom
+    class_name: Optional[str] = None # e.g. "MyClassifier" — inferred from description if absent
+    extra_notes: str = ""            # any extra instructions
+
+
+@router.post("/ai-generate")
+async def ai_generate_trainer(
+    body: GenerateTrainerRequest,
+    user=Depends(require_roles("engineer", "admin")),
+):
+    """
+    Generate a complete trainer plugin from a natural-language description using the
+    configured LLM. Returns the Python source that can be pasted directly into the editor.
+    """
+    import os as _os
+
+    base_url   = _os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    api_key    = _os.environ.get("OPENAI_API_KEY", "")
+    model_name = _os.environ.get("OPENAI_MODEL", "gpt-4o")
+
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="LLM not configured. Set OPENAI_BASE_URL, OPENAI_API_KEY, and OPENAI_MODEL.",
+        )
+
+    ds_hints: dict[str, str] = {
+        "dataset":    "Use DatasetDataSource(slug=..., auto_create_spec={...}) so the dataset is auto-created.",
+        "upload":     "Use UploadedFileDataSource() — data is uploaded per training run.",
+        "s3":         "Use S3DataSource(bucket=..., key=...) — fill in bucket/key from user config.",
+        "url":        "Use URLDataSource(url=...) — replace URL with the actual download endpoint.",
+        "mongodb":    "Use MongoDBDataSource(database=..., collection=...) — fill in DB/collection.",
+        "huggingface":"Use HuggingFaceDataSource(dataset_name=..., split='train').",
+        "memory":     "Use InMemoryDataSource() and fetch/generate data inside preprocess().",
+    }
+    ds_hint = ds_hints.get(body.data_source_type, ds_hints["dataset"])
+
+    fw_hint = ""
+    if body.framework not in ("auto", "custom"):
+        fw_hint = f"Use {body.framework} as the primary framework."
+
+    class_hint = f"Name the class '{body.class_name}'." if body.class_name else ""
+
+    user_prompt = (
+        f"Build a complete MLDock trainer plugin for the following task:\n\n"
+        f"{body.description}\n\n"
+        f"Data source: {ds_hint}\n"
+        + (f"Framework: {fw_hint}\n" if fw_hint else "")
+        + (f"Class name: {class_hint}\n" if class_hint else "")
+        + (f"Additional notes: {body.extra_notes}\n" if body.extra_notes else "")
+        + "\nOutput ONLY the Python source code."
+    )
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=120) as http:
+            resp = await http.post(
+                f"{base_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": _TRAINER_SYSTEM_PROMPT},
+                        {"role": "user",   "content": user_prompt},
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 4096,
+                },
+            )
+        resp.raise_for_status()
+        data    = resp.json()
+        code    = data["choices"][0]["message"]["content"].strip()
+
+        # Strip markdown fences if the model wrapped the code anyway
+        if code.startswith("```"):
+            lines = code.splitlines()
+            code  = "\n".join(
+                l for l in lines
+                if not l.strip().startswith("```")
+            ).strip()
+
+        return {"code": code, "model": model_name}
+
+    except httpx.HTTPStatusError as exc:
+        logger.error("ai_generate_failed", status=exc.response.status_code, body=exc.response.text[:500])
+        raise HTTPException(status_code=502, detail=f"LLM API error: {exc.response.status_code}")
+    except Exception as exc:
+        logger.error("ai_generate_error", error=str(exc))
+        raise HTTPException(status_code=502, detail=f"LLM request failed: {exc}")
+
+
 # ── Direct run (no Celery) ────────────────────────────────────────────────────
 
 class RunRequest(BaseModel):
@@ -364,6 +548,11 @@ async def _main():
     trainer = cls()
     config = TrainingConfig()
 {overrides_snippet}
+    # Inject org_id so DatasetDataSource can auto-create missing datasets
+    from app.abstract.data_source import DatasetDataSource as _DDS
+    if isinstance(trainer.data_source, _DDS):
+        trainer.data_source.org_id = os.environ.get('ML_ORG_ID') or trainer.data_source.org_id
+
     print(f"[editor] Loading data from {{type(trainer.data_source).__name__}}...", flush=True)
     raw = await trainer.data_source.load()
 
@@ -384,7 +573,14 @@ except Exception as _e:
 """
 
 
-async def _execute_trainer(job_id: str, trainer_name: str, plugin_path: Path, overrides: Optional[dict]) -> None:
+async def _execute_trainer(
+    job_id: str,
+    trainer_name: str,
+    plugin_path: Path,
+    overrides: Optional[dict],
+    org_id: str = "",
+    billing_info: Optional[dict] = None,
+) -> None:
     """Run the trainer in a subprocess and push output lines to the in-memory queue."""
     queue = _RUN_QUEUES.get(job_id)
     if not queue:
@@ -404,9 +600,14 @@ async def _execute_trainer(job_id: str, trainer_name: str, plugin_path: Path, ov
         overrides_snippet=overrides_snippet or "    pass  # no overrides",
     )
 
-    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": "/app"}
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": "/app", "ML_ORG_ID": org_id}
 
     await emit("log", {"line": f"[editor] Executing {plugin_path.name} directly (no queue)..."})
+
+    start_ts = time.monotonic()
+    run_status = "failed"
+    run_error: Optional[str] = None
+    run_rc = 1
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -422,15 +623,50 @@ async def _execute_trainer(job_id: str, trainer_name: str, plugin_path: Path, ov
             line = raw_line.decode("utf-8", errors="replace").rstrip()
             await emit("log", {"line": line})
 
-        rc = await asyncio.wait_for(proc.wait(), timeout=5)
-        status = "completed" if rc == 0 else "failed"
-        await emit("done", {"status": status, "exit_code": rc, "metrics": {}, "error": None if rc == 0 else f"Process exited with code {rc}"})
+        run_rc = await asyncio.wait_for(proc.wait(), timeout=5)
+        run_status = "completed" if run_rc == 0 else "failed"
+        if run_rc != 0:
+            run_error = f"Process exited with code {run_rc}"
 
     except asyncio.TimeoutError:
-        await emit("done", {"status": "failed", "error": "Timeout waiting for process to exit"})
+        run_status = "failed"
+        run_error = "Timeout waiting for process to exit"
     except Exception as exc:
-        await emit("done", {"status": "failed", "error": str(exc)})
+        run_status = "failed"
+        run_error = str(exc)
     finally:
+        elapsed = time.monotonic() - start_ts
+
+        # ── Billing: release reservation and charge actual cost ────────────────
+        charged = 0.0
+        is_free = True
+        if billing_info and not billing_info.get("is_free", True):
+            is_free = False
+            try:
+                from app.services import wallet_service
+                wallet = await wallet_service.get_or_create(
+                    billing_info["user_email"], billing_info["org_id"]
+                )
+                actual_cost = round(billing_info["price_per_hour"] * (elapsed / 3600), 10)
+                charged = await wallet_service.release_and_charge(wallet, job_id, actual_cost)
+            except Exception as _bill_exc:
+                # Billing failure must not break the run result
+                await emit("log", {"line": f"[billing] Warning: charge failed — {_bill_exc}"})
+
+        await emit("billing", {
+            "is_free": is_free,
+            "charged": charged,
+            "elapsed_seconds": round(elapsed, 3),
+            "price_per_hour": billing_info.get("price_per_hour", 0.0) if billing_info else 0.0,
+        })
+
+        await emit("done", {
+            "status": run_status,
+            "exit_code": run_rc,
+            "metrics": {},
+            "error": run_error,
+        })
+
         await queue.put(None)   # sentinel — generator knows to stop
         # NOTE: do NOT pop here; SSE generator owns the queue lifecycle
 
@@ -439,9 +675,10 @@ async def _execute_trainer(job_id: str, trainer_name: str, plugin_path: Path, ov
 async def run_trainer(body: RunRequest, user=Depends(require_roles("engineer", "admin"))):
     """
     1. Security-scan the code
-    2. Save the file to the plugin dir
-    3. Spawn an asyncio background task that runs the trainer directly (no Celery)
-    4. Return {job_id} — client opens SSE stream on /editor/run/{job_id}/stream
+    2. Billing check — reserve funds if not on free tier; 402 if insufficient
+    3. Save the file to the plugin dir
+    4. Spawn an asyncio background task that runs the trainer directly (no Celery)
+    5. Return {job_id} — client opens SSE stream on /editor/run/{job_id}/stream
     """
     # Security gate
     violation = _security_check(body.content)
@@ -454,19 +691,55 @@ async def run_trainer(body: RunRequest, user=Depends(require_roles("engineer", "
     except SyntaxError as e:
         raise HTTPException(status_code=400, detail=f"SyntaxError line {e.lineno}: {e.msg}")
 
+    # ── Billing check ─────────────────────────────────────────────────────────
+    # Editor runs are local compute — same billing rules as /training/start local.
+    # We use a conservative 30-min estimate with a 1.5× buffer for reservation.
+    job_id = str(uuid.uuid4())   # generate early so billing tx references it
+
+    billing_info: dict = {"is_free": True, "price_per_hour": 0.0, "user_email": user.email, "org_id": user.org_id or ""}
+
+    try:
+        from app.services import wallet_service, ml_billing_service
+        is_free, _, local_price = await ml_billing_service.check_local_training(user.email, user.org_id or "")
+        if not is_free:
+            est_mins = 30   # conservative estimate for editor runs
+            reservation = round(local_price * (est_mins / 60) * 1.5, 2)
+            wallet = await wallet_service.get_or_create(user.email, user.org_id or "")
+            if wallet_service.available(wallet) < reservation:
+                raise HTTPException(
+                    status_code=402,
+                    detail=(
+                        f"Insufficient balance for compute. Need ${reservation:.2f} USD reserved, "
+                        f"available ${wallet_service.available(wallet):.2f} USD. "
+                        "Top up your wallet to run code."
+                    ),
+                )
+            await wallet_service.reserve(
+                wallet, reservation, job_id,
+                f"Editor run reservation — {body.trainer_name} · ${local_price:.4f}/hr",
+                compute_type="local",
+            )
+            billing_info.update({"is_free": False, "price_per_hour": local_price, "reservation": reservation})
+    except HTTPException:
+        raise
+    except Exception:
+        pass   # billing service unavailable — allow run to proceed (safe fallback)
+
     # Save file
     full = _safe_path(body.path)
     full.parent.mkdir(parents=True, exist_ok=True)
     async with aiofiles.open(full, "w") as f:
         await f.write(body.content)
 
-    # Register job
-    job_id = str(uuid.uuid4())
+    # Register job queue
     queue: asyncio.Queue = asyncio.Queue(maxsize=10_000)
     _RUN_QUEUES[job_id] = queue
 
     # Fire background task
-    asyncio.create_task(_execute_trainer(job_id, body.trainer_name, full, body.config_overrides))
+    asyncio.create_task(
+        _execute_trainer(job_id, body.trainer_name, full, body.config_overrides,
+                         org_id=user.org_id or "", billing_info=billing_info)
+    )
 
     return {"job_id": job_id, "status": "running"}
 

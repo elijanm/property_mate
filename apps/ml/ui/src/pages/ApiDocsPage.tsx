@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { ArrowLeft, Copy, CheckCircle2, ChevronDown, ChevronRight, Key, Play, Loader2, Lock, X } from 'lucide-react'
 import clsx from 'clsx'
 import PageFooter from '@/components/PageFooter'
@@ -12,6 +12,7 @@ interface Props {
   onGettingStarted: () => void
   onPrivacy?: () => void
   onTerms?: () => void
+  initialSection?: string
 }
 
 type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE'
@@ -94,6 +95,85 @@ print(token)`,
 requests.post("${BASE_URL}/api/v1/auth/logout",
     headers={"Authorization": "Bearer YOUR_API_KEY"})`,
         livePath: '/api/v1/auth/logout',
+      },
+      {
+        method: 'POST',
+        path: '/api/v1/auth/forgot-password',
+        summary: 'Request a password reset link',
+        description: 'Sends a password reset email to the given address. Always returns ok regardless of whether the email is registered — this prevents user enumeration. The reset link is valid for 1 hour.',
+        auth: false,
+        body: `{
+  "email": "user@example.com"
+}`,
+        response: `{ "ok": true }`,
+        curlExample: `curl -X POST ${BASE_URL}/api/v1/auth/forgot-password \\
+  -H "Content-Type: application/json" \\
+  -d '{ "email": "user@example.com" }'`,
+        pythonExample: `import requests
+
+resp = requests.post("${BASE_URL}/api/v1/auth/forgot-password",
+    json={"email": "user@example.com"})
+print(resp.json())  # {"ok": true}`,
+        liveBody: { email: 'user@example.com' },
+        livePath: '/api/v1/auth/forgot-password',
+      },
+      {
+        method: 'POST',
+        path: '/api/v1/auth/reset-password',
+        summary: 'Set a new password using reset token',
+        description: 'Completes the password reset flow. Supply the token from the email link and the desired new password (minimum 8 characters). The token is single-use and expires after 1 hour.',
+        auth: false,
+        body: `{
+  "token":        "uuid-from-reset-link",
+  "new_password": "MyNewPass123!"
+}`,
+        response: `{ "ok": true }`,
+        curlExample: `curl -X POST ${BASE_URL}/api/v1/auth/reset-password \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "token":        "uuid-from-reset-link",
+    "new_password": "MyNewPass123!"
+  }'`,
+        pythonExample: `import requests
+
+resp = requests.post("${BASE_URL}/api/v1/auth/reset-password",
+    json={
+        "token": "uuid-from-reset-link",
+        "new_password": "MyNewPass123!",
+    })
+print(resp.json())  # {"ok": true}`,
+        liveBody: { token: 'RESET_TOKEN', new_password: 'NewPassword123!' },
+        livePath: '/api/v1/auth/reset-password',
+      },
+      {
+        method: 'POST',
+        path: '/api/v1/auth/change-password',
+        summary: 'Change password for the authenticated user',
+        description: 'Changes the password for the currently signed-in user. Requires the current password for verification. Minimum 8 characters for the new password. Use this from account settings rather than the public reset flow.',
+        auth: true,
+        body: `{
+  "current_password": "OldPass123!",
+  "new_password":     "NewPass456!"
+}`,
+        response: `{ "ok": true }`,
+        curlExample: `curl -X POST ${BASE_URL}/api/v1/auth/change-password \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "current_password": "OldPass123!",
+    "new_password":     "NewPass456!"
+  }'`,
+        pythonExample: `import requests
+
+resp = requests.post("${BASE_URL}/api/v1/auth/change-password",
+    headers={"Authorization": "Bearer YOUR_API_KEY"},
+    json={
+        "current_password": "OldPass123!",
+        "new_password": "NewPass456!",
+    })
+print(resp.json())  # {"ok": true}`,
+        liveBody: { current_password: 'CurrentPass123!', new_password: 'NewPassword456!' },
+        livePath: '/api/v1/auth/change-password',
       },
     ],
   },
@@ -755,6 +835,255 @@ print("Results:", job.get("result_url"))`,
     ],
   },
   {
+    title: 'Monitoring',
+    description: 'Track live inference performance, detect data/concept drift, and manage drift alerts per model. MLDock snapshots latency, error rate, and prediction distribution every few minutes. Set a baseline from recent traffic and run drift checks to catch degradation before it hurts users.',
+    endpoints: [
+      {
+        method: 'GET',
+        path: '/api/v1/monitoring/overview',
+        summary: 'Get a health overview of all deployed models',
+        description: 'Returns a summary row for every deployed model: total requests, error rate, average latency, and open drift alert count. Use this as your monitoring dashboard entry point.',
+        auth: true,
+        response: `{
+  "models": [
+    {
+      "trainer_name":     "my-classifier",
+      "total_requests":   18420,
+      "error_rate_pct":   0.3,
+      "avg_latency_ms":   12,
+      "open_alerts":      1,
+      "last_snapshot_at": "2026-03-13T10:55:00Z"
+    }
+  ]
+}`,
+        curlExample: `curl "${BASE_URL}/api/v1/monitoring/overview" \\
+  -H "Authorization: Bearer YOUR_API_KEY"`,
+        pythonExample: `import requests
+
+resp = requests.get("${BASE_URL}/api/v1/monitoring/overview",
+    headers={"Authorization": "Bearer YOUR_API_KEY"})
+for m in resp.json()["models"]:
+    print(m["trainer_name"], "errors:", m["error_rate_pct"], "%",
+          "alerts:", m["open_alerts"])`,
+        livePath: '/api/v1/monitoring/overview',
+      },
+      {
+        method: 'GET',
+        path: '/api/v1/monitoring/performance/:trainer_name',
+        summary: 'Get time-series performance snapshots',
+        description: 'Returns per-minute (or per-interval) snapshots of requests, latency, and error rate for the last N hours. Use this to plot latency/error trends or feed your own alerting system.',
+        auth: true,
+        params: 'hours (default 24, max 168)',
+        response: `{
+  "trainer_name": "my-classifier",
+  "snapshots": [
+    {
+      "ts":             "2026-03-13T10:00:00Z",
+      "requests":       142,
+      "errors":         0,
+      "avg_latency_ms": 11,
+      "p99_latency_ms": 28
+    }
+  ]
+}`,
+        curlExample: `curl "${BASE_URL}/api/v1/monitoring/performance/my-classifier?hours=24" \\
+  -H "Authorization: Bearer YOUR_API_KEY"`,
+        pythonExample: `import requests
+
+resp = requests.get(
+    "${BASE_URL}/api/v1/monitoring/performance/my-classifier",
+    headers={"Authorization": "Bearer YOUR_API_KEY"},
+    params={"hours": 24})
+for snap in resp.json()["snapshots"]:
+    print(snap["ts"], "→", snap["avg_latency_ms"], "ms",
+          snap["requests"], "reqs")`,
+        livePath: '/api/v1/monitoring/performance',
+      },
+      {
+        method: 'GET',
+        path: '/api/v1/monitoring/performance/:trainer_name/summary',
+        summary: 'Get rolling performance summary',
+        description: 'Returns a single aggregated summary over the requested window: total requests, error count, p50/p95/p99 latency, and requests-per-second. Useful for status badges or SLA reporting.',
+        auth: true,
+        params: 'hours (default 24)',
+        response: `{
+  "trainer_name":   "my-classifier",
+  "hours":          24,
+  "total_requests": 18420,
+  "total_errors":   55,
+  "error_rate_pct": 0.3,
+  "avg_latency_ms": 12,
+  "p95_latency_ms": 31,
+  "p99_latency_ms": 58,
+  "req_per_second": 0.21
+}`,
+        curlExample: `curl "${BASE_URL}/api/v1/monitoring/performance/my-classifier/summary?hours=24" \\
+  -H "Authorization: Bearer YOUR_API_KEY"`,
+        pythonExample: `import requests
+
+resp = requests.get(
+    "${BASE_URL}/api/v1/monitoring/performance/my-classifier/summary",
+    headers={"Authorization": "Bearer YOUR_API_KEY"},
+    params={"hours": 24})
+s = resp.json()
+print(f"p95={s['p95_latency_ms']}ms  errors={s['error_rate_pct']}%  rps={s['req_per_second']}")`,
+        livePath: '/api/v1/monitoring/performance',
+      },
+      {
+        method: 'POST',
+        path: '/api/v1/monitoring/drift/:trainer_name/baseline',
+        summary: 'Set a drift baseline from recent traffic',
+        description: 'Samples the last N inference requests and stores the input feature distribution as the baseline. All future drift checks compare against this snapshot. Re-run after major retraining to reset the reference point.',
+        auth: true,
+        body: `{
+  "sample_count": 500
+}`,
+        response: `{
+  "ok":           true,
+  "trainer_name": "my-classifier",
+  "sample_count": 500,
+  "baseline_set_at": "2026-03-13T10:00:00Z"
+}`,
+        curlExample: `curl -X POST ${BASE_URL}/api/v1/monitoring/drift/my-classifier/baseline \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "sample_count": 500 }'`,
+        pythonExample: `import requests
+
+resp = requests.post(
+    "${BASE_URL}/api/v1/monitoring/drift/my-classifier/baseline",
+    headers={"Authorization": "Bearer YOUR_API_KEY"},
+    json={"sample_count": 500})
+print(resp.json())  # {"ok": true, "sample_count": 500, ...}`,
+        liveBody: { sample_count: 500 },
+        livePath: '/api/v1/monitoring/drift',
+      },
+      {
+        method: 'GET',
+        path: '/api/v1/monitoring/drift/:trainer_name/baseline',
+        summary: 'Get the current drift baseline',
+        description: 'Returns the stored baseline statistics (feature means, standard deviations, and categorical distributions) along with when it was last set and how many samples it was built from.',
+        auth: true,
+        response: `{
+  "trainer_name":    "my-classifier",
+  "sample_count":    500,
+  "baseline_set_at": "2026-03-13T10:00:00Z",
+  "feature_stats": {
+    "age":    { "mean": 34.2, "std": 12.1 },
+    "income": { "mean": 52100, "std": 18400 }
+  }
+}`,
+        curlExample: `curl "${BASE_URL}/api/v1/monitoring/drift/my-classifier/baseline" \\
+  -H "Authorization: Bearer YOUR_API_KEY"`,
+        pythonExample: `import requests
+
+resp = requests.get(
+    "${BASE_URL}/api/v1/monitoring/drift/my-classifier/baseline",
+    headers={"Authorization": "Bearer YOUR_API_KEY"})
+baseline = resp.json()
+print("Baseline set:", baseline["baseline_set_at"],
+      "from", baseline["sample_count"], "samples")`,
+        livePath: '/api/v1/monitoring/drift',
+      },
+      {
+        method: 'POST',
+        path: '/api/v1/monitoring/drift/:trainer_name/check',
+        summary: 'Run a drift check against the baseline',
+        description: 'Samples recent inference requests and computes statistical drift scores (KL divergence for continuous features, chi-squared for categoricals) against the stored baseline. If any feature exceeds the drift threshold a new alert is created automatically.',
+        auth: true,
+        body: `{
+  "sample_count": 200,
+  "hours":        6
+}`,
+        response: `{
+  "trainer_name":  "my-classifier",
+  "drift_detected": true,
+  "features": {
+    "age":    { "score": 0.04, "drifted": false },
+    "income": { "score": 0.31, "drifted": true  }
+  },
+  "alert_id": "dft_9a2b3c..."
+}`,
+        curlExample: `curl -X POST ${BASE_URL}/api/v1/monitoring/drift/my-classifier/check \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "sample_count": 200, "hours": 6 }'`,
+        pythonExample: `import requests
+
+resp = requests.post(
+    "${BASE_URL}/api/v1/monitoring/drift/my-classifier/check",
+    headers={"Authorization": "Bearer YOUR_API_KEY"},
+    json={"sample_count": 200, "hours": 6})
+result = resp.json()
+if result["drift_detected"]:
+    drifted = [f for f, s in result["features"].items() if s["drifted"]]
+    print("Drift detected in:", drifted)`,
+        liveBody: { sample_count: 200, hours: 6 },
+        livePath: '/api/v1/monitoring/drift',
+      },
+      {
+        method: 'GET',
+        path: '/api/v1/monitoring/drift/:trainer_name/alerts',
+        summary: 'List drift alerts for a model',
+        description: 'Returns all drift alerts for the given trainer. Filter by `status` to see only open alerts. Each alert includes which features drifted, the drift scores, and when it was detected.',
+        auth: true,
+        params: 'status (open | acknowledged | resolved)',
+        response: `{
+  "alerts": [
+    {
+      "id":           "dft_9a2b3c...",
+      "trainer_name": "my-classifier",
+      "status":       "open",
+      "drifted_features": ["income"],
+      "max_drift_score":   0.31,
+      "detected_at":  "2026-03-13T10:10:00Z"
+    }
+  ]
+}`,
+        curlExample: `curl "${BASE_URL}/api/v1/monitoring/drift/my-classifier/alerts?status=open" \\
+  -H "Authorization: Bearer YOUR_API_KEY"`,
+        pythonExample: `import requests
+
+resp = requests.get(
+    "${BASE_URL}/api/v1/monitoring/drift/my-classifier/alerts",
+    headers={"Authorization": "Bearer YOUR_API_KEY"},
+    params={"status": "open"})
+for alert in resp.json()["alerts"]:
+    print(alert["id"], "— drifted:", alert["drifted_features"])`,
+        livePath: '/api/v1/monitoring/drift',
+      },
+      {
+        method: 'PATCH',
+        path: '/api/v1/monitoring/drift/alerts/:alert_id',
+        summary: 'Acknowledge or resolve a drift alert',
+        description: 'Update the status of a drift alert. Set to `acknowledged` when you are investigating, or `resolved` once you have retrained or confirmed the drift is acceptable. An optional notes field lets you record your finding.',
+        auth: true,
+        body: `{
+  "status": "resolved",
+  "notes":  "Retrained on March 2026 data — drift corrected."
+}`,
+        response: `{
+  "id":           "dft_9a2b3c...",
+  "status":       "resolved",
+  "resolved_at":  "2026-03-13T11:00:00Z"
+}`,
+        curlExample: `curl -X PATCH ${BASE_URL}/api/v1/monitoring/drift/alerts/ALERT_ID \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "status": "resolved", "notes": "Retrained on latest data." }'`,
+        pythonExample: `import requests
+
+alert_id = "dft_9a2b3c..."
+resp = requests.patch(
+    f"${BASE_URL}/api/v1/monitoring/drift/alerts/{alert_id}",
+    headers={"Authorization": "Bearer YOUR_API_KEY"},
+    json={"status": "resolved", "notes": "Retrained on latest data."})
+print(resp.json())`,
+        livePath: '/api/v1/monitoring/drift/alerts',
+      },
+    ],
+  },
+  {
     title: 'Model Comparison',
     description: 'Compare metrics across multiple trained model versions side-by-side. Use this to decide which version to promote, or to analyse the impact of hyperparameter changes over training runs.',
     endpoints: [
@@ -1169,9 +1498,19 @@ function EndpointCard({ ep, apiKey, onGotKey }: { ep: Endpoint; apiKey: string; 
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 
-export default function ApiDocsPage({ onBack, onSignIn, onGettingStarted, onPrivacy, onTerms }: Props) {
+export default function ApiDocsPage({ onBack, onSignIn, onGettingStarted, onPrivacy, onTerms, initialSection }: Props) {
   const [apiKey, setApiKey] = useState('')
   const [keyVisible, setKeyVisible] = useState(false)
+
+  useEffect(() => {
+    if (!initialSection) return
+    const id = initialSection.toLowerCase().replace(/\s+/g, '-')
+    // Delay to allow render
+    setTimeout(() => {
+      const el = document.getElementById(id)
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 100)
+  }, [initialSection])
 
   return (
     <div className="min-h-screen bg-[#060810] text-white">

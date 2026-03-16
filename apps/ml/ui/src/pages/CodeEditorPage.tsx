@@ -4,13 +4,17 @@ import clsx from 'clsx'
 import {
   Play, Upload, Plus, X, ChevronRight, ChevronDown,
   FolderOpen, Folder, FileCode, RefreshCw, Database,
-  Trash2, Save, AlertCircle, Loader2,
-  Terminal, Cpu, Wallet, Clock,
+  Trash2, Save, AlertCircle, Loader2, PackageCheck,
+  Terminal, Cpu, Wallet, Clock, Sparkles,
 } from 'lucide-react'
 import { editorApi, type FileNode, type EditorDataset } from '@/api/editor'
 import { walletApi } from '@/api/wallet'
+import { datasetsApi } from '@/api/datasets'
+import { trainersApi } from '@/api/trainers'
 import { useAuth } from '@/context/AuthContext'
 import type { Wallet as WalletData } from '@/types/wallet'
+import type { DatasetProfile } from '@/types/dataset'
+import DatasetUploadModal from '@/components/DatasetUploadModal'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -29,6 +33,10 @@ interface LogLine {
 
 // ── File Explorer ─────────────────────────────────────────────────────────────
 
+function _shouldHide(name: string): boolean {
+  return (name.startsWith('__') && name.endsWith('__')) || name.startsWith('.')
+}
+
 function FileTree({
   nodes,
   openPaths,
@@ -46,7 +54,7 @@ function FileTree({
 }) {
   return (
     <div className="space-y-0.5">
-      {nodes.map(node => (
+      {nodes.filter(n => !_shouldHide(n.name)).map(node => (
         <FileTreeNode
           key={node.path}
           node={node}
@@ -99,7 +107,7 @@ function FileTreeNode({
         </button>
         {isOpen && node.children && (
           <div>
-            {node.children.map(child => (
+            {node.children.filter(c => !_shouldHide(c.name)).map(child => (
               <FileTreeNode
                 key={child.path}
                 node={child}
@@ -227,10 +235,11 @@ function DatasetPicker({
 // ── Templates sidebar section ─────────────────────────────────────────────────
 
 const SAMPLE_META: Record<string, { label: string; description: string; icon: string }> = {
-  'sample_image_classifier':   { label: 'Image Classifier',   description: 'ResNet-18 transfer learning',          icon: '🖼️' },
-  'sample_object_detector':    { label: 'Object Detector',    description: 'YOLOv8 bounding boxes',                icon: '🔍' },
-  'sample_image_segmentation': { label: 'Segmentation',       description: 'YOLOv8-seg pixel masks',               icon: '✂️' },
-  'sample_image_similarity':   { label: 'Image Similarity',   description: 'CLIP embeddings & text search',        icon: '🔗' },
+  'sample_image_classifier':        { label: 'Image Classifier',         description: 'ResNet-18 transfer learning',             icon: '🖼️' },
+  'sample_object_detector':         { label: 'Object Detector',          description: 'YOLOv8 bounding boxes',                   icon: '🔍' },
+  'sample_image_segmentation':      { label: 'Segmentation',             description: 'YOLOv8-seg pixel masks',                  icon: '✂️' },
+  'sample_image_similarity':        { label: 'Image Similarity',         description: 'CLIP embeddings & text search',           icon: '🔗' },
+  'sample_kenyan_plate_detector':   { label: 'Kenyan Plate Detector',    description: 'YOLOv8 detection + EasyOCR — KAA 000A',   icon: '🚗' },
 }
 
 function _flattenTree(nodes: FileNode[]): FileNode[] {
@@ -245,11 +254,11 @@ function _flattenTree(nodes: FileNode[]): FileNode[] {
 function TemplatesSection({
   tree,
   activePath,
-  onOpen,
+  onFork,
 }: {
   tree: FileNode[]
   activePath: string | null
-  onOpen: (node: FileNode) => void
+  onFork: (node: FileNode) => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const samples = _flattenTree(tree).filter(n => n.name.startsWith('sample_') && n.name.endsWith('.py'))
@@ -272,11 +281,13 @@ function TemplatesSection({
             const label   = meta?.label ?? stem.replace(/^sample_/, '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
             const desc    = meta?.description ?? ''
             const icon    = meta?.icon ?? '📄'
-            const isActive = node.path === activePath
+            const copyName = node.name.replace(/^sample_/, '')
+            const isActive = activePath === copyName
             return (
               <button
                 key={node.path}
-                onClick={() => onOpen(node)}
+                onClick={() => onFork(node)}
+                title={`Open a copy as ${copyName}`}
                 className={clsx(
                   'w-full flex items-center gap-2 px-2 py-1.5 rounded text-left transition-colors',
                   isActive
@@ -287,7 +298,7 @@ function TemplatesSection({
                 <span className="text-sm flex-shrink-0 leading-none">{icon}</span>
                 <div className="min-w-0">
                   <div className="text-[11px] font-medium truncate leading-tight">{label}</div>
-                  <div className="text-[10px] text-gray-600 truncate mt-0.5">{desc}</div>
+                  <div className="text-[10px] text-gray-600 truncate mt-0.5">{desc || 'Opens a personal copy'}</div>
                 </div>
               </button>
             )
@@ -351,6 +362,183 @@ function QuotaBar({ wallet }: { wallet: WalletData | null }) {
   )
 }
 
+// ── AI Generate Modal ─────────────────────────────────────────────────────────
+
+const DS_TYPES = [
+  { value: 'dataset',    label: 'MLDock Dataset',        hint: 'Auto-creates a dataset with upload fields' },
+  { value: 'upload',     label: 'File Upload (per run)', hint: 'User uploads a file each time they run' },
+  { value: 's3',         label: 'S3 / MinIO',            hint: 'Read from a bucket path' },
+  { value: 'url',        label: 'HTTP URL',              hint: 'Download from a public URL' },
+  { value: 'mongodb',    label: 'MongoDB',               hint: 'Query a collection' },
+  { value: 'huggingface','label': 'Hugging Face Hub',    hint: 'HF Hub dataset' },
+  { value: 'memory',     label: 'In-Memory / Built-in',  hint: 'Fetch or generate data inside preprocess()' },
+]
+const FW_TYPES = [
+  { value: 'auto',        label: 'Auto (LLM decides)' },
+  { value: 'sklearn',     label: 'scikit-learn' },
+  { value: 'pytorch',     label: 'PyTorch' },
+  { value: 'tensorflow',  label: 'TensorFlow / Keras' },
+  { value: 'custom',      label: 'Custom / Other' },
+]
+
+function AiGenerateModal({ onClose, onInsert }: { onClose: () => void; onInsert: (code: string) => void }) {
+  const [description, setDescription]       = useState('')
+  const [dsType, setDsType]                 = useState('dataset')
+  const [framework, setFramework]           = useState('auto')
+  const [className, setClassName]           = useState('')
+  const [extraNotes, setExtraNotes]         = useState('')
+  const [generating, setGenerating]         = useState(false)
+  const [error, setError]                   = useState('')
+  const [preview, setPreview]               = useState('')
+
+  const generate = async () => {
+    if (!description.trim()) { setError('Describe what the trainer should do'); return }
+    setGenerating(true); setError(''); setPreview('')
+    try {
+      const result = await editorApi.generateTrainer({
+        description: description.trim(),
+        data_source_type: dsType,
+        framework,
+        class_name: className.trim() || undefined,
+        extra_notes: extraNotes.trim() || undefined,
+      })
+      setPreview(result.code)
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? 'Generation failed. Check that the LLM is configured.')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.7)' }}>
+      <div className="bg-gray-900 border border-violet-800/40 rounded-2xl shadow-2xl w-full max-w-2xl mx-4 max-h-[90vh] flex flex-col overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+          <div className="flex items-center gap-2">
+            <Sparkles size={16} className="text-violet-400" />
+            <h2 className="text-sm font-semibold text-white">Generate Trainer with AI</h2>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-gray-800 text-gray-500 hover:text-white">
+            <X size={15} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          {/* Description */}
+          <div>
+            <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">
+              What should the trainer do? *
+            </label>
+            <textarea
+              rows={4}
+              autoFocus
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-violet-500 resize-none"
+              placeholder="e.g. Classify cattle body condition scores (1–5) from photos. Use a pre-trained ResNet50 with transfer learning. Dataset: labeled images uploaded as a ZIP."
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            {/* Data source */}
+            <div>
+              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Data Source</label>
+              <select
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-500"
+                value={dsType}
+                onChange={e => setDsType(e.target.value)}
+              >
+                {DS_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+              <p className="text-[10px] text-gray-600 mt-0.5">
+                {DS_TYPES.find(t => t.value === dsType)?.hint}
+              </p>
+            </div>
+
+            {/* Framework */}
+            <div>
+              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Framework</label>
+              <select
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-500"
+                value={framework}
+                onChange={e => setFramework(e.target.value)}
+              >
+                {FW_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            {/* Class name */}
+            <div>
+              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">
+                Class Name <span className="text-gray-600 normal-case font-normal">(optional)</span>
+              </label>
+              <input
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-violet-500"
+                placeholder="CattleBCSClassifier"
+                value={className}
+                onChange={e => setClassName(e.target.value)}
+              />
+            </div>
+
+            {/* Extra notes */}
+            <div>
+              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">
+                Extra Notes <span className="text-gray-600 normal-case font-normal">(optional)</span>
+              </label>
+              <input
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-violet-500"
+                placeholder="Use float16, output class + confidence"
+                value={extraNotes}
+                onChange={e => setExtraNotes(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {error && <p className="text-xs text-red-400">{error}</p>}
+
+          {/* Preview */}
+          {preview && (
+            <div>
+              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Generated Code — review before inserting</label>
+              <pre className="bg-gray-950 border border-gray-700 rounded-lg p-4 text-[11px] text-gray-300 overflow-x-auto max-h-56 leading-5">
+                {preview}
+              </pre>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="border-t border-gray-800 px-6 py-4 flex gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors">
+            Cancel
+          </button>
+          {preview ? (
+            <>
+              <button onClick={generate} disabled={generating}
+                className="px-4 py-2 text-xs text-violet-300 bg-violet-900/40 hover:bg-violet-800/50 border border-violet-700/40 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-1.5">
+                {generating ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+                Regenerate
+              </button>
+              <button onClick={() => onInsert(preview)}
+                className="flex-1 py-2 text-xs text-white bg-violet-700 hover:bg-violet-600 rounded-lg transition-colors font-semibold">
+                Insert into Editor →
+              </button>
+            </>
+          ) : (
+            <button onClick={generate} disabled={generating || !description.trim()}
+              className="flex-1 py-2 text-xs text-white bg-violet-700 hover:bg-violet-600 rounded-lg transition-colors font-semibold disabled:opacity-50 flex items-center justify-center gap-2">
+              {generating ? <><Loader2 size={12} className="animate-spin" /> Generating…</> : <><Sparkles size={12} /> Generate Trainer</>}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function CodeEditorPage() {
@@ -371,6 +559,9 @@ export default function CodeEditorPage() {
   const [newFileTemplate, setNewFileTemplate] = useState<'blank' | 'trainer'>('trainer')
   const [newFileError, setNewFileError] = useState('')
 
+  // AI Generate
+  const [showAiGenerate, setShowAiGenerate] = useState(false)
+
   // Datasets
   const [datasets, setDatasets] = useState<EditorDataset[]>([])
   const [datasetsLoading, setDatasetsLoading] = useState(false)
@@ -381,6 +572,7 @@ export default function CodeEditorPage() {
 
   // Run / logs
   const [running, setRunning] = useState(false)
+  const [insufficientBalance, setInsufficientBalance] = useState<string | null>(null)
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
   const [logs, setLogs] = useState<LogLine[]>([])
   const [logOpen, setLogOpen] = useState(false)
@@ -393,6 +585,15 @@ export default function CodeEditorPage() {
 
   // Delete confirm
   const [deleteTarget, setDeleteTarget] = useState<FileNode | null>(null)
+
+  // Empty-dataset upload prompt (shown after "Dataset is empty" error or after install)
+  const [emptyDataset, setEmptyDataset] = useState<DatasetProfile | null>(null)
+  const [showUploadModal, setShowUploadModal] = useState(false)
+  const emptyDatasetSlugRef = useRef<string | null>(null)
+
+  // Install status
+  const [installing, setInstalling] = useState(false)
+  const [installStatus, setInstallStatus] = useState<'idle' | 'ok' | 'error'>('idle')
 
   const activeTabData = tabs.find(t => t.path === activeTab) ?? null
 
@@ -460,6 +661,35 @@ export default function CodeEditorPage() {
       const tab: OpenTab = { path: node.path, name: node.name, content, dirty: false }
       setTabs(prev => [...prev, tab])
       setActiveTab(node.path)
+    } catch {}
+  }
+
+  // Open a sample/template file as a personal copy — never edit the original
+  const forkSampleFile = async (node: FileNode) => {
+    if (node.type === 'dir') return
+    const copyName = node.name.replace(/^sample_/, '')
+    const copyPath = copyName
+
+    // If the copy is already open in a tab, just switch to it
+    const openCopy = tabs.find(t => t.path === copyPath)
+    if (openCopy) { setActiveTab(copyPath); return }
+
+    // If the copy already exists on disk, open it directly
+    const allFiles = _flattenTree(tree)
+    const existsOnDisk = allFiles.find(f => f.path === copyPath)
+    if (existsOnDisk) {
+      await openFile(existsOnDisk)
+      return
+    }
+
+    // Otherwise create the copy from the template content
+    try {
+      const { content } = await editorApi.getFileContent(node.path)
+      await editorApi.saveFile(copyPath, content)
+      await loadTree()
+      const tab: OpenTab = { path: copyPath, name: copyName, content, dirty: false }
+      setTabs(prev => prev.find(t => t.path === copyPath) ? prev : [...prev, tab])
+      setActiveTab(copyPath)
     } catch {}
   }
 
@@ -557,6 +787,7 @@ export default function CodeEditorPage() {
     // Save first
     if (activeTabData.dirty) await handleSave()
 
+    setInsufficientBalance(null)
     setRunning(true)
     setLogOpen(true)
     setLogs([])
@@ -585,6 +816,9 @@ export default function CodeEditorPage() {
     }
 
     addLog(`▶ Starting run: ${trainerName}`, 'connected')
+    emptyDatasetSlugRef.current = null
+    setEmptyDataset(null)
+    setShowUploadModal(false)
 
     try {
       const { job_id } = await editorApi.runTrainer(trainerName, activeTabData.content, activeTabData.path)
@@ -601,6 +835,20 @@ export default function CodeEditorPage() {
       sse.addEventListener('log', e => {
         const data = JSON.parse((e as MessageEvent).data)
         addLog(data.line, 'info')
+        // Detect empty-dataset error in log output
+        const emptyMatch = (data.line as string).match(/Dataset '(.+?)' is empty/)
+        if (emptyMatch) {
+          emptyDatasetSlugRef.current = emptyMatch[1]
+        }
+      })
+      sse.addEventListener('billing', e => {
+        const data = JSON.parse((e as MessageEvent).data)
+        if (!data.is_free && data.charged > 0) {
+          addLog(`💰 Charged $${data.charged.toFixed(6)} USD · ${data.elapsed_seconds.toFixed(1)}s @ $${data.price_per_hour.toFixed(4)}/hr`, 'info')
+          loadWallet()
+        } else if (data.is_free) {
+          addLog(`✓ Free compute (standard tier)`, 'info')
+        }
       })
       sse.addEventListener('done', e => {
         const data = JSON.parse((e as MessageEvent).data)
@@ -608,6 +856,38 @@ export default function CodeEditorPage() {
           addLog(`✓ Training completed. Metrics: ${JSON.stringify(data.metrics)}`, 'done')
         } else {
           addLog(`✗ ${data.status}${data.error ? ': ' + data.error : ''}`, 'error')
+          // If we detected an empty dataset slug, fetch and show upload modal
+          if (emptyDatasetSlugRef.current) {
+            const slug = emptyDatasetSlugRef.current
+            datasetsApi.getBySlug(slug).then(ds => {
+              setEmptyDataset(ds)
+              setShowUploadModal(true)
+            }).catch(() => {
+              // Dataset not accessible via API — create a minimal stub so user can still upload
+              const stub: DatasetProfile = {
+                id: '',
+                org_id: '',
+                name: slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+                slug,
+                description: '',
+                category: 'training',
+                fields: [],
+                status: 'active',
+                visibility: 'private',
+                source_dataset_id: null,
+                reference_type: null,
+                entry_count_cache: 0,
+                points_enabled: false,
+                points_per_entry: 1,
+                points_redemption_info: '',
+                created_by: 'system',
+                created_at: '',
+                updated_at: '',
+              }
+              setEmptyDataset(stub)
+              setShowUploadModal(true)
+            })
+          }
         }
         setRunning(false)
         sse.close()
@@ -625,7 +905,11 @@ export default function CodeEditorPage() {
         }
       }
     } catch (err: any) {
-      addLog(`✗ ${err?.response?.data?.detail ?? 'Failed to start run'}`, 'error')
+      if (err?.response?.status === 402) {
+        setInsufficientBalance(err?.response?.data?.detail ?? 'Insufficient balance for compute. Top up your wallet to run.')
+      } else {
+        addLog(`✗ ${err?.response?.data?.detail ?? 'Failed to start run'}`, 'error')
+      }
       setRunning(false)
     }
   }
@@ -633,6 +917,70 @@ export default function CodeEditorPage() {
   const handleDeploy = () => {
     // Navigate to deploy page — done by parent App
     window.dispatchEvent(new CustomEvent('navigate', { detail: 'deploy' }))
+  }
+
+  // ── Install ───────────────────────────────────────────────────────────────
+  // Uploads the current file as a trainer plugin (same as TrainersPage "Upload Plugin")
+  // then checks if the trainer's dataset is empty and prompts to fill it.
+
+  const handleInstall = async () => {
+    if (!activeTabData) return
+    setInstalling(true)
+    setInstallStatus('idle')
+    setLogOpen(true)
+    addLog('● Installing trainer plugin…', 'connected')
+
+    try {
+      // Save first so the server sees the latest content
+      if (activeTabData.dirty) await handleSave()
+
+      // Wrap content as a File object for multipart upload
+      const blob = new Blob([activeTabData.content], { type: 'text/x-python' })
+      const file = new File([blob], activeTabData.name.endsWith('.py') ? activeTabData.name : `${activeTabData.name}.py`, { type: 'text/x-python' })
+
+      const result = await trainersApi.upload(file)
+      const registeredTrainer = result.trainer as Record<string, unknown> | null | undefined
+      const trainerDisplayName = (registeredTrainer?.name as string) ?? activeTabData.name
+      addLog(`✓ Installed: ${trainerDisplayName}`, 'done')
+      setInstallStatus('ok')
+      setTimeout(() => setInstallStatus('idle'), 3000)
+
+      // Check if trainer has a dataset datasource and whether it's empty
+      const dsInfo = (registeredTrainer?.data_source_info as Record<string, unknown>) ?? {}
+      const dsType = dsInfo?.type as string | undefined
+      if (dsType === 'dataset') {
+        const dsSlug = dsInfo?.dataset_slug as string | undefined
+        const dsId   = dsInfo?.dataset_id  as string | undefined
+        if (dsSlug || dsId) {
+          try {
+            let dataset = null
+            if (dsSlug) {
+              dataset = await datasetsApi.getBySlug(dsSlug)
+            } else if (dsId) {
+              dataset = await datasetsApi.get(dsId)
+            }
+            if (dataset) {
+              const { count } = await datasetsApi.getEntryCount(dataset.id)
+              if (count === 0) {
+                addLog(`⚠ Dataset "${dataset.name}" is empty — add training data to run.`, 'error')
+                setEmptyDataset(dataset)
+                setShowUploadModal(true)
+              } else {
+                addLog(`✓ Dataset "${dataset.name}" has ${count} entries — ready to run.`, 'info')
+              }
+            }
+          } catch {
+            // Non-fatal — dataset check failed but install succeeded
+          }
+        }
+      }
+    } catch (err: any) {
+      addLog(`✗ Install failed: ${err?.response?.data?.detail ?? err?.message ?? 'Unknown error'}`, 'error')
+      setInstallStatus('error')
+      setTimeout(() => setInstallStatus('idle'), 3000)
+    } finally {
+      setInstalling(false)
+    }
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -650,6 +998,15 @@ export default function CodeEditorPage() {
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700 hover:text-white rounded-lg transition-colors"
         >
           <Plus size={12} /> New File
+        </button>
+
+        {/* AI Generate */}
+        <button
+          onClick={() => setShowAiGenerate(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-violet-900/50 border border-violet-700/60 text-violet-300 hover:bg-violet-800/60 hover:text-white rounded-lg transition-colors"
+          title="Generate a trainer using AI"
+        >
+          <Sparkles size={12} /> Generate
         </button>
 
         <div className="flex-1" />
@@ -676,6 +1033,24 @@ export default function CodeEditorPage() {
         >
           {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
           {saveStatus === 'saved' ? 'Saved' : saveStatus === 'error' ? 'Error' : 'Save'}
+        </button>
+
+        {/* Install */}
+        <button
+          onClick={handleInstall}
+          disabled={installing || !activeTabData}
+          title="Upload file as trainer plugin (same as TrainersPage → Upload Plugin)"
+          className={clsx(
+            'flex items-center gap-1.5 px-3 py-1.5 text-xs border rounded-lg transition-colors disabled:opacity-40 font-medium',
+            installStatus === 'ok'
+              ? 'bg-green-900/40 border-green-700/60 text-green-400'
+              : installStatus === 'error'
+              ? 'bg-red-900/40 border-red-700/60 text-red-400'
+              : 'bg-indigo-900/50 border-indigo-700/60 text-indigo-300 hover:bg-indigo-800/60 hover:text-white',
+          )}
+        >
+          {installing ? <Loader2 size={12} className="animate-spin" /> : <PackageCheck size={12} />}
+          {installStatus === 'ok' ? 'Installed!' : installStatus === 'error' ? 'Failed' : installing ? 'Installing…' : 'Install'}
         </button>
 
         {/* Run */}
@@ -741,7 +1116,7 @@ export default function CodeEditorPage() {
           <TemplatesSection
             tree={tree}
             activePath={activeTab}
-            onOpen={openFile}
+            onFork={forkSampleFile}
           />
         </aside>
 
@@ -816,6 +1191,30 @@ export default function CodeEditorPage() {
             )}
           </div>
 
+          {/* Insufficient balance banner */}
+          {insufficientBalance && (
+            <div className="flex items-center justify-between gap-3 px-4 py-2.5 bg-amber-950/60 border-t border-amber-800/50 flex-shrink-0">
+              <div className="flex items-center gap-2 text-[11px] text-amber-300 min-w-0">
+                <Wallet size={12} className="text-amber-400 flex-shrink-0" />
+                <span className="truncate">{insufficientBalance}</span>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: 'wallet' }))}
+                  className="px-3 py-1 text-[11px] font-semibold bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors"
+                >
+                  Top Up
+                </button>
+                <button
+                  onClick={() => setInsufficientBalance(null)}
+                  className="text-amber-600 hover:text-amber-400 transition-colors"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Log panel */}
           <div
             className={clsx(
@@ -858,6 +1257,28 @@ export default function CodeEditorPage() {
                       {line.text}
                     </div>
                   ))
+                )}
+                {/* Empty dataset prompt */}
+                {emptyDatasetSlugRef.current && !running && !emptyDataset && (
+                  <div className="mt-2 flex items-center gap-2 px-3 py-2 bg-amber-950/40 border border-amber-800/50 rounded-lg font-sans">
+                    <Loader2 size={11} className="animate-spin text-amber-400 flex-shrink-0" />
+                    <span className="text-amber-300 text-[11px]">Loading dataset…</span>
+                  </div>
+                )}
+                {emptyDataset && !running && (
+                  <div className="mt-2 flex items-center gap-3 px-3 py-2.5 bg-amber-950/40 border border-amber-800/50 rounded-lg font-sans">
+                    <AlertCircle size={14} className="text-amber-400 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-amber-200 text-[11px] font-medium">Dataset is empty — training needs data</p>
+                      <p className="text-amber-400/70 text-[10px] mt-0.5">Upload a CSV/Excel file to <span className="font-medium">{emptyDataset.name}</span> then re-run.</p>
+                    </div>
+                    <button
+                      onClick={() => setShowUploadModal(true)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-medium rounded-lg transition-colors flex-shrink-0"
+                    >
+                      <Upload size={11} /> Upload Data
+                    </button>
+                  </div>
                 )}
                 <div ref={logBottomRef} />
               </div>
@@ -921,6 +1342,37 @@ export default function CodeEditorPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Dataset upload modal (triggered by empty-dataset run error) */}
+      {showUploadModal && emptyDataset && (
+        <DatasetUploadModal
+          dataset={emptyDataset}
+          onClose={() => setShowUploadModal(false)}
+          onUploaded={() => {
+            setShowUploadModal(false)
+            // Offer to re-run after upload
+            setTimeout(() => handleRun(), 300)
+          }}
+        />
+      )}
+
+      {/* AI Generate modal */}
+      {showAiGenerate && (
+        <AiGenerateModal
+          onClose={() => setShowAiGenerate(false)}
+          onInsert={code => {
+            // Open in a new tab named ai_generated.py
+            const path = 'ai_generated.py'
+            const tab: OpenTab = { path, name: path, content: code, dirty: true }
+            setTabs(prev => {
+              const exists = prev.find(t => t.path === path)
+              return exists ? prev.map(t => t.path === path ? { ...t, content: code, dirty: true } : t) : [...prev, tab]
+            })
+            setActiveTab(path)
+            setShowAiGenerate(false)
+          }}
+        />
       )}
 
       {/* Delete confirm dialog */}

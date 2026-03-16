@@ -33,6 +33,18 @@ class ResendVerificationRequest(BaseModel):
     email: str
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 @router.post("/register")
 async def register(body: RegisterRequest):
     user = await auth_service.register(body.email, body.password, body.full_name)
@@ -63,6 +75,32 @@ async def resend_verification(body: ResendVerificationRequest):
     """Resend OTP + activation link."""
     await auth_service.resend_verification(body.email)
     return {"sent": True}
+
+
+@router.post("/forgot-password")
+async def forgot_password(body: ForgotPasswordRequest):
+    """Send password reset email. Always returns ok to avoid user enumeration."""
+    await auth_service.forgot_password(body.email)
+    return {"ok": True}
+
+
+@router.post("/reset-password")
+async def reset_password(body: ResetPasswordRequest):
+    """Set a new password using the reset token from the email link."""
+    await auth_service.reset_password(body.token, body.new_password)
+    return {"ok": True}
+
+
+@router.post("/change-password")
+async def change_password(body: ChangePasswordRequest, authorization: Optional[str] = Header(None)):
+    """Change password for the currently authenticated user."""
+    if not authorization or not authorization.startswith("Bearer "):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = authorization.split(" ", 1)[1]
+    user = await auth_service.get_current_user(token)
+    await auth_service.change_password(user, body.current_password, body.new_password)
+    return {"ok": True}
 
 
 @router.post("/login")

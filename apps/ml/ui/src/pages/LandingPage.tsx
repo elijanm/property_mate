@@ -1,11 +1,13 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   ArrowRight, Code2, Menu, X, CheckCircle2, Zap, Globe, Shield,
   BarChart2, GitBranch, Cpu, CloudLightning, Layers,
-  ChevronRight, Play, Database,
+  ChevronRight, Database, Monitor, Star,
 } from 'lucide-react'
 import clsx from 'clsx'
 import Logo from '@/components/Logo'
+import { adminApi } from '@/api/admin'
+import type { MLPlan } from '@/types/plan'
 
 interface Props {
   onSignIn: () => void
@@ -32,7 +34,7 @@ const STEPS = [
     icon: <CloudLightning size={18} className="text-sky-400" />,
     title: 'Train locally or on cloud GPU',
     desc: 'Start free on your own machine (10 hrs/month included). Switch to cloud GPU in one click — same trainer code, no rewrite. Cost is reserved upfront and refunded for unused time.',
-    tag: 'From $0.28/hr',
+    tag: 'CPU from $0.05/hr',
     tagColor: 'text-sky-400 bg-sky-950/40 border-sky-800/40',
   },
   {
@@ -81,8 +83,8 @@ const DIFFERENTIATORS = [
   },
   {
     icon: <Cpu size={20} className="text-cyan-400" />,
-    title: 'Free local training tier',
-    body: '10 hours of local CPU training per month, free forever. Great for prototyping, smaller models, and teams that want to validate before spending on GPU time.',
+    title: 'Free standard training tier',
+    body: 'Standard CPU and GPU training at a fraction of accelerated cloud prices. CPU from $0.05/hr, GPU from $0.20/hr. Start on the Starter plan with 10 free CPU hours — great for prototyping before scaling to accelerated compute.',
   },
 ]
 
@@ -99,59 +101,103 @@ const VS = [
   { feature: 'No AWS account needed', us: true, sm: false, wb: true, modal: true },
 ]
 
-const PLANS = [
+// On-demand rates fallback (shown while loading or if API fails)
+const DEFAULT_ONDEMAND = { cpu: 0.05, gpu: 0.20, inference: 0.001, cloudGpu: 0.28 }
+
+// Static fallback plan cards shown before API responds
+const FALLBACK_PLANS = [
+  { id: 'f1', name: 'Starter', price_usd_per_month: 0, included_period: 'month' as const, included_cpu_hours: 0, included_local_gpu_hours: 0, included_cloud_gpu_credit_usd: 0, free_inference_calls: 500, free_inference_period: 'month' as const, new_customer_credit_usd: 5, is_active: true, is_default: true, created_at: null, updated_at: null },
+  { id: 'f2', name: 'Developer', price_usd_per_month: 19, included_period: 'month' as const, included_cpu_hours: 30, included_local_gpu_hours: 10, included_cloud_gpu_credit_usd: 2, free_inference_calls: 2000, free_inference_period: 'month' as const, new_customer_credit_usd: 10, is_active: true, is_default: false, created_at: null, updated_at: null },
+  { id: 'f3', name: 'Pro', price_usd_per_month: 79, included_period: 'month' as const, included_cpu_hours: 100, included_local_gpu_hours: 40, included_cloud_gpu_credit_usd: 8, free_inference_calls: 10000, free_inference_period: 'month' as const, new_customer_credit_usd: 25, is_active: true, is_default: false, created_at: null, updated_at: null },
+]
+
+const FAQ = [
   {
-    name: 'Local',
-    price: 'Free',
-    note: 'forever',
-    highlight: false,
-    badge: null,
-    items: [
-      '10 hrs local training / month',
-      'REST API deployment',
-      'Experiment tracking (MLflow)',
-      'Monitoring & alerts',
-      'API key management',
-    ],
-    cta: 'Start free',
+    q: 'What\'s the difference between CPU, local GPU, and cloud GPU?',
+    a: 'CPU training runs on your machine\'s processor — available on any computer, slower for deep learning, billed at $0.05/hr. Local GPU uses your own CUDA-capable graphics card (NVIDIA), which is 5–30× faster than CPU and billed at $0.20/hr. Cloud GPU rents hardware from our partner network (RTX 3090, A100, H100) — fastest, billed from $0.28/hr, started in seconds and stopped any time.',
   },
   {
-    name: 'Cloud GPU',
-    price: '$0.28',
-    note: 'per GPU hour',
-    highlight: true,
-    badge: 'Most popular',
-    items: [
-      'Everything in Local',
-      'RTX 3090, A100, H100 access',
-      'Pay-as-you-go wallet billing',
-      'Unused cost refunded instantly',
-      'Local payment methods accepted',
-      'Priority job queue',
-    ],
-    cta: 'Get started',
+    q: 'Do I need my own GPU to use MLDock?',
+    a: 'No. You can start with CPU training right away on any machine. When you need more speed, switch to cloud GPU in one click — no hardware required on your side. If you do have an NVIDIA GPU, you can use local GPU training to get near-cloud speeds at a lower cost.',
   },
   {
-    name: 'White-label',
-    price: 'Custom',
-    note: 'talk to us',
-    highlight: false,
-    badge: null,
-    items: [
-      'Everything in Cloud GPU',
-      'Your branding & domain',
-      'Multi-tenant resale',
-      'Dedicated infrastructure',
-      'SLA + dedicated support',
-    ],
-    cta: 'Contact us',
+    q: 'How does wallet billing work? Can I get a surprise charge?',
+    a: 'You pre-fund your wallet (no credit card required — M-Pesa and local methods accepted). Before any job starts, the estimated cost is reserved. If the job finishes early, unused funds are refunded immediately. You can never be charged more than your wallet balance — jobs won\'t start if there isn\'t enough balance.',
+  },
+  {
+    q: 'What happens if my training job fails?',
+    a: 'For cloud GPU jobs, you\'re only charged for the time the job actually ran. The reserved amount for unused time is returned to your wallet automatically. For local jobs, the cost reflects actual wall-clock time elapsed before the failure.',
+  },
+  {
+    q: 'What Python frameworks are supported?',
+    a: 'Any Python framework that can run on the target machine: scikit-learn, PyTorch, TensorFlow, Keras, XGBoost, LightGBM, YOLO (Ultralytics), Hugging Face Transformers, Roboflow, and more. You subclass BaseTrainer, drop your file in /trainers/, and it\'s auto-detected — no platform-specific rewrites needed.',
+  },
+  {
+    q: 'Is my model and training data private?',
+    a: 'Yes. Your trained models, prediction data, and API keys are yours and are never shared or used to train anything else. You can self-host the entire platform or use the white-label option to deploy under your own brand.',
+  },
+  {
+    q: 'How do I choose between a monthly plan and on-demand?',
+    a: 'On-demand is best if your usage is irregular — you only pay for what you run. Monthly plans make sense if you train regularly: you pre-pay at a discount and get a fixed quota of CPU, local GPU, and cloud GPU credit each month. The Developer plan\'s included compute is worth ~$9.50 at on-demand rates for $19/mo, so you break even at just a few hours of use per month.',
+  },
+  {
+    q: 'Can I cancel a running job?',
+    a: 'Yes — any queued or running job can be cancelled from the Jobs panel. For cloud GPU jobs, billing stops immediately on cancellation and unused reserved funds are returned. The trained checkpoint (if any) up to the point of cancellation is preserved.',
   },
 ]
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
+function FaqAccordion({ items }: { items: { q: string; a: string }[] }) {
+  const [open, setOpen] = useState<number | null>(null)
+  return (
+    <div className="space-y-2">
+      {items.map((item, i) => (
+        <div key={i} className="bg-gray-900/60 border border-white/5 rounded-xl overflow-hidden">
+          <button
+            onClick={() => setOpen(open === i ? null : i)}
+            className="w-full flex items-center justify-between px-5 py-4 text-left gap-4"
+          >
+            <span className="text-sm font-medium text-white">{item.q}</span>
+            <ChevronRight
+              size={14}
+              className={clsx('text-gray-500 flex-shrink-0 transition-transform', open === i && 'rotate-90')}
+            />
+          </button>
+          {open === i && (
+            <div className="px-5 pb-5 text-sm text-gray-400 leading-relaxed border-t border-white/5 pt-4">
+              {item.a}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function LandingPage({ onSignIn, onGetStarted, onApiDocs, onGettingStarted, onPrivacy, onTerms }: Props) {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [billingMode, setBillingMode] = useState<'ondemand' | 'monthly'>('monthly')
+  const [rates, setRates] = useState(DEFAULT_ONDEMAND)
+  const [dbPlans, setDbPlans] = useState<MLPlan[]>([])
+
+  useEffect(() => {
+    adminApi.getPublicPricing().then(data => {
+      setRates({
+        cpu: data.pricing.local_cpu_price_per_hour,
+        gpu: data.pricing.local_gpu_price_per_hour,
+        inference: data.pricing.inference_price_per_call,
+        cloudGpu: data.pricing.cloud_gpu_min_price_per_hour,
+      })
+      setDbPlans(data.plans)
+    }).catch(() => {})  // silently fall back to defaults
+  }, [])
+
+  const displayPlans = dbPlans.length > 0 ? dbPlans : FALLBACK_PLANS
+  const planGridClass = displayPlans.length <= 1 ? 'max-w-sm'
+    : displayPlans.length === 2 ? 'grid-cols-2 max-w-2xl'
+    : displayPlans.length <= 3 ? 'grid-cols-3 max-w-5xl'
+    : 'grid-cols-4 max-w-6xl'
 
   const Check = ({ ok }: { ok: boolean }) => ok
     ? <CheckCircle2 size={15} className="text-emerald-400 flex-shrink-0" />
@@ -169,6 +215,7 @@ export default function LandingPage({ onSignIn, onGetStarted, onApiDocs, onGetti
             <a href="#how" className="hover:text-white transition-colors">How it works</a>
             <a href="#why" className="hover:text-white transition-colors">Why MLDock</a>
             <a href="#pricing" className="hover:text-white transition-colors">Pricing</a>
+            <a href="#faq" className="hover:text-white transition-colors">FAQ</a>
             <button onClick={onGettingStarted} className="hover:text-white transition-colors">Docs</button>
           </div>
 
@@ -192,6 +239,7 @@ export default function LandingPage({ onSignIn, onGetStarted, onApiDocs, onGetti
             <a href="#how" onClick={() => setMenuOpen(false)} className="block text-sm text-gray-400 hover:text-white">How it works</a>
             <a href="#why" onClick={() => setMenuOpen(false)} className="block text-sm text-gray-400 hover:text-white">Why MLDock</a>
             <a href="#pricing" onClick={() => setMenuOpen(false)} className="block text-sm text-gray-400 hover:text-white">Pricing</a>
+            <a href="#faq" onClick={() => setMenuOpen(false)} className="block text-sm text-gray-400 hover:text-white">FAQ</a>
             <button onClick={onGettingStarted} className="block text-sm text-gray-400 hover:text-white">Docs</button>
             <div className="flex gap-2 pt-1">
               <button onClick={onSignIn} className="flex-1 py-2 text-sm border border-gray-800 rounded-lg text-gray-300">Sign in</button>
@@ -205,55 +253,70 @@ export default function LandingPage({ onSignIn, onGetStarted, onApiDocs, onGetti
       <section className="relative overflow-hidden">
         {/* Glow */}
         <div className="pointer-events-none absolute inset-0 flex items-start justify-center">
-          <div className="w-[700px] h-[400px] rounded-full bg-sky-600/10 blur-[120px] -translate-y-1/3" />
+          <div className="w-[800px] h-[500px] rounded-full bg-sky-600/8 blur-[140px] -translate-y-1/4" />
         </div>
 
-        <div className="relative max-w-6xl mx-auto px-5 sm:px-8 pt-24 pb-20 text-center">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-sky-500/20 bg-sky-500/5 text-sky-400 text-xs mb-8 font-medium">
-            <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
-            Open beta — train your first model free today
-          </div>
+        <div className="relative max-w-6xl mx-auto px-5 sm:px-8 pt-20 pb-20">
+          <div className="grid lg:grid-cols-2 gap-16 items-center">
 
-          <h1 className="font-logo text-5xl sm:text-6xl lg:text-7xl font-bold text-white leading-[1.06] tracking-[-0.03em] mb-6 max-w-4xl mx-auto">
-            Train ML models.<br />
-            <span className="text-sky-400">Deploy REST APIs.</span><br />
-            No infrastructure.
-          </h1>
+            {/* ── Left: copy ── */}
+            <div>
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-sky-500/20 bg-sky-500/5 text-sky-400 text-xs mb-7 font-medium">
+                <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
+                Open beta — train your first model free today
+              </div>
 
-          <p className="text-gray-400 text-lg sm:text-xl max-w-2xl mx-auto mb-4 leading-relaxed">
-            The complete platform for the entire ML lifecycle — from training to production monitoring.
-            Works with any Python framework. Runs on your machine or cloud GPUs.
-            Accepts local payments.
-          </p>
-          <p className="text-gray-600 text-sm mb-10">
-            No AWS account. No credit card required to start. No infrastructure to manage.
-          </p>
+              <h1 className="font-logo text-4xl sm:text-5xl lg:text-[3.25rem] font-bold text-white leading-[1.1] tracking-[-0.03em] mb-8">
+                ML Training &amp; Deployment<br />
+                <span className="text-sky-400">For Developers and Teams</span>
+              </h1>
 
-          <div className="flex flex-col sm:flex-row gap-3 justify-center mb-20">
-            <button onClick={onGetStarted}
-              className="flex items-center justify-center gap-2 px-7 py-3.5 bg-sky-600 hover:bg-sky-500 text-white font-semibold rounded-xl text-sm transition-colors shadow-lg shadow-sky-900/40">
-              Start for free <ArrowRight size={14} />
-            </button>
-            <button onClick={onGettingStarted}
-              className="flex items-center justify-center gap-2 px-7 py-3.5 border border-white/10 hover:border-white/20 text-gray-400 hover:text-white rounded-xl text-sm transition-colors">
-              <Play size={13} /> See how it works
-            </button>
-          </div>
+              <ul className="space-y-4 mb-10">
+                {[
+                  'Get your entire ML pipeline set up in minutes',
+                  'Train, deploy, and monitor models across all projects and frameworks',
+                  'Streamline inference — live REST API the moment training completes',
+                  'Focus on your models, place your infrastructure on autopilot',
+                ].map(point => (
+                  <li key={point} className="flex items-start gap-3 text-gray-300 text-[15px] leading-snug">
+                    <CheckCircle2 size={17} className="text-sky-400 flex-shrink-0 mt-0.5" />
+                    {point}
+                  </li>
+                ))}
+              </ul>
 
-          {/* Code window */}
-          <div className="bg-[#0d1117] border border-white/8 rounded-2xl text-left max-w-2xl mx-auto overflow-hidden shadow-2xl shadow-black/80">
-            <div className="flex items-center gap-1.5 px-4 py-3 border-b border-white/5">
-              <div className="w-2.5 h-2.5 rounded-full bg-red-500/60" />
-              <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/60" />
-              <div className="w-2.5 h-2.5 rounded-full bg-green-500/60" />
-              <span className="text-gray-600 text-xs ml-2 font-mono">sentiment_trainer.py</span>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <button onClick={onGetStarted}
+                  className="flex items-center justify-center gap-2 px-7 py-3.5 bg-sky-600 hover:bg-sky-500 text-white font-semibold rounded-xl text-sm transition-colors shadow-lg shadow-sky-900/40">
+                  Sign Up — it's free <ArrowRight size={14} />
+                </button>
+                <button onClick={onSignIn}
+                  className="flex items-center justify-center gap-2 px-7 py-3.5 border border-white/10 hover:border-white/20 text-gray-400 hover:text-white rounded-xl text-sm transition-colors">
+                  Log In
+                </button>
+              </div>
+
+              <p className="text-gray-700 text-xs mt-5">
+                No AWS account · No credit card required · No infrastructure to manage
+              </p>
             </div>
-            <pre className="px-5 py-5 text-[13px] font-mono leading-[1.8] overflow-x-auto">
+
+            {/* ── Right: code window ── */}
+            <div className="bg-[#0d1117] border border-white/8 rounded-2xl text-left overflow-hidden shadow-2xl shadow-black/80">
+              <div className="flex items-center gap-1.5 px-4 py-3 border-b border-white/5">
+                <div className="w-2.5 h-2.5 rounded-full bg-red-500/60" />
+                <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/60" />
+                <div className="w-2.5 h-2.5 rounded-full bg-green-500/60" />
+                <span className="text-gray-600 text-xs ml-2 font-mono">sentiment_trainer.py</span>
+              </div>
+              <pre className="px-5 py-5 text-[13px] font-mono leading-[1.8] overflow-x-auto">
 <span className="text-violet-400">from</span> <span className="text-blue-300">mldock</span> <span className="text-violet-400">import</span> <span className="text-white">BaseTrainer</span>{'\n\n'}<span className="text-violet-400">class</span> <span className="text-emerald-400">SentimentModel</span><span className="text-gray-300">(BaseTrainer):</span>{'\n'}{'    '}<span className="text-amber-400">name</span>      <span className="text-gray-300">= </span><span className="text-emerald-300">"sentiment-v1"</span>{'\n'}{'    '}<span className="text-amber-400">framework</span> <span className="text-gray-300">= </span><span className="text-emerald-300">"sklearn"</span>{'\n\n'}{'    '}<span className="text-violet-400">def</span> <span className="text-blue-300">train</span><span className="text-gray-300">(self, data, cfg):</span>{'\n'}{'        '}<span className="text-gray-500"># your existing training logic</span>{'\n'}{'        '}<span className="text-violet-400">return</span> <span className="text-white">model</span>{'\n\n'}{'    '}<span className="text-violet-400">def</span> <span className="text-blue-300">predict</span><span className="text-gray-300">(self, inputs):</span>{'\n'}{'        '}<span className="text-violet-400">return</span> <span className="text-white">self.model.predict(inputs)</span></pre>
-            <div className="px-5 py-3 border-t border-white/5 flex items-center justify-between text-[11px] font-mono">
-              <span className="text-gray-600">Drop in <span className="text-gray-400">/trainers/</span> → auto-detected</span>
-              <span className="text-emerald-500">✓ ready to train</span>
+              <div className="px-5 py-3 border-t border-white/5 flex items-center justify-between text-[11px] font-mono">
+                <span className="text-gray-600">Drop in <span className="text-gray-400">/trainers/</span> → auto-detected</span>
+                <span className="text-emerald-500">✓ ready to train</span>
+              </div>
             </div>
+
           </div>
         </div>
       </section>
@@ -404,54 +467,201 @@ export default function LandingPage({ onSignIn, onGetStarted, onApiDocs, onGetti
       {/* ── Pricing ── */}
       <section id="pricing" className="py-24">
         <div className="max-w-6xl mx-auto px-5 sm:px-8">
-          <div className="text-center mb-14">
+          <div className="text-center mb-10">
             <p className="text-xs font-bold text-gray-600 uppercase tracking-widest mb-3">Pricing</p>
             <h2 className="font-logo text-3xl sm:text-4xl font-bold text-white tracking-tight mb-3">
               Simple. Transparent. No surprises.
             </h2>
-            <p className="text-gray-500 text-sm max-w-md mx-auto">
-              Local training is free forever. Pay only for GPU time you actually use — billed from a pre-funded wallet, not post-hoc.
+            <p className="text-gray-500 text-sm max-w-md mx-auto mb-6">
+              Start free on your machine, scale to cloud GPU in one click. Billed from a pre-funded wallet — no surprise invoices.
             </p>
+
+            {/* On-demand / Monthly toggle */}
+            <div className="inline-flex rounded-xl border border-gray-800 overflow-hidden text-sm font-medium">
+              <button
+                onClick={() => setBillingMode('monthly')}
+                className={clsx('px-5 py-2 transition-colors',
+                  billingMode === 'monthly' ? 'bg-sky-700 text-white' : 'text-gray-500 hover:text-gray-300')}
+              >
+                Monthly plans
+              </button>
+              <button
+                onClick={() => setBillingMode('ondemand')}
+                className={clsx('px-5 py-2 transition-colors border-l border-gray-800',
+                  billingMode === 'ondemand' ? 'bg-sky-700 text-white' : 'text-gray-500 hover:text-gray-300')}
+              >
+                On-demand rates
+              </button>
+            </div>
           </div>
 
-          <div className="grid sm:grid-cols-3 gap-5 max-w-4xl mx-auto">
-            {PLANS.map(plan => (
-              <div key={plan.name} className={clsx(
-                'rounded-2xl border p-6 flex flex-col',
-                plan.highlight
-                  ? 'border-sky-600/50 bg-sky-950/20 ring-1 ring-sky-600/20'
-                  : 'border-white/5 bg-gray-900/40',
-              )}>
-                {plan.badge && (
-                  <div className="text-[10px] text-sky-400 font-bold uppercase tracking-widest mb-3">{plan.badge}</div>
-                )}
-                <div className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">{plan.name}</div>
-                <div className="text-3xl font-bold text-white tracking-tight mb-0.5 font-logo">{plan.price}</div>
-                <div className="text-[11px] text-gray-600 mb-6">{plan.note}</div>
-                <ul className="space-y-2.5 flex-1 mb-6">
-                  {plan.items.map(f => (
-                    <li key={f} className="flex items-start gap-2 text-xs text-gray-400">
-                      <CheckCircle2 size={11} className="text-emerald-500 flex-shrink-0 mt-0.5" /> {f}
-                    </li>
-                  ))}
-                </ul>
-                <button
-                  onClick={plan.name === 'White-label' ? undefined : onGetStarted}
-                  className={clsx(
-                    'w-full py-2.5 text-sm font-semibold rounded-xl transition-colors',
-                    plan.highlight
-                      ? 'bg-sky-600 hover:bg-sky-500 text-white'
-                      : 'border border-white/10 hover:border-white/20 text-gray-400 hover:text-white',
-                  )}>
-                  {plan.cta}
-                </button>
+          {billingMode === 'ondemand' ? (
+            /* ── On-demand rate cards ── */
+            <div className="max-w-3xl mx-auto space-y-4">
+              <div className="grid sm:grid-cols-3 gap-4">
+                {[
+                  {
+                    icon: <Monitor size={18} className="text-sky-400" />,
+                    label: 'CPU Training',
+                    price: `$${rates.cpu.toFixed(4)}`,
+                    unit: '/ hr',
+                    desc: 'Local CPU compute. No GPU required. Great for small models and prototyping.',
+                    color: 'border-sky-800/40 bg-sky-950/20',
+                  },
+                  {
+                    icon: <Zap size={18} className="text-violet-400" />,
+                    label: 'Local GPU Training',
+                    price: `$${rates.gpu.toFixed(4)}`,
+                    unit: '/ hr',
+                    desc: 'Your own CUDA GPU at a fraction of cloud price. Up to 3× faster than CPU.',
+                    color: 'border-violet-800/40 bg-violet-950/20',
+                  },
+                  {
+                    icon: <CloudLightning size={18} className="text-amber-400" />,
+                    label: 'Cloud GPU',
+                    price: `from $${rates.cloudGpu}`,
+                    unit: '/ hr',
+                    desc: 'RTX 3090, A100, H100. Reserved from wallet, unused time refunded.',
+                    color: 'border-amber-800/40 bg-amber-950/20',
+                  },
+                ].map(card => (
+                  <div key={card.label} className={clsx('rounded-2xl border p-5 flex flex-col gap-3', card.color)}>
+                    <div className="flex items-center justify-between">
+                      <div className="w-9 h-9 rounded-xl bg-gray-800/80 border border-white/5 flex items-center justify-center">
+                        {card.icon}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1">{card.label}</div>
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-2xl font-bold text-white font-logo">{card.price}</span>
+                        <span className="text-xs text-gray-600">{card.unit}</span>
+                      </div>
+                    </div>
+                    <p className="text-xs text-gray-500 leading-relaxed flex-1">{card.desc}</p>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+              <div className="rounded-2xl border border-white/5 bg-gray-900/40 p-5 flex items-start gap-3">
+                <Zap size={14} className="text-emerald-400 flex-shrink-0 mt-0.5" />
+                <div>
+                  <div className="text-sm font-medium text-white mb-1">Inference API</div>
+                  <div className="text-xs text-gray-500">
+                    <span className="text-white font-mono">${rates.inference.toFixed(6)}</span> per call after plan free calls are exhausted.
+                    Pre-fund your wallet, no card required.
+                  </div>
+                </div>
+              </div>
+              <p className="text-center text-xs text-gray-600">
+                All compute types include: experiment tracking · model versioning · REST API deployment · monitoring
+              </p>
+            </div>
+          ) : (
+            /* ── Monthly plan cards (live from DB) ── */
+            <div>
+              <div className={clsx('grid gap-5 mx-auto', planGridClass)}>
+                {displayPlans.map((plan, idx) => {
+                  const isFree = plan.price_usd_per_month === 0
+                  // highlight the first paid plan
+                  const isHighlight = !isFree && idx === 1
+                  const period = plan.included_period ?? 'month'
+                  const periodLabel = period === 'month' ? '/mo' : `/${period}`
+                  const val = (plan as any).included_compute_value_usd as number | undefined
+                  return (
+                    <div key={plan.id ?? plan.name} className={clsx(
+                      'rounded-2xl border p-6 flex flex-col relative',
+                      isHighlight ? 'border-sky-500/60 bg-sky-950/25 ring-1 ring-sky-500/20' : 'border-white/6 bg-gray-900/40',
+                    )}>
+                      {isHighlight && (
+                        <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-sky-600 text-white text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-widest">
+                          Most popular
+                        </div>
+                      )}
 
-          <p className="text-center text-xs text-gray-600 mt-8">
-            All plans include: API key management · experiment tracking · model versioning · monitoring dashboards
-          </p>
+                      <div className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">{plan.name}</div>
+                      <div className="flex items-baseline gap-1 mb-1">
+                        <span className="text-4xl font-bold text-white font-logo">
+                          {isFree ? 'Free' : `$${plan.price_usd_per_month}`}
+                        </span>
+                        {!isFree && <span className="text-sm text-gray-500">{periodLabel}</span>}
+                      </div>
+
+                      {/* Included value badge */}
+                      {val != null && val > 0 && (
+                        <div className="text-[11px] text-emerald-400 mb-4">
+                          ~${val} compute included per month
+                        </div>
+                      )}
+                      {isFree && (
+                        <div className="text-[11px] text-gray-600 mb-4">pay only for what you use</div>
+                      )}
+
+                      {/* Compute breakdown */}
+                      <div className="space-y-1.5 mb-5 border-t border-white/5 pt-4">
+                        {plan.included_cpu_hours > 0 && (
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="flex items-center gap-1.5 text-gray-400"><Monitor size={10} className="text-sky-400" /> CPU training</span>
+                            <span className="text-sky-300 font-medium">{plan.included_cpu_hours}h{periodLabel}</span>
+                          </div>
+                        )}
+                        {plan.included_local_gpu_hours > 0 && (
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="flex items-center gap-1.5 text-gray-400"><Zap size={10} className="text-violet-400" /> Local GPU</span>
+                            <span className="text-violet-300 font-medium">{plan.included_local_gpu_hours}h{periodLabel}</span>
+                          </div>
+                        )}
+                        {plan.included_cloud_gpu_credit_usd > 0 && (
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="flex items-center gap-1.5 text-gray-400"><CloudLightning size={10} className="text-amber-400" /> Cloud GPU credit</span>
+                            <span className="text-amber-300 font-medium">${plan.included_cloud_gpu_credit_usd}{periodLabel}</span>
+                          </div>
+                        )}
+                        {isFree && (
+                          <div className="text-[11px] text-gray-600 italic">
+                            CPU ${rates.cpu}/hr · GPU ${rates.gpu}/hr · Cloud from ${rates.cloudGpu}/hr
+                          </div>
+                        )}
+                        {plan.free_inference_calls > 0 && (
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="flex items-center gap-1.5 text-gray-400"><BarChart2 size={10} className="text-blue-400" /> Inference calls</span>
+                            <span className="text-blue-300 font-medium">{plan.free_inference_calls.toLocaleString()}{periodLabel}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      <ul className="space-y-2 flex-1 mb-6">
+                        {plan.new_customer_credit_usd > 0 && (
+                          <li className="flex items-start gap-2 text-xs text-gray-400">
+                            <CheckCircle2 size={10} className="text-green-400 flex-shrink-0 mt-0.5" />
+                            ${plan.new_customer_credit_usd} welcome credit (one-time)
+                          </li>
+                        )}
+                        <li className="flex items-start gap-2 text-xs text-gray-400">
+                          <CheckCircle2 size={10} className="text-emerald-500 flex-shrink-0 mt-0.5" /> REST API deployment
+                        </li>
+                        <li className="flex items-start gap-2 text-xs text-gray-400">
+                          <CheckCircle2 size={10} className="text-emerald-500 flex-shrink-0 mt-0.5" /> Experiment tracking (MLflow)
+                        </li>
+                        <li className="flex items-start gap-2 text-xs text-gray-400">
+                          <CheckCircle2 size={10} className="text-emerald-500 flex-shrink-0 mt-0.5" /> Cloud GPU access (wallet, pay-as-you-go)
+                        </li>
+                      </ul>
+
+                      <button onClick={onGetStarted}
+                        className={clsx('w-full py-2.5 text-sm font-semibold rounded-xl transition-colors',
+                          isHighlight ? 'bg-sky-600 hover:bg-sky-500 text-white shadow-lg shadow-sky-900/40'
+                          : 'border border-white/10 hover:border-white/20 text-gray-400 hover:text-white')}>
+                        {isFree ? 'Start now — no card needed' : 'Get started'}
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+              <p className="text-center text-xs text-gray-600 mt-8">
+                All plans: API keys · model versioning · monitoring · A/B testing · no AWS account required
+              </p>
+            </div>
+          )}
         </div>
       </section>
 
@@ -492,6 +702,20 @@ export default function LandingPage({ onSignIn, onGetStarted, onApiDocs, onGetti
               ))}
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* ── FAQ ── */}
+      <section id="faq" className="border-t border-white/5 bg-white/[0.015] py-24">
+        <div className="max-w-3xl mx-auto px-5 sm:px-8">
+          <div className="text-center mb-12">
+            <p className="text-xs font-bold text-gray-600 uppercase tracking-widest mb-3">FAQ</p>
+            <h2 className="font-logo text-3xl sm:text-4xl font-bold text-white tracking-tight">
+              Common questions
+            </h2>
+          </div>
+
+          <FaqAccordion items={FAQ} />
         </div>
       </section>
 

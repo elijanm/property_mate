@@ -60,7 +60,7 @@ export default function ModelGrid({ deployments, onSelect, onDelete, onUpdated, 
   const [filter, setFilter] = useState<FilterType>('all')
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState<string | null>(null)
-  const [viewMode, setViewMode] = useState<'card' | 'table'>('card')
+  const [viewMode, setViewMode] = useState<'card' | 'table'>(() => deployments.length > 6 ? 'table' : 'card')
   const [currentPage, setCurrentPage] = useState(1)
 
   // One card per trainer — pick the default/latest version

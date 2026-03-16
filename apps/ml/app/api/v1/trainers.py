@@ -1,5 +1,6 @@
 """Trainer registration endpoints."""
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import List, Optional
 import aiofiles
@@ -17,6 +18,21 @@ from app.utils.datetime import utc_now
 from app.utils.serialization import doc_to_dict
 
 router = APIRouter(prefix="/trainers", tags=["trainers"])
+
+
+@router.get("/churn_predictor/sample-csv")
+async def download_churn_sample_csv(user=Depends(get_current_user)):
+    """Return a sample CSV template for the churn predictor dataset."""
+    try:
+        from trainers.churn_predictor import generate_sample_csv
+    except ImportError:
+        raise HTTPException(status_code=404, detail="churn_predictor trainer not found")
+    csv_bytes = generate_sample_csv()
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=churn_training_sample.csv"},
+    )
 
 
 @router.get("")
@@ -60,8 +76,12 @@ async def upload_trainer_plugin(
     async with aiofiles.open(dest, "wb") as f:
         await f.write(content)
 
-    count = await scan_and_register_plugins(owner_email=user.email)
-    return {"uploaded": file.filename, "trainers_registered": count}
+    count = await scan_and_register_plugins(owner_email=user.email, org_id=user.org_id or None)
+    # Return the registration record for the uploaded trainer (stem = trainer name candidate)
+    stem = Path(file.filename).stem
+    reg = await TrainerRegistration.find_one(TrainerRegistration.name == stem)
+    trainer_data = doc_to_dict(reg) if reg else None
+    return {"uploaded": file.filename, "trainers_registered": count, "trainer": trainer_data}
 
 
 @router.post("/scan")

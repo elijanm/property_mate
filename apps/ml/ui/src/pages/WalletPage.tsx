@@ -26,6 +26,26 @@ function formatDate(iso: string): string {
   })
 }
 
+/**
+ * Smart USD formatter: always shows at least 4 significant figures.
+ * - ≥ $0.01   → 4 decimal places  ($1.2345)
+ * - ≥ $0.0001 → 6 decimal places  ($0.001234)
+ * - ≥ $0.000001 → 8 decimal places ($0.00001234)
+ * - smaller   → scientific notation (1.23e-9)
+ */
+function fmtUsd(amount: number, forceSign = false): string {
+  const sign = forceSign && amount > 0 ? '+' : ''
+  const abs = Math.abs(amount)
+  let formatted: string
+  if (abs === 0) formatted = '0.0000'
+  else if (abs >= 0.01) formatted = abs.toFixed(4)
+  else if (abs >= 0.0001) formatted = abs.toFixed(6)
+  else if (abs >= 0.000001) formatted = abs.toFixed(8)
+  else if (abs >= 0.00000001) formatted = abs.toFixed(10)
+  else formatted = abs.toExponential(4)
+  return `${sign}${amount < 0 ? '-' : ''}${formatted}`
+}
+
 const LOCAL_HOUR_PRICE_USD = 0.50
 
 function formatResetDate(iso: string | null): string {
@@ -243,19 +263,36 @@ export default function WalletPage() {
             </div>
             <div className="text-4xl font-bold text-white tabular-nums">
               <span className="text-gray-400 text-2xl mr-1">$</span>
-              <span className="text-emerald-400">{(wallet?.balance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+              <span className="text-emerald-400">{fmtUsd(wallet?.balance ?? 0)}</span>
               <span className="text-gray-600 text-base ml-2">USD</span>
             </div>
-            <div className="mt-2 flex items-center gap-4 text-xs text-gray-500">
-              <span>
-                Reserved:{' '}
-                <span className="text-amber-400 font-medium">
-                  ${(wallet?.reserved ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
-                </span>
-              </span>
-              <span className="text-gray-700">·</span>
-              <span className="text-gray-600 text-[11px]">{wallet?.user_email}</span>
+
+            {/* Balance breakdown */}
+            <div className="mt-3 flex items-center gap-3 flex-wrap">
+              {(wallet?.standard_balance ?? 0) > 0 && (
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-950/40 border border-sky-800/40">
+                  <span className="w-1.5 h-1.5 rounded-full bg-sky-400 flex-shrink-0" />
+                  <span className="text-[11px] text-sky-300 font-medium">Standard compute</span>
+                  <span className="text-[11px] text-sky-400 font-semibold tabular-nums">${fmtUsd(wallet!.standard_balance)}</span>
+                </div>
+              )}
+              {(wallet?.general_balance ?? 0) > 0 && (
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-violet-950/40 border border-violet-800/40">
+                  <span className="w-1.5 h-1.5 rounded-full bg-violet-400 flex-shrink-0" />
+                  <span className="text-[11px] text-violet-300 font-medium">Accelerated compute</span>
+                  <span className="text-[11px] text-violet-400 font-semibold tabular-nums">${fmtUsd(wallet!.general_balance)}</span>
+                </div>
+              )}
+              {(wallet?.reserved ?? 0) > 0 && (
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-950/40 border border-amber-800/40">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse flex-shrink-0" />
+                  <span className="text-[11px] text-amber-300 font-medium">Reserved</span>
+                  <span className="text-[11px] text-amber-400 font-semibold tabular-nums">${fmtUsd(wallet!.reserved)}</span>
+                </div>
+              )}
             </div>
+
+            <div className="mt-2 text-[11px] text-gray-600">{wallet?.user_email}</div>
           </div>
 
           <button
@@ -367,7 +404,7 @@ export default function WalletPage() {
                       'font-medium',
                       wallet && wallet.balance >= parseFloat(buyHoursAmount) * LOCAL_HOUR_PRICE_USD ? 'text-emerald-400' : 'text-red-400',
                     )}>
-                      ${wallet?.balance.toFixed(2)} USD available
+                      ${fmtUsd(wallet?.balance ?? 0)} USD available
                     </span>
                   </p>
                 )}
@@ -678,10 +715,13 @@ export default function WalletPage() {
                         'px-4 py-3 text-right font-mono font-semibold text-sm tabular-nums',
                         tx.type === 'credit' || tx.type === 'release' ? 'text-emerald-400' : 'text-red-400',
                       )}>
-                        {style.sign}{tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {style.sign}{fmtUsd(tx.amount)}
+                        {tx.standard_amount > 0 && tx.standard_amount < tx.amount && (
+                          <span className="block text-[9px] text-sky-500 font-normal">{fmtUsd(tx.standard_amount)} std</span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-right text-gray-400 font-mono text-xs tabular-nums">
-                        {tx.balance_after.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {fmtUsd(tx.balance_after)}
                       </td>
                     </tr>
                   )

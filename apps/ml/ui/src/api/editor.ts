@@ -51,4 +51,13 @@ export const editorApi = {
   /** Returns the URL for the SSE log stream (pass JWT token as ?token=) */
   logStreamUrl: (jobId: string, token: string) =>
     `/api/v1/editor/run/${jobId}/stream?token=${encodeURIComponent(token)}`,
+
+  generateTrainer: (payload: {
+    description: string
+    data_source_type?: string
+    framework?: string
+    class_name?: string
+    extra_notes?: string
+  }) =>
+    client.post<{ code: string; model: string }>('/editor/ai-generate', payload).then(r => r.data),
 }

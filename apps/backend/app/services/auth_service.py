@@ -1,15 +1,19 @@
 import json
+import random
 import uuid
 from datetime import timedelta
 from typing import Optional
 
 import structlog
+from fastapi import HTTPException
 from jose import jwt
 from passlib.context import CryptContext
 from redis.asyncio import Redis
 
 from app.core.config import settings
+from app.core.email import send_email, signup_otp_html
 from app.core.exceptions import UnauthorizedError
+from app.models.org import Org
 from app.models.user import User
 from app.repositories.user_repository import user_repository
 from app.schemas.auth import LoginResponse, RefreshResponse, UserInfo
@@ -143,4 +147,118 @@ async def logout(refresh_token: str, redis: Redis) -> None:
         action="logout",
         resource_type="user",
         status="success",
+    )
+
+
+_SIGNUP_OTP_KEY_PREFIX = "signup_otp:"
+_SIGNUP_OTP_TTL = 600  # 10 minutes
+
+
+async def signup_request(
+    email: str,
+    password: str,
+    first_name: str,
+    last_name: str,
+    org_name: str,
+    redis: Redis,
+) -> dict:
+    logger.info(
+        "signup_request_started",
+        action="signup_request",
+        resource_type="user",
+        status="started",
+    )
+
+    existing = await user_repository.get_by_email(email)
+    if existing:
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    otp = str(random.randint(100000, 999999))
+    payload = json.dumps(
+        {
+            "otp": otp,
+            "email": email,
+            "password": hash_password(password),
+            "first_name": first_name,
+            "last_name": last_name,
+            "org_name": org_name,
+        }
+    )
+    await redis.setex(f"{_SIGNUP_OTP_KEY_PREFIX}{email}", _SIGNUP_OTP_TTL, payload)
+
+    await send_email(
+        email,
+        "Your PMS verification code",
+        signup_otp_html(first_name, otp, org_name),
+    )
+
+    logger.info(
+        "signup_otp_sent",
+        action="signup_request",
+        resource_type="user",
+        status="success",
+    )
+
+    return {"message": "OTP sent to your email"}
+
+
+async def signup_verify(email: str, otp: str, redis: Redis) -> LoginResponse:
+    logger.info(
+        "signup_verify_started",
+        action="signup_verify",
+        resource_type="user",
+        status="started",
+    )
+
+    raw = await redis.get(f"{_SIGNUP_OTP_KEY_PREFIX}{email}")
+    if not raw:
+        raise HTTPException(status_code=400, detail="OTP expired or not found")
+
+    data = json.loads(raw)
+    if data["otp"] != otp:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+
+    # Consume the OTP
+    await redis.delete(f"{_SIGNUP_OTP_KEY_PREFIX}{email}")
+
+    # Create the org
+    org_id = f"org_{uuid.uuid4().hex[:12]}"
+    org = Org(org_id=org_id)
+    await org.insert()
+
+    # Create the owner user
+    user = User(
+        email=email,
+        hashed_password=data["password"],
+        org_id=org_id,
+        role="owner",
+        first_name=data["first_name"],
+        last_name=data["last_name"],
+        is_active=True,
+    )
+    await user.insert()
+
+    user_id_str = str(user.id)
+    access_token = create_access_token(user_id_str, org_id, "owner")
+    refresh_token = await _create_refresh_token(user_id_str, org_id, redis)
+
+    logger.info(
+        "signup_verify_success",
+        action="signup_verify",
+        resource_type="user",
+        resource_id=user_id_str,
+        org_id=org_id,
+        user_id=user_id_str,
+        status="success",
+    )
+
+    return LoginResponse(
+        token=access_token,
+        refresh_token=refresh_token,
+        user=UserInfo(
+            user_id=user_id_str,
+            org_id=org_id,
+            role="owner",
+            email=str(user.email),
+        ),
     )
