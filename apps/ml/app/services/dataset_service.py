@@ -5,10 +5,29 @@ from fastapi import UploadFile, HTTPException
 from beanie import PydanticObjectId
 import structlog
 
-from app.models.dataset import DatasetProfile, DatasetCollector, DatasetEntry, DatasetField, slugify
+from app.models.dataset import DatasetProfile, DatasetCollector, DatasetEntry, DatasetField, EntryLocation, slugify
 from app.utils.s3_url import generate_presigned_url
 from app.utils.datetime import utc_now
 from app.core.config import settings
+
+
+async def _check_rewards_balance(org_id: str, acting_email: str) -> None:
+    """Raise 400 if the org's wallet balance is below the minimum required to enable rewards."""
+    from app.services.reward_service import get_reward_config
+    from app.models.wallet import Wallet
+    cfg = await get_reward_config()
+    wallet = await Wallet.find_one(Wallet.user_email == acting_email, Wallet.org_id == org_id)
+    balance = wallet.balance if wallet else 0.0
+    if balance < cfg.min_org_balance_usd:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Insufficient wallet balance to enable rewards. "
+                f"Your balance is ${balance:.2f} USD. "
+                f"A minimum of ${cfg.min_org_balance_usd:.2f} USD is required. "
+                f"Please top up your wallet first."
+            ),
+        )
 
 
 def _oid(value: str) -> PydanticObjectId:
@@ -19,6 +38,42 @@ def _oid(value: str) -> PydanticObjectId:
         raise HTTPException(status_code=404, detail="Invalid ID format")
 
 logger = structlog.get_logger(__name__)
+
+
+# ── IP geolocation ─────────────────────────────────────────────────────────────
+
+async def _geolocate_ip(ip: str) -> dict:
+    """Best-effort IP geolocation via ip-api.com (free, no key needed, 45 req/min)."""
+    if not ip or ip in ("127.0.0.1", "::1", ""):
+        return {}
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=3) as client:
+            r = await client.get(
+                f"http://ip-api.com/json/{ip}",
+                params={"fields": "status,country,countryCode,city,timezone,isp"},
+            )
+        data = r.json()
+        if data.get("status") != "success":
+            return {}
+        return {
+            "country": data.get("countryCode"),
+            "country_name": data.get("country"),
+            "city": data.get("city"),
+            "timezone": data.get("timezone"),
+            "isp": data.get("isp"),
+        }
+    except Exception:
+        return {}
+
+
+def _extract_client_ip(request_headers: dict, client_host: Optional[str]) -> Optional[str]:
+    """Extract real client IP from request, preferring forwarded headers."""
+    for header in ("x-forwarded-for", "x-real-ip", "cf-connecting-ip"):
+        val = request_headers.get(header, "").split(",")[0].strip()
+        if val:
+            return val
+    return client_host or None
 
 
 # ── Dataset profile ────────────────────────────────────────────────────────────
@@ -63,7 +118,9 @@ async def _unique_slug(org_id: str, base_slug: str, exclude_id: str | None = Non
         n += 1
 
 
-async def create_dataset(org_id: str, data: dict, created_by: str) -> DatasetProfile:
+async def create_dataset(org_id: str, data: dict, created_by: str, acting_email: str = "") -> DatasetProfile:
+    if data.get("points_enabled"):
+        await _check_rewards_balance(org_id, acting_email or created_by)
     fields_raw = data.pop("fields", [])
     fields = [DatasetField(**f) if isinstance(f, dict) else f for f in fields_raw]
     raw_slug = data.pop("slug", None)
@@ -182,8 +239,11 @@ async def set_visibility(org_id: str, dataset_id: str, visibility: str) -> Datas
     return profile
 
 
-async def update_dataset(org_id: str, dataset_id: str, data: dict) -> DatasetProfile:
+async def update_dataset(org_id: str, dataset_id: str, data: dict, acting_email: str = "") -> DatasetProfile:
     profile = await get_dataset(org_id, dataset_id)
+    # Enabling rewards for the first time → check wallet balance
+    if data.get("points_enabled") and not profile.points_enabled:
+        await _check_rewards_balance(org_id, acting_email or profile.created_by)
     if "fields" in data:
         fields_raw = data.pop("fields")
         data["fields"] = [DatasetField(**f) if isinstance(f, dict) else f for f in fields_raw]
@@ -338,6 +398,8 @@ async def get_form_definition(token: str) -> dict:
             "points_enabled": profile.points_enabled,
             "points_per_entry": profile.points_per_entry,
             "points_redemption_info": profile.points_redemption_info,
+            "require_location": profile.require_location,
+            "location_purpose": profile.location_purpose,
         },
         "collector": {
             "id": str(collector.id),
@@ -355,6 +417,10 @@ async def submit_entry(
     file: Optional[UploadFile],
     text_value: Optional[str],
     description: Optional[str],
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+    accuracy: Optional[float] = None,
+    client_ip: Optional[str] = None,
 ) -> dict:
     collector = await get_collector_by_token(token)
     profile = await DatasetProfile.find_one(DatasetProfile.id == _oid(collector.dataset_id))
@@ -388,6 +454,18 @@ async def submit_entry(
         file_key = s3_key
         file_mime = mime
 
+    # ── Location metadata ─────────────────────────────────────────────────────
+    location: Optional[EntryLocation] = None
+    if lat is not None and lng is not None:
+        location = EntryLocation(lat=lat, lng=lng, accuracy=accuracy, source="gps", ip_address=client_ip)
+    elif client_ip:
+        geo = await _geolocate_ip(client_ip)
+        location = EntryLocation(
+            source="ip",
+            ip_address=client_ip,
+            **geo,
+        )
+
     entry = DatasetEntry(
         org_id=profile.org_id,
         dataset_id=str(profile.id),
@@ -398,6 +476,7 @@ async def submit_entry(
         text_value=text_value,
         description=description,
         points_awarded=profile.points_per_entry if profile.points_enabled else 0,
+        location=location,
     )
     await entry.insert()
 
@@ -488,6 +567,116 @@ async def get_collector_points(token: str) -> dict:
         "entry_count": collector.entry_count,
         "points_enabled": profile.points_enabled if profile else False,
         "points_redemption_info": profile.points_redemption_info if profile else "",
+    }
+
+
+# ── Dataset overview / location analytics ──────────────────────────────────────
+
+async def get_dataset_overview(org_id: str, dataset_id: str) -> dict:
+    """Return a rich summary of a dataset: entry stats, collector stats, location breakdown, daily trend."""
+    from collections import defaultdict
+    from datetime import datetime, timezone, timedelta
+
+    profile = await get_dataset(org_id, dataset_id)
+    resolve_id = profile.source_dataset_id if profile.reference_type == "reference" and profile.source_dataset_id else dataset_id
+
+    entries = await DatasetEntry.find(DatasetEntry.dataset_id == resolve_id).to_list()
+    collectors = await DatasetCollector.find(
+        DatasetCollector.dataset_id == resolve_id,
+        DatasetCollector.deleted_at == None,
+    ).to_list()
+
+    total_entries = len(entries)
+    total_collectors = len(collectors)
+    total_points_awarded = sum(e.points_awarded for e in entries)
+
+    # ── Location breakdown ────────────────────────────────────────────────────
+    gps_count = 0
+    ip_count = 0
+    no_location = 0
+    country_counts: dict = defaultdict(int)
+    city_counts: dict = defaultdict(int)
+    gps_points: list = []
+
+    for e in entries:
+        if not e.location:
+            no_location += 1
+            continue
+        if e.location.source == "gps":
+            gps_count += 1
+            if e.location.lat is not None and e.location.lng is not None:
+                gps_points.append({"lat": e.location.lat, "lng": e.location.lng})
+        else:
+            ip_count += 1
+        if e.location.country:
+            country_counts[e.location.country] += 1
+        if e.location.city and e.location.country:
+            city_counts[f"{e.location.city}, {e.location.country}"] += 1
+
+    countries = sorted(
+        [{"code": k, "count": v} for k, v in country_counts.items()],
+        key=lambda x: x["count"], reverse=True,
+    )
+    cities = sorted(
+        [{"name": k, "count": v} for k, v in city_counts.items()],
+        key=lambda x: x["count"], reverse=True,
+    )[:10]
+
+    # ── Daily trend (last 14 days) ────────────────────────────────────────────
+    now = datetime.now(timezone.utc)
+    day_counts: dict = defaultdict(int)
+    for e in entries:
+        ts = e.captured_at
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if now - ts <= timedelta(days=14):
+            day_counts[ts.strftime("%Y-%m-%d")] += 1
+
+    daily_trend = []
+    for i in range(13, -1, -1):
+        d = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+        daily_trend.append({"date": d, "count": day_counts.get(d, 0)})
+
+    # ── Top collectors ────────────────────────────────────────────────────────
+    top_collectors = sorted(
+        [{"name": c.name or c.email, "email": c.email, "entries": c.entry_count, "points": c.points_earned}
+         for c in collectors],
+        key=lambda x: x["entries"], reverse=True,
+    )[:10]
+
+    # ── Field breakdown ───────────────────────────────────────────────────────
+    field_counts: dict = defaultdict(int)
+    for e in entries:
+        field_counts[e.field_id] += 1
+    field_label_map = {f.id: f.label for f in profile.fields}
+    field_breakdown = [
+        {"field_id": fid, "label": field_label_map.get(fid, fid), "count": cnt}
+        for fid, cnt in sorted(field_counts.items(), key=lambda x: x[1], reverse=True)
+    ]
+
+    return {
+        "dataset_id": dataset_id,
+        "name": profile.name,
+        "status": profile.status,
+        "require_location": profile.require_location,
+        "summary": {
+            "total_entries": total_entries,
+            "total_collectors": total_collectors,
+            "total_points_awarded": total_points_awarded,
+            "active_collectors": sum(1 for c in collectors if c.status == "active"),
+        },
+        "location": {
+            "gps_count": gps_count,
+            "ip_count": ip_count,
+            "no_location": no_location,
+            "gps_pct": round(gps_count / total_entries * 100, 1) if total_entries else 0,
+            "countries": countries,
+            "cities": cities,
+            "gps_points": gps_points[:500],  # cap for frontend rendering
+        },
+        "daily_trend": daily_trend,
+        "top_collectors": top_collectors,
+        "field_breakdown": field_breakdown,
     }
 
 

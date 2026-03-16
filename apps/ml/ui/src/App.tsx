@@ -29,6 +29,9 @@ import DatasetPage from './pages/DatasetPage'
 import AnnotatePage from './pages/AnnotatePage'
 import CodeEditorPage from './pages/CodeEditorPage'
 import CollectPage from './pages/CollectPage'
+import StaffPage from './pages/StaffPage'
+import AnnotatorPortalPage from './pages/AnnotatorPortalPage'
+import ClaimAccountPage from './pages/ClaimAccountPage'
 import { walletApi } from './api/wallet'
 import type { Wallet as WalletData } from './types/wallet'
 import { useAuth } from './context/AuthContext'
@@ -48,7 +51,7 @@ import {
   Upload, Play, Settings, List, Activity, Shield,
   FlaskConical, Bell, Key, Layers, ClipboardList, GitCompare,
   LogOut, User, Loader2, Users, Wallet, BarChart2, Database, Code2,
-  ChevronRight, ChevronDown, DollarSign, Pencil,
+  ChevronRight, ChevronDown, DollarSign, Pencil, UserCheck,
 } from 'lucide-react'
 import Logo from './components/Logo'
 import clsx from 'clsx'
@@ -58,7 +61,7 @@ const _params = new URLSearchParams(window.location.search)
 const _RESET_TOKEN_FROM_URL  = _params.get('reset_token')
 const _VERIFY_TOKEN_FROM_URL = _params.get('token') ?? _params.get('verify_token')
 
-type Page = 'models' | 'trainers' | 'editor' | 'annotate' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing' | 'usage'
+type Page = 'models' | 'trainers' | 'editor' | 'annotate' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing' | 'usage' | 'staff'
 
 type NavGroup = {
   id: string
@@ -105,6 +108,14 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
+    id: 'team',
+    label: 'Team',
+    icon: <Users size={16} />,
+    items: [
+      { id: 'staff', label: 'Staff', icon: <UserCheck size={14} /> },
+    ],
+  },
+  {
     id: 'admin',
     label: 'Admin',
     icon: <Shield size={16} />,
@@ -147,6 +158,7 @@ const PAGE_TITLE: Record<Page, string> = {
   wallet:      'Wallet',
   billing:     'Billing Settings',
   usage:       'Usage Tracker',
+  staff:       'Staff Management',
 }
 
 export default function App() {
@@ -257,6 +269,15 @@ export default function App() {
   })()
   if (collectToken) return <CollectPage token={collectToken} />
 
+  // Claim account page — /claim/<collector_token>
+  const claimToken = (() => {
+    const hash = window.location.hash.replace('#', '')
+    if (hash.startsWith('claim/')) return hash.slice(6)
+    const m = window.location.pathname.match(/\/claim\/([^/]+)/)
+    return m ? m[1] : null
+  })()
+  if (claimToken) return <ClaimAccountPage token={claimToken} />
+
   // Reset password link — show form regardless of auth state
   if (resetToken && authPage === 'reset-password') {
     return <ResetPasswordPage token={resetToken} onDone={() => { setResetToken(null); setAuthPage('login') }} />
@@ -356,6 +377,11 @@ export default function App() {
     return authPage === 'login'
       ? <LoginPage onGoRegister={() => setAuthPage('register')} onForgotPassword={() => setAuthPage('forgot-password')} />
       : <RegisterPage onGoLogin={() => setAuthPage('login')} />
+  }
+
+  // Annotators get their own mobile portal — no sidebar
+  if (user?.role === 'annotator') {
+    return <AnnotatorPortalPage />
   }
 
   return (
@@ -649,6 +675,7 @@ export default function App() {
               {page === 'wallet' && <WalletPage />}
               {page === 'billing' && <BillingSettingsPage />}
               {page === 'usage' && <UsageTrackerPage />}
+              {page === 'staff' && <StaffPage />}
             </div>
           )}
         </div>

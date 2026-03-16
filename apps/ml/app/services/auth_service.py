@@ -117,8 +117,9 @@ async def register(
     existing = await MLUser.find_one({"email": email})
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
-    # Each self-signup creates a new isolated workspace; admin-created users share org_id
-    if not org_id:
+    # Annotators are platform-level — no org workspace
+    # All other self-signups create an isolated workspace
+    if not org_id and role != "annotator":
         org_id = str(uuid.uuid4())
 
     otp = _gen_otp()

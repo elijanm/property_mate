@@ -58,10 +58,17 @@ class DatasetProfile(Document):
     # Cached stats for public listing (updated on entry submit)
     entry_count_cache: int = 0
 
+    # Contributor task discovery — when True, appears in annotator task feed
+    discoverable: bool = False
+
     # Points / incentive system
     points_enabled: bool = False
     points_per_entry: int = 1                     # points awarded per field submission
     points_redemption_info: str = ""              # e.g. "100 pts = KES 10 airtime"
+
+    # Location tracking
+    require_location: bool = False                # if True, collector is prompted to share GPS location
+    location_purpose: str = ""                    # shown to collector: why location is needed
 
     created_by: str = ""
     created_at: datetime = Field(default_factory=utc_now)
@@ -89,6 +96,20 @@ class DatasetCollector(Document):
         name = "dataset_collectors"
 
 
+class EntryLocation(BaseModel):
+    """GPS or IP-derived location captured at submission time."""
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    accuracy: Optional[float] = None             # GPS accuracy in metres
+    source: str = "ip"                           # "gps" | "ip"
+    ip_address: Optional[str] = None
+    country: Optional[str] = None               # ISO 3166-1 alpha-2 e.g. "KE"
+    country_name: Optional[str] = None
+    city: Optional[str] = None
+    timezone: Optional[str] = None
+    isp: Optional[str] = None
+
+
 class DatasetEntry(Document):
     org_id: str = ""
     dataset_id: str
@@ -100,6 +121,7 @@ class DatasetEntry(Document):
     text_value: Optional[str] = None             # text / number fields
     description: Optional[str] = None            # collector-provided description
     points_awarded: int = 0
+    location: Optional[EntryLocation] = None     # GPS or IP-based location metadata
     captured_at: datetime = Field(default_factory=utc_now)
 
     class Settings:

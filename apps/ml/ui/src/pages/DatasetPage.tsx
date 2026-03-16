@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, Globe, Lock, GitFork, Link2 } from 'lucide-react'
+import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, Globe, Lock, GitFork, Link2, BarChart2, MapPin, TrendingUp, Award } from 'lucide-react'
+import type { DatasetOverview } from '@/types/dataset'
 import clsx from 'clsx'
 import { datasetsApi } from '@/api/datasets'
 import { modelsApi } from '@/api/models'
+import { annotatorApi } from '@/api/annotator'
+import { walletApi } from '@/api/wallet'
 import type { ModelDeployment } from '@/types/trainer'
 import type { DatasetProfile, DatasetCollector, DatasetField, DatasetCreatePayload, FieldType, CaptureMode, DescriptionMode } from '@/types/dataset'
 
@@ -302,15 +305,22 @@ function DatasetSlideOver({
   const [fields, setFields] = useState<Omit<DatasetField, 'id'>[]>(
     initial?.fields?.map(({ id: _id, ...rest }) => rest) ?? [BLANK_FIELD()]
   )
+  const [discoverable, setDiscoverable] = useState(initial?.discoverable ?? false)
   const [pointsEnabled, setPointsEnabled] = useState(initial?.points_enabled ?? false)
   const [pointsPer, setPointsPer] = useState(initial?.points_per_entry ?? 1)
-  const [pointsInfo, setPointsInfo] = useState(initial?.points_redemption_info ?? '')
+  const [pointsInfo] = useState(initial?.points_redemption_info ?? '')
+  const [requireLocation, setRequireLocation] = useState(initial?.require_location ?? false)
+  const [locationPurpose, setLocationPurpose] = useState(initial?.location_purpose ?? '')
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
   const [deployments, setDeployments] = useState<ModelDeployment[]>([])
+  const [platformRate, setPlatformRate] = useState<{ point_value_usd: number; rate_label: string; min_org_balance_usd?: number } | null>(null)
+  const [walletBalance, setWalletBalance] = useState<number | null>(null)
 
   useEffect(() => {
     modelsApi.list({ include_all: true }).then(setDeployments).catch(() => {})
+    annotatorApi.getRewardRate().then(r => setPlatformRate(r as any)).catch(() => {})
+    walletApi.get().then(w => setWalletBalance(w.balance)).catch(() => {})
   }, [])
 
   const save = async () => {
@@ -321,8 +331,11 @@ function DatasetSlideOver({
         name, ...(slug.trim() ? { slug: slug.trim() } : {}),
         description: desc, category,
         fields: fields.map((f, i) => ({ ...f, order: i })),
+        discoverable,
         points_enabled: pointsEnabled, points_per_entry: pointsPer,
         points_redemption_info: pointsInfo,
+        require_location: requireLocation,
+        location_purpose: locationPurpose,
       }
       const result = initial
         ? await datasetsApi.update(initial.id, payload)
@@ -398,6 +411,22 @@ function DatasetSlideOver({
             </div>
           </div>
 
+          {/* Discoverable */}
+          <label className="flex items-start gap-3 bg-gray-800/50 border border-gray-700/50 rounded-xl p-4 cursor-pointer hover:border-indigo-600/50 transition-colors">
+            <input
+              type="checkbox"
+              checked={discoverable}
+              onChange={e => setDiscoverable(e.target.checked)}
+              className="mt-0.5 accent-indigo-500 w-4 h-4 cursor-pointer"
+            />
+            <div>
+              <p className="text-sm font-semibold text-white">Open to contributors</p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                When enabled, any annotator can discover this dataset in their task feed and start contributing.
+              </p>
+            </div>
+          </label>
+
           {/* Points */}
           <div className="border border-gray-700/50 rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between">
@@ -409,6 +438,14 @@ function DatasetSlideOver({
                 {pointsEnabled ? <ToggleRight size={28} className="text-emerald-500" /> : <ToggleLeft size={28} />}
               </button>
             </div>
+            {pointsEnabled && walletBalance !== null && platformRate?.min_org_balance_usd !== undefined && walletBalance < platformRate.min_org_balance_usd && (
+              <div className="flex items-start gap-2 bg-amber-900/20 border border-amber-800/40 rounded-lg px-3 py-2.5 text-xs text-amber-300">
+                <Award size={14} className="shrink-0 mt-0.5" />
+                <span>
+                  Your wallet balance is <strong>${walletBalance.toFixed(2)}</strong> — a minimum of <strong>${platformRate.min_org_balance_usd.toFixed(2)} USD</strong> is required to enable rewards. <span className="text-amber-400 underline cursor-pointer" onClick={() => window.location.href = '/billing'}>Top up wallet →</span>
+                </span>
+              </div>
+            )}
             {pointsEnabled && (
               <div className="space-y-3 pt-1">
                 <div>
@@ -416,11 +453,42 @@ function DatasetSlideOver({
                   <input type="number" min={1} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
                     value={pointsPer} onChange={e => setPointsPer(Number(e.target.value))} />
                 </div>
-                <div>
-                  <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Redemption info (shown to collectors)</label>
-                  <input className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
-                    placeholder="e.g. 100 points = KES 10 airtime" value={pointsInfo} onChange={e => setPointsInfo(e.target.value)} />
-                </div>
+                {platformRate && (
+                  <div className="bg-gray-900/60 border border-gray-700/50 rounded-lg px-3 py-2.5 text-xs text-gray-400 space-y-1">
+                    <div className="flex justify-between">
+                      <span>Platform rate:</span>
+                      <span className="text-white font-semibold">{platformRate.rate_label}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>{pointsPer} pts/entry =</span>
+                      <span className="text-amber-400 font-semibold">
+                        ~${(pointsPer * platformRate.point_value_usd).toFixed(4)} USD per entry
+                      </span>
+                    </div>
+                    <p className="text-gray-600 pt-0.5">Rate is set by platform admin and shown to collectors automatically.</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Location tracking */}
+          <div className="bg-gray-800/50 rounded-xl p-4 border border-gray-700/40 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-white flex items-center gap-1.5"><MapPin size={13} className="text-amber-400" /> Location Tracking</p>
+                <p className="text-xs text-gray-500 mt-0.5">Attach GPS or IP location to every submission</p>
+              </div>
+              <button onClick={() => setRequireLocation(v => !v)} className="text-gray-400 hover:text-white transition-colors">
+                {requireLocation ? <ToggleRight size={28} className="text-amber-500" /> : <ToggleLeft size={28} />}
+              </button>
+            </div>
+            {requireLocation && (
+              <div>
+                <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Why location is needed (shown to collector)</label>
+                <input className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-amber-500"
+                  placeholder="e.g. We verify data is collected in the field, not remotely"
+                  value={locationPurpose} onChange={e => setLocationPurpose(e.target.value)} />
               </div>
             )}
           </div>
@@ -530,13 +598,14 @@ function InviteModal({ dataset, onClose }: { dataset: DatasetProfile; onClose: (
 // ── Dataset card ─────────────────────────────────────────────────────────────
 
 function DatasetCard({
-  dataset, onEdit, onDelete, onInvite, onView, onVisibilityToggle,
+  dataset, onEdit, onDelete, onInvite, onView, onOverview, onVisibilityToggle,
 }: {
   dataset: DatasetProfile
   onEdit: () => void
   onDelete: () => void
   onInvite: () => void
   onView: () => void
+  onOverview: () => void
   onVisibilityToggle: (v: 'private' | 'public') => void
 }) {
   const isRef   = dataset.reference_type === 'reference'
@@ -578,6 +647,11 @@ function DatasetCard({
             {isClone && (
               <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-teal-900/40 border border-teal-800/40 text-teal-400 font-semibold">
                 <GitFork size={9} /> Cloned
+              </span>
+            )}
+            {dataset.discoverable && (
+              <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-indigo-900/40 border border-indigo-800/40 text-indigo-400 font-semibold">
+                <Users size={9} /> Open to contributors
               </span>
             )}
             {dataset.points_enabled && (
@@ -626,6 +700,10 @@ function DatasetCard({
         <button onClick={onView}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-700/50 hover:bg-gray-700 text-gray-300 text-xs rounded-lg transition-colors">
           <Eye size={11} /> Entries
+        </button>
+        <button onClick={onOverview}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-900/30 hover:bg-indigo-900/50 border border-indigo-800/40 text-indigo-400 text-xs rounded-lg transition-colors">
+          <BarChart2 size={11} /> Overview
         </button>
         {!isRef && (
           <button onClick={onEdit}
@@ -712,6 +790,195 @@ function PublicDatasetCard({
         <div className="ml-auto text-[10px] text-gray-600 text-right">
           <p>Clone = your own copy</p>
           <p>Reference = read-only, no storage</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Overview panel ────────────────────────────────────────────────────────────
+
+const COUNTRY_FLAGS: Record<string, string> = {
+  KE: '🇰🇪', TZ: '🇹🇿', UG: '🇺🇬', NG: '🇳🇬', GH: '🇬🇭', ET: '🇪🇹', RW: '🇷🇼',
+  US: '🇺🇸', GB: '🇬🇧', IN: '🇮🇳', ZA: '🇿🇦', EG: '🇪🇬', SN: '🇸🇳',
+}
+
+function OverviewPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: () => void }) {
+  const [overview, setOverview] = useState<DatasetOverview | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    datasetsApi.getOverview(dataset.id).then(setOverview).finally(() => setLoading(false))
+  }, [dataset.id])
+
+  const maxCount = overview ? Math.max(...overview.daily_trend.map(d => d.count), 1) : 1
+
+  return (
+    <div className="fixed inset-0 z-50 flex">
+      <div className="flex-1 bg-black/50" onClick={onClose} />
+      <div className="w-full max-w-2xl bg-gray-900 shadow-2xl flex flex-col overflow-hidden">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+          <div>
+            <h2 className="text-base font-semibold text-white">{dataset.name} — Overview</h2>
+            <p className="text-xs text-gray-500 mt-0.5">Entry stats, location breakdown, and collection trend</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-400"><X size={16} /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+          {loading && <div className="text-center py-20 text-gray-500 text-sm">Loading overview…</div>}
+
+          {overview && <>
+            {/* Summary cards */}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {[
+                { label: 'Total Entries', value: overview.summary.total_entries, icon: <Database size={14} className="text-indigo-400" /> },
+                { label: 'Collectors', value: overview.summary.total_collectors, icon: <Users size={14} className="text-sky-400" /> },
+                { label: 'Active', value: overview.summary.active_collectors, icon: <TrendingUp size={14} className="text-emerald-400" /> },
+                { label: 'Points Awarded', value: overview.summary.total_points_awarded, icon: <Award size={14} className="text-amber-400" /> },
+              ].map(c => (
+                <div key={c.label} className="bg-gray-800/60 rounded-xl p-3 border border-gray-700/50">
+                  <div className="flex items-center gap-1.5 mb-1">{c.icon}<span className="text-[10px] text-gray-400">{c.label}</span></div>
+                  <p className="text-xl font-bold text-white">{c.value.toLocaleString()}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Daily trend */}
+            <div>
+              <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                <TrendingUp size={12} /> Submissions — Last 14 Days
+              </h3>
+              <div className="flex items-end gap-1 h-20">
+                {overview.daily_trend.map(d => (
+                  <div key={d.date} className="flex-1 flex flex-col items-center gap-1 group relative">
+                    <div
+                      className="w-full bg-indigo-600/70 hover:bg-indigo-500 rounded-t transition-all"
+                      style={{ height: `${Math.max((d.count / maxCount) * 64, d.count > 0 ? 4 : 2)}px` }}
+                    />
+                    <div className="absolute -top-6 left-1/2 -translate-x-1/2 hidden group-hover:block bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-[10px] text-white whitespace-nowrap z-10">
+                      {d.date.slice(5)}: {d.count}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-between text-[10px] text-gray-600 mt-1">
+                <span>{overview.daily_trend[0]?.date.slice(5)}</span>
+                <span>{overview.daily_trend[overview.daily_trend.length - 1]?.date.slice(5)}</span>
+              </div>
+            </div>
+
+            {/* Location breakdown */}
+            <div>
+              <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                <MapPin size={12} /> Location Coverage
+              </h3>
+              {overview.summary.total_entries === 0 ? (
+                <p className="text-xs text-gray-500">No entries yet.</p>
+              ) : (
+                <>
+                  {/* GPS vs IP summary */}
+                  <div className="flex gap-3 mb-3">
+                    <div className="flex-1 bg-emerald-900/20 border border-emerald-800/30 rounded-xl p-3 text-center">
+                      <p className="text-lg font-bold text-emerald-400">{overview.location.gps_count}</p>
+                      <p className="text-[10px] text-emerald-500">GPS ({overview.location.gps_pct}%)</p>
+                    </div>
+                    <div className="flex-1 bg-sky-900/20 border border-sky-800/30 rounded-xl p-3 text-center">
+                      <p className="text-lg font-bold text-sky-400">{overview.location.ip_count}</p>
+                      <p className="text-[10px] text-sky-500">IP-based</p>
+                    </div>
+                    <div className="flex-1 bg-gray-800/50 border border-gray-700/40 rounded-xl p-3 text-center">
+                      <p className="text-lg font-bold text-gray-400">{overview.location.no_location}</p>
+                      <p className="text-[10px] text-gray-500">No location</p>
+                    </div>
+                  </div>
+
+                  {/* Country breakdown */}
+                  {overview.location.countries.length > 0 && (
+                    <div className="space-y-2">
+                      {overview.location.countries.slice(0, 8).map(c => {
+                        const total = overview.summary.total_entries
+                        const pct = total ? Math.round(c.count / total * 100) : 0
+                        return (
+                          <div key={c.code} className="flex items-center gap-2">
+                            <span className="text-base w-6 text-center">{COUNTRY_FLAGS[c.code] ?? '🌍'}</span>
+                            <span className="text-xs text-gray-300 w-16 shrink-0">{c.code}</span>
+                            <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
+                              <div className="h-full bg-indigo-600 rounded-full" style={{ width: `${pct}%` }} />
+                            </div>
+                            <span className="text-xs text-gray-400 w-10 text-right">{c.count}</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+
+                  {/* Top cities */}
+                  {overview.location.cities.length > 0 && (
+                    <div className="mt-3">
+                      <p className="text-[10px] text-gray-500 mb-2">Top cities</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {overview.location.cities.map(city => (
+                          <span key={city.name} className="flex items-center gap-1 bg-gray-800/60 border border-gray-700/40 text-gray-300 text-[10px] px-2 py-0.5 rounded-full">
+                            <MapPin size={8} /> {city.name} <span className="text-gray-500">·{city.count}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Field breakdown */}
+            {overview.field_breakdown.length > 0 && (
+              <div>
+                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                  <Database size={12} /> Entries by Field
+                </h3>
+                <div className="space-y-2">
+                  {overview.field_breakdown.map(f => {
+                    const pct = overview.summary.total_entries ? Math.round(f.count / overview.summary.total_entries * 100) : 0
+                    return (
+                      <div key={f.field_id} className="flex items-center gap-2">
+                        <span className="text-xs text-gray-300 flex-1 truncate">{f.label}</span>
+                        <div className="w-24 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                          <div className="h-full bg-sky-600 rounded-full" style={{ width: `${pct}%` }} />
+                        </div>
+                        <span className="text-xs text-gray-400 w-8 text-right">{f.count}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Top collectors */}
+            {overview.top_collectors.length > 0 && (
+              <div>
+                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                  <Award size={12} /> Top Collectors
+                </h3>
+                <div className="space-y-2">
+                  {overview.top_collectors.map((c, i) => (
+                    <div key={c.email} className="flex items-center gap-3 bg-gray-800/40 rounded-xl px-3 py-2">
+                      <span className="text-xs font-bold text-gray-500 w-4">#{i + 1}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs text-white font-medium truncate">{c.name}</p>
+                        <p className="text-[10px] text-gray-500 truncate">{c.email}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs font-semibold text-white">{c.entries} entries</p>
+                        {c.points > 0 && <p className="text-[10px] text-amber-400">{c.points} pts</p>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>}
         </div>
       </div>
     </div>
@@ -883,6 +1150,7 @@ export default function DatasetPage() {
   const [editTarget, setEditTarget] = useState<DatasetProfile | null>(null)
   const [inviteTarget, setInviteTarget] = useState<DatasetProfile | null>(null)
   const [viewTarget, setViewTarget] = useState<DatasetProfile | null>(null)
+  const [overviewTarget, setOverviewTarget] = useState<DatasetProfile | null>(null)
   const [busyId, setBusyId]         = useState<string | null>(null)
 
   const load = () => {
@@ -985,6 +1253,7 @@ export default function DatasetPage() {
                 onDelete={() => handleDelete(d.id)}
                 onInvite={() => setInviteTarget(d)}
                 onView={() => setViewTarget(d)}
+                onOverview={() => setOverviewTarget(d)}
                 onVisibilityToggle={v => handleVisibilityToggle(d.id, v)}
               />
             ))}
@@ -1035,6 +1304,7 @@ export default function DatasetPage() {
       )}
       {inviteTarget && <InviteModal dataset={inviteTarget} onClose={() => setInviteTarget(null)} />}
       {viewTarget && <EntriesPanel dataset={viewTarget} onClose={() => setViewTarget(null)} />}
+      {overviewTarget && <OverviewPanel dataset={overviewTarget} onClose={() => setOverviewTarget(null)} />}
     </div>
   )
 }

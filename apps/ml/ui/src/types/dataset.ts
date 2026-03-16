@@ -39,9 +39,13 @@ export interface DatasetProfile {
   source_dataset_id: string | null
   reference_type: ReferenceType
   entry_count_cache: number
+  discoverable: boolean
   points_enabled: boolean
   points_per_entry: number
   points_redemption_info: string
+  // Location tracking
+  require_location: boolean
+  location_purpose: string
   created_by: string
   created_at: string
   updated_at: string
@@ -86,6 +90,8 @@ export interface CollectFormDefinition {
     points_enabled: boolean
     points_per_entry: number
     points_redemption_info: string
+    require_location: boolean
+    location_purpose: string
   }
   collector: {
     id: string
@@ -96,6 +102,32 @@ export interface CollectFormDefinition {
   }
 }
 
+// Dataset overview / analytics
+export interface DatasetOverview {
+  dataset_id: string
+  name: string
+  status: string
+  require_location: boolean
+  summary: {
+    total_entries: number
+    total_collectors: number
+    total_points_awarded: number
+    active_collectors: number
+  }
+  location: {
+    gps_count: number
+    ip_count: number
+    no_location: number
+    gps_pct: number
+    countries: { code: string; count: number }[]
+    cities: { name: string; count: number }[]
+    gps_points: { lat: number; lng: number }[]
+  }
+  daily_trend: { date: string; count: number }[]
+  top_collectors: { name: string; email: string; entries: number; points: number }[]
+  field_breakdown: { field_id: string; label: string; count: number }[]
+}
+
 export interface DatasetCreatePayload {
   name: string
   slug?: string
@@ -103,7 +135,10 @@ export interface DatasetCreatePayload {
   category: string
   fields: Omit<DatasetField, 'id'>[]
   visibility?: DatasetVisibility
+  discoverable?: boolean
   points_enabled: boolean
   points_per_entry: number
   points_redemption_info: string
+  require_location?: boolean
+  location_purpose?: string
 }

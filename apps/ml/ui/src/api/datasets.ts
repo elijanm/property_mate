@@ -1,5 +1,5 @@
 import client from './client'
-import type { DatasetProfile, DatasetCollector, DatasetEntry, DatasetCreatePayload, CollectFormDefinition } from '@/types/dataset'
+import type { DatasetProfile, DatasetCollector, DatasetEntry, DatasetCreatePayload, CollectFormDefinition, DatasetOverview } from '@/types/dataset'
 
 export const datasetsApi = {
   list: () =>
@@ -31,6 +31,9 @@ export const datasetsApi = {
 
   getEntryCount: (id: string) =>
     client.get<{ dataset_id: string; count: number }>(`/datasets/${id}/entry-count`).then(r => r.data),
+
+  getOverview: (id: string) =>
+    client.get<DatasetOverview>(`/datasets/${id}/overview`).then(r => r.data),
 
   uploadEntryDirect: (datasetId: string, fieldId: string, file: File | null, textValue?: string) => {
     const fd = new FormData()
@@ -65,12 +68,24 @@ export const collectApi = {
   getForm: (token: string) =>
     publicClient.get<CollectFormDefinition>(`/collect/${token}`).then(r => r.data),
 
-  submit: (token: string, fieldId: string, file: File | null, textValue?: string, description?: string) => {
+  submit: (
+    token: string,
+    fieldId: string,
+    file: File | null,
+    textValue?: string,
+    description?: string,
+    location?: { lat: number; lng: number; accuracy?: number } | null,
+  ) => {
     const fd = new FormData()
     fd.append('field_id', fieldId)
     if (file) fd.append('file', file)
     if (textValue !== undefined && textValue !== null) fd.append('text_value', textValue)
     if (description !== undefined && description !== null) fd.append('description', description)
+    if (location) {
+      fd.append('lat', String(location.lat))
+      fd.append('lng', String(location.lng))
+      if (location.accuracy != null) fd.append('accuracy', String(location.accuracy))
+    }
     return publicClient.post<DatasetEntry>(`/collect/${token}/submit`, fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }).then(r => r.data)

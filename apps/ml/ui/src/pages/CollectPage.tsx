@@ -10,11 +10,21 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   Camera, Upload, CheckCircle2, ChevronLeft, ChevronRight,
   Loader2, X, Star, Gift, AlertCircle, RefreshCw, Image as ImageIcon,
-  Plus, Repeat2,
+  Plus, Repeat2, MapPin, Navigation, ShieldCheck,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { collectApi } from '@/api/datasets'
 import type { CollectFormDefinition, DatasetField, DatasetEntry } from '@/types/dataset'
+
+function getLoggedInAnnotator(): { email: string; name: string } | null {
+  try {
+    const raw = localStorage.getItem('ml_user')
+    if (!raw) return null
+    const u = JSON.parse(raw)
+    if (u?.role === 'annotator' && u?.email) return { email: u.email, name: u.full_name || u.email }
+    return null
+  } catch { return null }
+}
 
 // ── In-browser camera overlay ─────────────────────────────────────────────────
 
@@ -172,15 +182,105 @@ function isFieldDone(field: DatasetField, session: FieldSession): boolean {
   return false // infinite — always open for more
 }
 
+// ── Location permission prompt ────────────────────────────────────────────────
+
+type LocationState =
+  | { status: 'idle' }
+  | { status: 'requesting' }
+  | { status: 'granted'; lat: number; lng: number; accuracy: number }
+  | { status: 'denied' }
+  | { status: 'skipped' }
+
+function LocationPrompt({
+  purpose, onResolved,
+}: {
+  purpose: string
+  onResolved: (state: LocationState) => void
+}) {
+  const [requesting, setRequesting] = useState(false)
+  const [error, setError] = useState('')
+
+  const requestLocation = () => {
+    setRequesting(true)
+    setError('')
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        setRequesting(false)
+        onResolved({
+          status: 'granted',
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+        })
+      },
+      err => {
+        setRequesting(false)
+        if (err.code === err.PERMISSION_DENIED) {
+          setError('Location access was denied.')
+          onResolved({ status: 'denied' })
+        } else {
+          setError('Could not get your location. Your IP will be used instead.')
+          onResolved({ status: 'denied' })
+        }
+      },
+      { enableHighAccuracy: true, timeout: 10000 },
+    )
+  }
+
+  return (
+    <div className="rounded-2xl border border-amber-700/50 bg-amber-900/10 p-5 mb-4">
+      <div className="flex items-start gap-3 mb-3">
+        <div className="w-9 h-9 rounded-xl bg-amber-900/50 flex items-center justify-center shrink-0">
+          <MapPin size={16} className="text-amber-400" />
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-amber-300">Location Required</p>
+          <p className="text-xs text-amber-400/80 mt-0.5 leading-relaxed">
+            {purpose || 'This dataset requires your location to verify where data is collected.'}
+          </p>
+        </div>
+      </div>
+
+      {/* How-to guide */}
+      <div className="bg-black/30 rounded-xl p-3 mb-3 space-y-1.5 text-xs text-gray-400">
+        <p className="font-semibold text-gray-300 text-[11px] uppercase tracking-wide mb-2">How to enable location</p>
+        <p>1. Tap <strong className="text-white">Allow Location</strong> below — your browser will ask for permission.</p>
+        <p>2. If blocked: open your browser <strong className="text-white">Settings → Site Settings → Location</strong> and allow this site.</p>
+        <p>3. On iPhone: <strong className="text-white">Settings → Privacy → Location Services → Safari</strong> → While Using.</p>
+      </div>
+
+      {error && <p className="text-xs text-red-400 mb-2">{error}</p>}
+
+      <div className="flex gap-2">
+        <button
+          onClick={requestLocation}
+          disabled={requesting}
+          className="flex-1 flex items-center justify-center gap-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-sm font-semibold py-2.5 rounded-xl transition-colors"
+        >
+          {requesting ? <Loader2 size={14} className="animate-spin" /> : <Navigation size={14} />}
+          {requesting ? 'Getting location…' : 'Allow Location'}
+        </button>
+        <button
+          onClick={() => onResolved({ status: 'skipped' })}
+          className="px-4 py-2.5 rounded-xl border border-gray-700 text-gray-400 text-sm hover:text-white hover:border-gray-500 transition-colors"
+        >
+          Skip
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Field card ────────────────────────────────────────────────────────────────
 
 function FieldCard({
-  field, session, token,
+  field, session, token, locationState,
   onSubmitted,
 }: {
   field: DatasetField
   session: FieldSession
   token: string
+  locationState: LocationState
   onSubmitted: (entry: DatasetEntry, preview: string | null) => void
 }) {
   const [showCamera, setShowCamera] = useState(false)
@@ -210,11 +310,13 @@ function FieldCard({
     }
     set({ submitting: true, error: '' })
     try {
+      const gps = locationState.status === 'granted' ? locationState : null
       const entry = await collectApi.submit(
         token, field.id,
         local.file,
         (field.type === 'text' || field.type === 'number') ? local.textValue : undefined,
         local.description || undefined,
+        gps ? { lat: gps.lat, lng: gps.lng, accuracy: gps.accuracy } : null,
       )
       const preview = local.preview
       // reset active capture for next repeat
@@ -433,6 +535,8 @@ export default function CollectPage({ token }: { token: string }) {
   const [sessions, setSessions] = useState<Record<string, FieldSession>>({})
   const [currentIdx, setCurrentIdx] = useState(0)
   const [finished, setFinished] = useState(false)
+  const [locationState, setLocationState] = useState<LocationState>({ status: 'idle' })
+  const [locationResolved, setLocationResolved] = useState(false)
 
   useEffect(() => {
     collectApi.getForm(token)
@@ -441,10 +545,33 @@ export default function CollectPage({ token }: { token: string }) {
         const init: Record<string, FieldSession> = {}
         f.dataset.fields.forEach(field => { init[field.id] = blankSession() })
         setSessions(init)
+        if (!f.dataset.require_location) {
+          setLocationResolved(true)
+        } else {
+          // If browser has already granted geolocation, get it silently — no prompt needed
+          if ('permissions' in navigator) {
+            navigator.permissions.query({ name: 'geolocation' as PermissionName }).then(status => {
+              if (status.state === 'granted') {
+                navigator.geolocation.getCurrentPosition(
+                  pos => {
+                    setLocationState({ status: 'granted', lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy })
+                    setLocationResolved(true)
+                  },
+                  () => {}, // fallback: show prompt
+                )
+              }
+            }).catch(() => {})
+          }
+        }
       })
       .catch(e => setError(e?.response?.data?.detail ?? 'Failed to load collection form.'))
       .finally(() => setLoading(false))
   }, [token])
+
+  const handleLocationResolved = (state: LocationState) => {
+    setLocationState(state)
+    setLocationResolved(true)
+  }
 
   const handleSubmitted = (fieldId: string, entry: DatasetEntry, preview: string | null) => {
     setSessions(prev => {
@@ -492,8 +619,10 @@ export default function CollectPage({ token }: { token: string }) {
   const { dataset, collector } = form
   const fields = dataset.fields
 
-  // total submissions across all fields
+  // submissions in this browser session only
   const totalSubmissions = Object.values(sessions).reduce((n, s) => n + s.submissions.length, 0)
+  // all-time total including prior visits
+  const totalEver = (collector.entry_count ?? 0) + totalSubmissions
   // total points earned this session
   const pointsThisSession = Object.values(sessions)
     .reduce((n, s) => n + s.submissions.reduce((m, sub) => m + sub.entry.points_awarded, 0), 0)
@@ -504,9 +633,11 @@ export default function CollectPage({ token }: { token: string }) {
   const progress = fields.length > 0 ? (fieldsWithEntry / fields.length) * 100 : 0
 
   if (finished) {
+    const loggedIn = getLoggedInAnnotator()
+    const totalPoints = collector.points_earned + pointsThisSession
     return (
       <div className="min-h-screen bg-[#060810] flex items-center justify-center px-4">
-        <div className="text-center max-w-sm">
+        <div className="text-center max-w-sm w-full">
           <div className="w-20 h-20 rounded-full bg-emerald-900/40 border-2 border-emerald-700/50 flex items-center justify-center mx-auto mb-4">
             <CheckCircle2 size={36} className="text-emerald-400" />
           </div>
@@ -514,14 +645,54 @@ export default function CollectPage({ token }: { token: string }) {
           <p className="text-sm text-gray-400 mb-1">
             Thank you for contributing to <strong className="text-white">{dataset.name}</strong>.
           </p>
-          <p className="text-xs text-gray-500 mb-5">{totalSubmissions} submission{totalSubmissions !== 1 ? 's' : ''} recorded.</p>
-          {dataset.points_enabled && (
-            <div className="inline-flex items-center gap-2 bg-amber-900/30 border border-amber-800/40 rounded-full px-5 py-2.5">
-              <Star size={16} className="text-amber-400" fill="currentColor" />
-              <span className="text-sm font-semibold text-amber-300">
-                {collector.points_earned + pointsThisSession} points earned
-              </span>
+          <p className="text-xs text-gray-500 mb-5">{totalEver} submission{totalEver !== 1 ? 's' : ''} recorded.</p>
+
+          {dataset.points_enabled && totalPoints > 0 && (
+            <div className="space-y-4 w-full">
+              <div className="inline-flex items-center gap-2 bg-amber-900/30 border border-amber-800/40 rounded-full px-5 py-2.5">
+                <Star size={16} className="text-amber-400" fill="currentColor" />
+                <span className="text-sm font-semibold text-amber-300">{totalPoints} points earned</span>
+              </div>
+
+              {loggedIn ? (
+                /* Already logged in — go straight to portal */
+                <div className="bg-emerald-900/20 border border-emerald-800/40 rounded-2xl p-4 text-left">
+                  <div className="flex items-center gap-2 mb-1">
+                    <ShieldCheck size={15} className="text-emerald-400" />
+                    <p className="text-sm font-semibold text-emerald-200">Signed in as {loggedIn.name}</p>
+                  </div>
+                  <p className="text-xs text-gray-400 mb-3">
+                    Your points have been added to your account. View your balance and redeem for airtime.
+                  </p>
+                  <a
+                    href="/"
+                    className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.98]"
+                  >
+                    View Rewards Portal →
+                  </a>
+                </div>
+              ) : (
+                /* Not logged in — prompt to claim */
+                <div className="bg-indigo-900/20 border border-indigo-800/40 rounded-2xl p-4 text-left">
+                  <p className="text-sm font-semibold text-indigo-200 mb-1">🎁 Claim your rewards!</p>
+                  <p className="text-xs text-gray-400 mb-3 leading-relaxed">
+                    Create an account to track your points and redeem airtime — no extra verification needed, your email is already confirmed.
+                  </p>
+                  <a
+                    href={`/claim/${token}`}
+                    className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.98]"
+                  >
+                    Claim Rewards →
+                  </a>
+                </div>
+              )}
             </div>
+          )}
+
+          {dataset.points_enabled && totalPoints === 0 && !loggedIn && (
+            <a href={`/claim/${token}`} className="text-xs text-indigo-400 underline">
+              Access your portal →
+            </a>
           )}
         </div>
       </div>
@@ -593,13 +764,36 @@ export default function CollectPage({ token }: { token: string }) {
           </div>
         )}
 
+        {/* Location permission prompt — shown before fields if required and not yet resolved */}
+        {form?.dataset.require_location && !locationResolved && (
+          <LocationPrompt
+            purpose={form.dataset.location_purpose}
+            onResolved={handleLocationResolved}
+          />
+        )}
+
+        {/* Location status badge — once resolved */}
+        {locationResolved && form?.dataset.require_location && (
+          <div className={`flex items-center gap-2 rounded-xl px-3 py-2 mb-2 text-xs font-medium ${
+            locationState.status === 'granted'
+              ? 'bg-emerald-900/20 border border-emerald-800/30 text-emerald-400'
+              : 'bg-gray-800/50 border border-gray-700/40 text-gray-400'
+          }`}>
+            {locationState.status === 'granted'
+              ? <><ShieldCheck size={12} /> Location enabled — GPS coordinates will be attached</>
+              : <><MapPin size={12} /> Location skipped — your approximate IP location will be used</>
+            }
+          </div>
+        )}
+
         {/* Current field */}
-        {fields[currentIdx] && (
+        {fields[currentIdx] && locationResolved && (
           <FieldCard
             key={fields[currentIdx].id}
             field={fields[currentIdx]}
             session={sessions[fields[currentIdx].id] ?? blankSession()}
             token={token}
+            locationState={locationState}
             onSubmitted={(entry, preview) => handleSubmitted(fields[currentIdx].id, entry, preview)}
           />
         )}

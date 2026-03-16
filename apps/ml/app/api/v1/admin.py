@@ -956,6 +956,146 @@ async def get_my_usage(current_user=Depends(get_current_user)):
     return {**row, "month_start": month_start.isoformat()}
 
 
+# ── Platform Reward Config ────────────────────────────────────────────────────
+
+class RewardConfigUpdateRequest(BaseModel):
+    point_value_usd: Optional[float] = None
+    exchange_rates: Optional[dict] = None
+    withdrawal_kyc_threshold_usd: Optional[float] = None
+    min_org_balance_usd: Optional[float] = None
+    min_redemption_points: Optional[int] = None
+    auto_approve_kyc: Optional[bool] = None
+
+
+@router.get("/reward-config")
+async def get_reward_config_admin(user: MLUser = Depends(require_roles("admin"))):
+    from app.services.reward_service import get_reward_config
+    return await get_reward_config()
+
+
+@router.patch("/reward-config")
+async def update_reward_config(body: RewardConfigUpdateRequest, user: MLUser = Depends(require_roles("admin"))):
+    from app.services.reward_service import get_reward_config
+    from app.utils.datetime import utc_now
+    cfg = await get_reward_config()
+    if body.point_value_usd is not None:
+        cfg.point_value_usd = body.point_value_usd
+    if body.exchange_rates is not None:
+        cfg.exchange_rates.update(body.exchange_rates)
+    if body.withdrawal_kyc_threshold_usd is not None:
+        cfg.withdrawal_kyc_threshold_usd = body.withdrawal_kyc_threshold_usd
+    if body.min_org_balance_usd is not None:
+        cfg.min_org_balance_usd = body.min_org_balance_usd
+    if body.min_redemption_points is not None:
+        cfg.min_redemption_points = body.min_redemption_points
+    if body.auto_approve_kyc is not None:
+        cfg.auto_approve_kyc = body.auto_approve_kyc
+    cfg.updated_at = utc_now()
+    cfg.updated_by = user.email
+    await cfg.save()
+    return cfg
+
+
+# ── KYC Review ────────────────────────────────────────────────────────────────
+
+class KycReviewRequest(BaseModel):
+    approved: bool
+    rejection_reason: str = ""
+
+
+@router.get("/kyc/pending")
+async def list_pending_kyc(user: MLUser = Depends(require_roles("admin"))):
+    from app.models.annotator import AnnotatorProfile
+    profiles = await AnnotatorProfile.find(
+        AnnotatorProfile.kyc_status == "pending"
+    ).to_list()
+    return [
+        {
+            "email": p.email,
+            "full_name": p.full_name,
+            "country": p.country,
+            "kyc_submitted_at": p.kyc_submitted_at,
+            "avatar_key": p.avatar_key,
+            "id_front_key": p.id_front_key,
+            "id_back_key": p.id_back_key,
+        }
+        for p in profiles
+    ]
+
+
+@router.post("/kyc/{email}/review")
+async def review_kyc(email: str, body: KycReviewRequest, user: MLUser = Depends(require_roles("admin"))):
+    from app.services import annotator_service as annotator_svc
+    profile = await annotator_svc.approve_kyc(email, body.approved, body.rejection_reason)
+    return {"email": profile.email, "kyc_status": profile.kyc_status}
+
+
+@router.get("/contributors")
+async def list_contributors(
+    page: int = 1, limit: int = 50, search: str = "",
+    kyc_status: str = "", user: MLUser = Depends(require_roles("admin")),
+):
+    """List all platform-level annotator/contributor accounts."""
+    from app.models.annotator import AnnotatorProfile
+    from app.models.ml_user import MLUser as MLUserModel
+    skip = (page - 1) * limit
+    filters = []
+    if search:
+        # match on email or full_name via regex
+        import re
+        pattern = re.compile(search, re.IGNORECASE)
+        filters.extend([{"$or": [{"email": {"$regex": search, "$options": "i"}}, {"full_name": {"$regex": search, "$options": "i"}}]}])
+    if kyc_status:
+        filters.append({"kyc_status": kyc_status})
+
+    query = {"$and": filters} if filters else {}
+    profiles = await AnnotatorProfile.find(query).skip(skip).limit(limit).to_list()
+    total = await AnnotatorProfile.find(query).count()
+
+    # Fetch active status from MLUser records
+    emails = [p.email for p in profiles]
+    users = await MLUserModel.find({"email": {"$in": emails}}).to_list()
+    user_map = {u.email: u for u in users}
+
+    return {
+        "total": total,
+        "items": [
+            {
+                "email": p.email,
+                "full_name": p.full_name,
+                "country": p.country,
+                "county": p.county,
+                "phone_number": p.phone_number,
+                "kyc_status": p.kyc_status,
+                "total_points_earned": p.total_points_earned,
+                "total_points_redeemed": p.total_points_redeemed,
+                "redeemable_points": p.redeemable_points,
+                "total_entries_submitted": p.total_entries_submitted,
+                "total_tasks_completed": p.total_tasks_completed,
+                "joined_at": p.joined_at,
+                "last_active_at": p.last_active_at,
+                "is_active": user_map[p.email].is_active if p.email in user_map else True,
+                "referral_code": p.referral_code,
+            }
+            for p in profiles
+        ],
+    }
+
+
+@router.patch("/contributors/{email}/status")
+async def update_contributor_status(
+    email: str, user: MLUser = Depends(require_roles("admin")),
+):
+    """Toggle active/inactive status for a contributor."""
+    from app.models.ml_user import MLUser as MLUserModel
+    ml_user = await MLUserModel.find_one(MLUserModel.email == email)
+    if not ml_user:
+        raise HTTPException(status_code=404, detail="Contributor not found")
+    ml_user.is_active = not ml_user.is_active
+    await ml_user.save()
+    return {"email": email, "is_active": ml_user.is_active}
+
+
 @router.post("/backfill/model-sizes", dependencies=[RequireAdmin])
 async def backfill_model_sizes():
     """One-shot: populate model_size_bytes on existing ModelDeployment records that have it unset."""

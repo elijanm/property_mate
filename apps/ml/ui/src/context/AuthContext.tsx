@@ -13,6 +13,7 @@ interface AuthCtx {
   token: string | null
   pendingEmail: string | null   // set after register — triggers verification screen
   login: (email: string, password: string) => Promise<void>
+  loginWithToken: (accessToken: string, refreshToken: string, user: User) => void
   register: (email: string, password: string, full_name: string) => Promise<void>
   logout: () => void
   clearPending: () => void
@@ -46,6 +47,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setPendingEmail(null)
   }
 
+  const loginWithToken = (accessToken: string, refreshToken: string, userData: User) => {
+    localStorage.setItem('ml_token', accessToken)
+    localStorage.setItem('ml_refresh', refreshToken)
+    localStorage.setItem('ml_user', JSON.stringify(userData))
+    setToken(accessToken)
+    setUser(userData)
+    setPendingEmail(null)
+  }
+
   const register = async (email: string, password: string, full_name: string) => {
     const res = await authApi.register(email, password, full_name)
     if (res.pending_verification) {
@@ -68,7 +78,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const clearPending = () => setPendingEmail(null)
 
   return (
-    <Ctx.Provider value={{ user, token, pendingEmail, login, register, logout, clearPending, loading }}>
+    <Ctx.Provider value={{ user, token, pendingEmail, login, loginWithToken, register, logout, clearPending, loading }}>
       {children}
     </Ctx.Provider>
   )

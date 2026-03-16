@@ -99,6 +99,15 @@ class Settings(BaseSettings):
     # Currency
     USD_TO_KES_RATE: float = 130.0   # update as needed; used for GPU price display + billing
 
+    # Africa's Talking (airtime redemption for annotators)
+    AT_API_KEY: str = ""
+    AT_USERNAME: str = "sandbox"
+    AT_SHORTCODE: str = ""                      # Sender ID for airtime
+
+    # Annotator rewards config
+    POINTS_TO_KES_RATE: float = 0.1            # 1 point = KES 0.10 → 100 pts = KES 10
+    MIN_REDEMPTION_POINTS: int = 100
+
     def get_device(self) -> str:
         if self.CUDA_DEVICE == "auto":
             try:

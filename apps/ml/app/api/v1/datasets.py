@@ -36,9 +36,12 @@ class DatasetCreateRequest(BaseModel):
     category: str = ""
     fields: List[FieldIn] = []
     visibility: str = "private"
+    discoverable: bool = False
     points_enabled: bool = False
     points_per_entry: int = 1
     points_redemption_info: str = ""
+    require_location: bool = False
+    location_purpose: str = ""
 
 
 class DatasetUpdateRequest(BaseModel):
@@ -48,10 +51,13 @@ class DatasetUpdateRequest(BaseModel):
     category: Optional[str] = None
     status: Optional[str] = None
     visibility: Optional[str] = None
+    discoverable: Optional[bool] = None
     fields: Optional[List[FieldIn]] = None
     points_enabled: Optional[bool] = None
     points_per_entry: Optional[int] = None
     points_redemption_info: Optional[str] = None
+    require_location: Optional[bool] = None
+    location_purpose: Optional[str] = None
 
 
 class VisibilityRequest(BaseModel):
@@ -82,7 +88,7 @@ async def list_public_datasets(user: MLUser = RequireEngineer):
 @router.post("", status_code=201)
 async def create_dataset(body: DatasetCreateRequest, user: MLUser = RequireEngineer):
     data = body.model_dump()
-    return _profile_dict(await svc.create_dataset(user.org_id, data, user.email))
+    return _profile_dict(await svc.create_dataset(user.org_id, data, user.email, acting_email=user.email))
 
 
 @router.get("/{dataset_id}")
@@ -97,7 +103,7 @@ async def get_dataset(dataset_id: str, user: MLUser = RequireEngineer):
 @router.patch("/{dataset_id}")
 async def update_dataset(dataset_id: str, body: DatasetUpdateRequest, user: MLUser = RequireEngineer):
     data = {k: v for k, v in body.model_dump().items() if v is not None}
-    return _profile_dict(await svc.update_dataset(user.org_id, dataset_id, data))
+    return _profile_dict(await svc.update_dataset(user.org_id, dataset_id, data, acting_email=user.email))
 
 
 @router.delete("/{dataset_id}", status_code=204)
@@ -179,6 +185,12 @@ async def upload_entry_direct(
     return await svc.upload_entry_direct(
         user.org_id, dataset_id, field_id, file, text_value, user.email
     )
+
+
+@router.get("/{dataset_id}/overview")
+async def get_dataset_overview(dataset_id: str, user: MLUser = RequireEngineer):
+    """Return a rich summary: entry stats, location breakdown, daily trend, top collectors."""
+    return await svc.get_dataset_overview(user.org_id, dataset_id)
 
 
 @router.get("/by-slug/{slug}")

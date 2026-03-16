@@ -66,6 +66,9 @@ class MLPlan(Document):
     # One-time new-customer credit
     new_customer_credit_usd: float = 0.0    # added to wallet on first assignment
 
+    # Staff management
+    max_staff_users: int = 3                # -1 = unlimited, 0 = disabled
+
     is_active: bool = True
     is_default: bool = False                # auto-assigned to new users if no plan exists
 

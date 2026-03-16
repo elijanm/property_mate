@@ -11,7 +11,7 @@ class MLUser(Document):
     email: str
     hashed_password: str
     full_name: str = ""
-    role: str = "viewer"          # viewer | engineer | admin
+    role: str = "viewer"          # viewer | engineer | admin | annotator
     org_id: str = ""              # tenant workspace — all records scoped to this
     is_active: bool = True
     # Email verification
