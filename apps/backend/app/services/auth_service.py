@@ -41,8 +41,9 @@ def verify_password(plain: str, hashed: str) -> bool:
 # ── Token helpers ────────────────────────────────────────────────────────────
 
 def create_access_token(user_id: str, org_id: Optional[str], role: str) -> str:
+    import calendar
     expire = utc_now() + timedelta(minutes=settings.jwt_expire_minutes)
-    payload = {"sub": user_id, "org_id": org_id, "role": role, "exp": expire}
+    payload = {"sub": user_id, "org_id": org_id, "role": role, "exp": int(calendar.timegm(expire.utctimetuple()))}
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
