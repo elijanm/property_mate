@@ -954,3 +954,23 @@ async def get_my_usage(current_user=Depends(get_current_user)):
                                   inf_cost_by_org, dataset_counts_by_org, storage_bytes_by_org,
                                   inf_latency_by_org, inf_last_called_by_org)
     return {**row, "month_start": month_start.isoformat()}
+
+
+@router.post("/backfill/model-sizes", dependencies=[RequireAdmin])
+async def backfill_model_sizes():
+    """One-shot: populate model_size_bytes on existing ModelDeployment records that have it unset."""
+    from app.models.model_deployment import ModelDeployment
+    from app.services.pretrained_deploy_service import _mlflow_artifact_size
+    import asyncio
+
+    deps = await ModelDeployment.find({"model_size_bytes": None}).to_list()
+    updated = 0
+    for dep in deps:
+        run_id = getattr(dep, "run_id", None)
+        if not run_id:
+            continue
+        size = await asyncio.get_event_loop().run_in_executor(None, _mlflow_artifact_size, run_id)
+        if size:
+            await dep.set({"model_size_bytes": size})
+            updated += 1
+    return {"checked": len(deps), "updated": updated}

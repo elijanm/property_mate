@@ -339,6 +339,8 @@ async def deploy_pretrained(
             ModelDeployment.status == "active",
         ).update({"$set": {"is_default": False, "updated_at": utc_now()}})
 
+    _size_bytes = len(file_bytes) if file_bytes else _mlflow_artifact_size(run_id)
+
     dep = ModelDeployment(
         org_id=org_id,
         trainer_name=name,
@@ -354,6 +356,7 @@ async def deploy_pretrained(
         output_schema=output_schema or {},
         category=category or {},
         owner_email=owner_email,
+        model_size_bytes=_size_bytes or None,
     )
     await dep.insert()
 
@@ -365,6 +368,30 @@ async def deploy_pretrained(
         model_uri=model_uri,
     )
     return dep
+
+
+def _mlflow_artifact_size(run_id: Optional[str]) -> int:
+    """Sum the file sizes of all artifacts for a given MLflow run_id. Returns 0 on any error."""
+    if not run_id:
+        return 0
+    try:
+        client = mlflow.tracking.MlflowClient()
+
+        def _scan(path: Optional[str] = None) -> int:
+            total = 0
+            try:
+                for entry in client.list_artifacts(run_id, path):
+                    if entry.is_dir:
+                        total += _scan(entry.path)
+                    else:
+                        total += entry.file_size or 0
+            except Exception:
+                pass
+            return total
+
+        return _scan()
+    except Exception:
+        return 0
 
 
 def _register(model_name: str, artifact_uri: str) -> str:

@@ -110,7 +110,7 @@ async def register(
     email: str,
     password: str,
     full_name: str = "",
-    role: str = "viewer",
+    role: str = "engineer",
     org_id: str = "",
     skip_verification: bool = False,
 ) -> MLUser:
@@ -148,6 +148,19 @@ async def register(
     return user
 
 
+def _bootstrap_user_plan(email: str, org_id: str) -> None:
+    """Fire-and-forget: assign default plan + give welcome credit for a newly verified user."""
+    import asyncio
+    async def _run():
+        try:
+            from app.services.ml_billing_service import get_or_create_user_plan
+            await get_or_create_user_plan(email, org_id)
+            logger.info("ml_user_plan_bootstrapped", email=email, org_id=org_id)
+        except Exception as exc:
+            logger.warning("ml_user_plan_bootstrap_failed", email=email, error=str(exc))
+    asyncio.create_task(_run())
+
+
 async def verify_by_otp(email: str, otp: str) -> MLUser:
     user = await MLUser.find_one({"email": email})
     if not user:
@@ -165,6 +178,7 @@ async def verify_by_otp(email: str, otp: str) -> MLUser:
         "otp_expires_at": None,
     })
     logger.info("ml_user_verified", email=email, method="otp")
+    _bootstrap_user_plan(email, user.org_id)
     return user
 
 
@@ -181,6 +195,7 @@ async def verify_by_token(token: str) -> MLUser:
         "otp_expires_at": None,
     })
     logger.info("ml_user_verified", email=user.email, method="link")
+    _bootstrap_user_plan(user.email, user.org_id)
     return user
 
 

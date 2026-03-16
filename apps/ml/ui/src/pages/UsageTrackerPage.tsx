@@ -26,10 +26,10 @@ function fmtMs(ms: number | null | undefined) {
 
 function fmtBytes(b: number) {
   if (b === 0) return '0 B'
-  if (b < 1024) return `${b} B`
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
-  if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`
-  return `${(b / (1024 * 1024 * 1024)).toFixed(2)} GB`
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+  const i = Math.min(Math.floor(Math.log2(b) / 10), units.length - 1)
+  const val = b / Math.pow(1024, i)
+  return `${val < 10 ? val.toFixed(2) : val < 100 ? val.toFixed(1) : val.toFixed(0)} ${units[i]}`
 }
 
 // ─── Progress bar ──────────────────────────────────────────────────────────
@@ -249,14 +249,16 @@ function AdminUsageTable({ data, loading, onRefresh }: {
                       <span className="text-white font-medium">{r.storage.model_count}</span>
                       <span className="text-gray-600">models</span>
                     </div>
-                    <div className="flex items-center gap-1">
-                      <Database size={11} className="text-teal-400 flex-shrink-0" />
-                      <span className="text-white font-medium">{(r.storage.dataset_count ?? 0).toLocaleString()}</span>
-                      <span className="text-gray-600">entries</span>
-                    </div>
-                    {(r.storage.storage_bytes ?? 0) > 0 && (
-                      <div className="text-[10px] text-gray-500">{fmtBytes(r.storage.storage_bytes ?? 0)}</div>
+                    {(r.storage.dataset_count ?? 0) > 0 && (
+                      <div className="flex items-center gap-1">
+                        <Database size={11} className="text-teal-400 flex-shrink-0" />
+                        <span className="text-white font-medium">{(r.storage.dataset_count ?? 0).toLocaleString()}</span>
+                        <span className="text-gray-600">datasets</span>
+                      </div>
                     )}
+                    <div className="flex items-center gap-1">
+                      <span className="text-white font-medium">{fmtBytes(r.storage.storage_bytes ?? 0)}</span>
+                    </div>
                   </div>
                 </td>
 
@@ -320,11 +322,13 @@ function MyUsageView({ data, loading }: { data: (UserUsageRow & { month_start: s
     {
       icon: <Database size={16} className="text-green-400" />,
       label: 'Storage',
-      used: `${data.storage.model_count} models · ${(data.storage.dataset_count ?? 0).toLocaleString()} entries`,
+      used: fmtBytes(data.storage.storage_bytes ?? 0),
       limit: '∞',
       pct: 0,
       resetAt: null,
-      extra: (data.storage.storage_bytes ?? 0) > 0 ? fmtBytes(data.storage.storage_bytes ?? 0) + ' used' : null,
+      extra: (data.storage.dataset_count ?? 0) > 0
+        ? `${data.storage.model_count} models · ${data.storage.dataset_count.toLocaleString()} datasets`
+        : `${data.storage.model_count} models`,
     },
   ]
 

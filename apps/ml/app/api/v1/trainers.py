@@ -43,8 +43,8 @@ async def list_trainers(user=Depends(get_current_user)):
     if user.role == "admin":
         visible = regs
     else:
-        # Non-admins see only sample trainers (is_sample=True) + their own uploaded trainers
-        visible = [r for r in regs if r.is_sample or r.owner_email == user.email]
+        # Non-admins see system trainers (no org owner = platform-wide) + their own uploads
+        visible = [r for r in regs if not r.org_id or r.owner_email == user.email]
     return {"items": [doc_to_dict(r) for r in visible], "total": len(visible)}
 
 

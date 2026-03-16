@@ -206,16 +206,18 @@ async def list_deployments(
         base_filters.append(ModelDeployment.trainer_name == trainer_name)
 
     all_deps = await ModelDeployment.find(*base_filters).sort(-ModelDeployment.deployed_at).to_list()
-    # Filter by org: own org's records only
-    all_deps = [d for d in all_deps if not d.org_id or d.org_id == user.org_id]
 
     if user.role == "admin":
-        deps = all_deps
+        # Admins see their own org + system records
+        deps = [d for d in all_deps if not d.org_id or d.org_id == user.org_id]
     else:
-        # Non-admins: public models (visibility="viewer") + own models
+        # Non-admins see:
+        # 1. Models in their own org that they own or are marked viewer-visible
+        # 2. Platform-wide models (no org_id) with visibility="viewer" — regardless of who deployed them
         deps = [
             d for d in all_deps
-            if d.visibility == "viewer" or d.owner_email == user.email
+            if (d.org_id == user.org_id and (d.visibility == "viewer" or d.owner_email == user.email))
+            or (not d.org_id and d.visibility == "viewer")
         ]
 
     if not include_all and not trainer_name:

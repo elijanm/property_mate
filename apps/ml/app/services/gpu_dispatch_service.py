@@ -551,6 +551,7 @@ async def _register_result(job: TrainingJob, result) -> Optional[str]:
     # Create ModelDeployment
     from app.models.model_deployment import ModelDeployment
     from app.services.registry_service import get_trainer_class
+    from app.services.pretrained_deploy_service import _mlflow_artifact_size
     trainer_cls = get_trainer_class(job.trainer_name)
     dep = ModelDeployment(
         org_id=job.org_id,
@@ -568,6 +569,7 @@ async def _register_result(job: TrainingJob, result) -> Optional[str]:
         category=getattr(trainer_cls, "category", {}) if trainer_cls else {},
         visibility="engineer",
         owner_email=job.owner_email,
+        model_size_bytes=_mlflow_artifact_size(run.info.run_id) or None,
     )
     # Demote previous defaults for this trainer within org
     await ModelDeployment.find(

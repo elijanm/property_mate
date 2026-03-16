@@ -232,6 +232,7 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
             # sample_preinstall trigger → mark as visible to all roles (viewer-accessible)
             _visibility = "viewer" if job.trigger == "sample_preinstall" else "engineer"
             from app.models.model_deployment import ModelDeployment
+            from app.services.pretrained_deploy_service import _mlflow_artifact_size
             dep = ModelDeployment(
                 org_id=job.org_id,
                 trainer_name=job.trainer_name,
@@ -248,6 +249,7 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
                 is_default=True,
                 visibility=_visibility,
                 owner_email=job.owner_email,
+                model_size_bytes=_mlflow_artifact_size(run.info.run_id) or None,
             )
             # Demote previous default(s) within same org
             prev_defaults = await ModelDeployment.find(
