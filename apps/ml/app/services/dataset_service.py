@@ -795,7 +795,9 @@ async def initiate_multipart_upload(token: str, field_id: str, filename: str, co
 def get_part_presigned_url(key: str, upload_id: str, part_number: int) -> str:
     """Return a presigned PUT URL for one multipart part. Browser uses this directly."""
     import boto3
-    # Use the public endpoint so the presigned URL is reachable from browsers
+    from botocore.config import Config
+    # Use the public endpoint so the presigned URL is reachable from browsers.
+    # Force path-style addressing — MinIO requires it (virtual-hosted style causes 404).
     endpoint = (settings.S3_PUBLIC_ENDPOINT_URL or settings.S3_ENDPOINT_URL).rstrip("/")
     s3 = boto3.client(
         "s3",
@@ -803,6 +805,7 @@ def get_part_presigned_url(key: str, upload_id: str, part_number: int) -> str:
         aws_access_key_id=settings.S3_ACCESS_KEY,
         aws_secret_access_key=settings.S3_SECRET_KEY,
         region_name=settings.S3_REGION,
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
     )
     return s3.generate_presigned_url(
         "upload_part",

@@ -96,6 +96,7 @@ def generate_presigned_url(key: str, expiry: int = 3600) -> str:
         return f"{base}/{settings.S3_BUCKET}/{key}"
 
     import boto3
+    from botocore.config import Config
     endpoint = (settings.S3_PUBLIC_ENDPOINT_URL or settings.S3_ENDPOINT_URL).rstrip("/")
     try:
         client = boto3.client(
@@ -104,6 +105,7 @@ def generate_presigned_url(key: str, expiry: int = 3600) -> str:
             aws_access_key_id=settings.S3_ACCESS_KEY,
             aws_secret_access_key=settings.S3_SECRET_KEY,
             region_name=settings.S3_REGION,
+            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
         )
         return client.generate_presigned_url(
             "get_object",
