@@ -381,9 +381,9 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_DEFAULT_EXPERIMENT: pms-models
       S3_ENDPOINT_URL: http://minio:9000
-      S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
-      S3_ACCESS_KEY: minioadmin
-      S3_SECRET_KEY: minioadmin
+      S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-http://localhost:9000}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
       S3_BUCKET: pms-ml
       S3_REGION: us-east-1
       PMS_API_URL: http://backend:8000/api/v1
@@ -443,8 +443,8 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_DEFAULT_EXPERIMENT: pms-models
       S3_ENDPOINT_URL: http://minio:9000
-      S3_ACCESS_KEY: minioadmin
-      S3_SECRET_KEY: minioadmin
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
       S3_BUCKET: pms-ml
       S3_REGION: us-east-1
       # MLflow uses the standard AWS env vars to write artifacts to MinIO
