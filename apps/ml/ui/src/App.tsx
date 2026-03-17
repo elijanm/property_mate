@@ -25,6 +25,8 @@ import WalletPage from './pages/WalletPage'
 import AdminAnalyticsPage from './pages/AdminAnalyticsPage'
 import BillingSettingsPage from './components/BillingSettingsPage'
 import UsageTrackerPage from './pages/UsageTrackerPage'
+import ProfilePage from './pages/ProfilePage'
+import AccountsPage from './pages/AccountsPage'
 import DatasetPage from './pages/DatasetPage'
 import AnnotatePage from './pages/AnnotatePage'
 import CodeEditorPage from './pages/CodeEditorPage'
@@ -66,7 +68,7 @@ if (_INVITE_TOKEN_FROM_URL) {
   sessionStorage.setItem('pending_invite_token', _INVITE_TOKEN_FROM_URL)
 }
 
-type Page = 'models' | 'trainers' | 'editor' | 'annotate' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing' | 'usage' | 'staff'
+type Page = 'models' | 'trainers' | 'editor' | 'annotate' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing' | 'usage' | 'staff' | 'profile' | 'accounts'
 
 type NavGroup = {
   id: string
@@ -109,7 +111,6 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'monitoring', label: 'Monitoring',   icon: <Activity size={14} /> },
       { id: 'ab-tests',   label: 'A/B Tests',    icon: <FlaskConical size={14} /> },
       { id: 'alerts',     label: 'Alert Rules',  icon: <Bell size={14} /> },
-      { id: 'usage',      label: 'Usage',         icon: <BarChart2 size={14} /> },
     ],
   },
   {
@@ -117,7 +118,8 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Team',
     icon: <Users size={16} />,
     items: [
-      { id: 'staff', label: 'Staff', icon: <UserCheck size={14} /> },
+      { id: 'staff', label: 'Staff',  icon: <UserCheck size={14} /> },
+      { id: 'users', label: 'Users',  icon: <Users size={14} /> },
     ],
   },
   {
@@ -125,13 +127,22 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Admin',
     icon: <Shield size={16} />,
     items: [
-      { id: 'users',     label: 'Users',     icon: <Users size={14} /> },
+      { id: 'accounts',  label: 'Accounts',  icon: <UserCheck size={14} /> },
       { id: 'security',  label: 'Security',  icon: <Shield size={14} /> },
       { id: 'audit',     label: 'Audit Log', icon: <ClipboardList size={14} /> },
       { id: 'analytics', label: 'Analytics', icon: <BarChart2 size={14} /> },
-      { id: 'billing',   label: 'Billing',   icon: <DollarSign size={14} /> },
-      { id: 'api-keys',  label: 'API Keys',  icon: <Key size={14} /> },
-      { id: 'config',    label: 'Config',    icon: <Settings size={14} /> },
+    ],
+  },
+  {
+    id: 'settings',
+    label: 'Settings',
+    icon: <Settings size={16} />,
+    items: [
+      { id: 'profile',  label: 'Profile',   icon: <User size={14} /> },
+      { id: 'billing',  label: 'Billing',   icon: <DollarSign size={14} /> },
+      { id: 'usage',    label: 'Usage',     icon: <BarChart2 size={14} /> },
+      { id: 'api-keys', label: 'API Keys',  icon: <Key size={14} /> },
+      { id: 'config',   label: 'Config',    icon: <Settings size={14} /> },
     ],
   },
 ]
@@ -164,6 +175,8 @@ const PAGE_TITLE: Record<Page, string> = {
   billing:     'Billing Settings',
   usage:       'Usage Tracker',
   staff:       'Staff Management',
+  profile:     'My Profile',
+  accounts:    'All Accounts',
 }
 
 export default function App() {
@@ -690,7 +703,7 @@ export default function App() {
         <div className={clsx('flex-1 min-h-0', (page === 'editor' || page === 'annotate') && !selected ? 'overflow-hidden flex flex-col' : 'overflow-y-auto')}>
           {selected ? (
             <ModelWorkspace deployment={selected} onClose={() => setSelected(null)} />
-          ) : page === 'editor' && user?.role !== 'viewer' ? (
+          ) : page === 'editor' && effectiveRole !== 'viewer' ? (
             <CodeEditorPage />
           ) : page === 'annotate' ? (
             <div className="flex-1 min-h-0 p-6 overflow-hidden flex flex-col">
@@ -726,6 +739,8 @@ export default function App() {
               {page === 'billing' && <BillingSettingsPage />}
               {page === 'usage' && <UsageTrackerPage />}
               {page === 'staff' && <StaffPage />}
+              {page === 'profile' && <ProfilePage />}
+              {page === 'accounts' && <AccountsPage />}
             </div>
           )}
         </div>

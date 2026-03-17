@@ -46,4 +46,7 @@ export const authApi = {
 
   registerWithInvite: (email: string, password: string, fullName: string, inviteToken: string) =>
     client.post('/auth/register-invite', { email, password, full_name: fullName, invite_token: inviteToken }).then(r => r.data),
+
+  updateProfile: (data: { full_name?: string; role?: string }) =>
+    client.patch('/auth/profile', data).then(r => r.data),
 }

@@ -155,4 +155,9 @@ export const adminApi = {
 
   getMyUsage: () =>
     client.get<UserUsageRow & { month_start: string }>('/admin/usage/me').then(r => r.data),
+
+  // Lists self-registered account owners (primary accounts per org)
+  // Falls back to GET /admin/users if /admin/accounts returns 404
+  listAccounts: () =>
+    client.get('/admin/accounts').then(r => r.data),
 }
