@@ -15,9 +15,17 @@ logger = structlog.get_logger(__name__)
 
 def generate_presigned_url(key: str, expiry: int = 604800) -> str:
     """
-    Generate a presigned GET URL for an S3/MinIO object.
-    Default expiry: 7 days (604800 seconds).
+    Return a URL to access an S3/MinIO object.
+
+    - If MEDIA_BASE_URL is set (e.g. http://media.mldock.io), returns a plain
+      public URL: MEDIA_BASE_URL/BUCKET/key — no presigning, no expiry.
+    - Otherwise generates a presigned GET URL using S3_PUBLIC_ENDPOINT_URL
+      (falls back to S3_ENDPOINT_URL).  Default expiry: 7 days.
     """
+    if settings.MEDIA_BASE_URL:
+        base = settings.MEDIA_BASE_URL.rstrip("/")
+        return f"{base}/{settings.S3_BUCKET}/{key}"
+
     import boto3
     endpoint = (settings.S3_PUBLIC_ENDPOINT_URL or settings.S3_ENDPOINT_URL).rstrip("/")
     try:

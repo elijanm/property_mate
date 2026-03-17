@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     S3_SECRET_KEY: str = "minioadmin"
     S3_BUCKET: str = "pms-ml"
     S3_REGION: str = "us-east-1"
+    # When set, public object URLs are constructed as MEDIA_BASE_URL/BUCKET/key
+    # (no presigning). Use for production CDN/public MinIO, e.g. http://media.mldock.io
+    MEDIA_BASE_URL: str = ""
 
     # PMS Backend
     PMS_API_URL: str = "http://backend:8000/api/v1"

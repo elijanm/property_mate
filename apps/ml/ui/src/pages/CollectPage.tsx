@@ -11,6 +11,7 @@ import {
   Camera, Upload, CheckCircle2, ChevronLeft, ChevronRight,
   Loader2, X, Star, Gift, AlertCircle, RefreshCw, Image as ImageIcon,
   Plus, Repeat2, MapPin, Navigation, ShieldCheck, Video, Film,
+  Square, Circle,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { collectApi } from '@/api/datasets'
@@ -25,6 +26,151 @@ function getLoggedInAnnotator(): { email: string; name: string } | null {
     if (u?.role === 'annotator' && u?.email) return { email: u.email, name: u.full_name || u.email }
     return null
   } catch { return null }
+}
+
+// ── Live video recording overlay ──────────────────────────────────────────────
+
+function VideoCapture({
+  onCapture, onClose,
+}: {
+  onCapture: (file: File) => void
+  onClose: () => void
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const nativeFallbackRef = useRef<HTMLInputElement>(null)
+  const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment')
+  const [error, setError] = useState('')
+  const [streaming, setStreaming] = useState(false)
+  const [recording, setRecording] = useState(false)
+  const [elapsed, setElapsed] = useState(0)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const startCamera = useCallback(async (mode: 'environment' | 'user') => {
+    setError('')
+    setStreaming(false)
+    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop())
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: mode, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: true,
+      })
+      streamRef.current = stream
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        videoRef.current.muted = true
+        await videoRef.current.play()
+        setStreaming(true)
+      }
+    } catch (err: any) {
+      const msg = err?.name === 'NotAllowedError'
+        ? 'Camera/microphone permission denied. Allow access in browser settings.'
+        : err?.name === 'NotFoundError'
+        ? 'No camera found on this device.'
+        : 'Camera unavailable — the page may need to be served over HTTPS.'
+      setError(msg)
+    }
+  }, [])
+
+  useEffect(() => {
+    startCamera(facingMode)
+    return () => {
+      streamRef.current?.getTracks().forEach(t => t.stop())
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+  }, [facingMode, startCamera])
+
+  const startRecording = () => {
+    if (!streamRef.current) return
+    chunksRef.current = []
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+      ? 'video/webm;codecs=vp9'
+      : MediaRecorder.isTypeSupported('video/webm')
+      ? 'video/webm'
+      : 'video/mp4'
+    const recorder = new MediaRecorder(streamRef.current, { mimeType })
+    recorderRef.current = recorder
+    recorder.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+    recorder.onstop = () => {
+      const blob = new Blob(chunksRef.current, { type: mimeType })
+      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm'
+      onCapture(new File([blob], `video_${Date.now()}.${ext}`, { type: mimeType }))
+    }
+    recorder.start(100)
+    setRecording(true)
+    setElapsed(0)
+    timerRef.current = setInterval(() => setElapsed(s => s + 1), 1000)
+  }
+
+  const stopRecording = () => {
+    recorderRef.current?.stop()
+    setRecording(false)
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
+  }
+
+  const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black flex flex-col">
+      {/* Top bar */}
+      <div className="flex items-center justify-between px-4 py-3 bg-black/80 z-10" style={{ paddingTop: 'max(12px, env(safe-area-inset-top))' }}>
+        <button onClick={() => { if (recording) stopRecording(); onClose() }}
+          className="p-2 rounded-full bg-white/10 text-white [touch-action:manipulation]"><X size={18} /></button>
+        <div className="flex items-center gap-2">
+          {recording && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />}
+          <span className="text-sm font-medium text-white">
+            {recording ? fmt(elapsed) : 'Record Video'}
+          </span>
+        </div>
+        <button
+          onClick={() => { if (!recording) setFacingMode(m => m === 'environment' ? 'user' : 'environment') }}
+          disabled={!!error || recording}
+          className="p-2 rounded-full bg-white/10 text-white disabled:opacity-30">
+          <RefreshCw size={18} />
+        </button>
+      </div>
+
+      {/* Viewfinder */}
+      <div className="flex-1 relative overflow-hidden bg-black">
+        <video ref={videoRef} className="w-full h-full object-cover" playsInline autoPlay />
+        {error && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-6 text-center bg-black/80">
+            <AlertCircle size={40} className="text-red-400" />
+            <p className="text-sm text-white leading-relaxed">{error}</p>
+            <div className="flex flex-col gap-2 w-full max-w-xs">
+              <button onClick={() => startCamera(facingMode)}
+                className="py-2.5 px-5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-sm font-medium">
+                Retry
+              </button>
+              <button onClick={() => nativeFallbackRef.current?.click()}
+                className="py-2.5 px-5 bg-rose-600/80 hover:bg-rose-600 text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2">
+                <Video size={15} /> Use Device Camera
+              </button>
+            </div>
+            <input ref={nativeFallbackRef} type="file" accept="video/*" capture="environment" className="hidden"
+              onChange={e => { if (e.target.files?.[0]) { onCapture(e.target.files[0]); onClose() } }} />
+          </div>
+        )}
+      </div>
+
+      {/* Record / Stop button */}
+      <div className="bg-black/80 py-8 flex justify-center" style={{ paddingBottom: 'max(32px, env(safe-area-inset-bottom))' }}>
+        {recording ? (
+          <button onClick={stopRecording}
+            className="w-[72px] h-[72px] rounded-full bg-red-500 active:scale-95 transition-transform shadow-lg flex items-center justify-center">
+            <Square size={26} fill="white" className="text-white" />
+          </button>
+        ) : (
+          <button onClick={startRecording} disabled={!streaming || !!error}
+            className="w-[72px] h-[72px] rounded-full border-4 border-white disabled:opacity-30 active:scale-95 transition-transform shadow-lg flex items-center justify-center">
+            <Circle size={52} fill="#ef4444" className="text-red-500" />
+          </button>
+        )}
+      </div>
+    </div>
+  )
 }
 
 // ── In-browser camera overlay ─────────────────────────────────────────────────
@@ -88,8 +234,8 @@ function CameraCapture({
   return (
     <div className="fixed inset-0 z-50 bg-black flex flex-col">
       {/* Top bar */}
-      <div className="flex items-center justify-between px-4 py-3 bg-black/80 z-10">
-        <button onClick={onClose} className="p-2 rounded-full bg-white/10 text-white"><X size={18} /></button>
+      <div className="flex items-center justify-between px-4 py-3 bg-black/80 z-10" style={{ paddingTop: 'max(12px, env(safe-area-inset-top))' }}>
+        <button onClick={onClose} className="p-2 rounded-full bg-white/10 text-white [touch-action:manipulation]"><X size={18} /></button>
         <span className="text-sm font-medium text-white">Take Photo</span>
         <button
           onClick={() => setFacingMode(m => m === 'environment' ? 'user' : 'environment')}
@@ -137,7 +283,7 @@ function CameraCapture({
       </div>
 
       {/* Shutter */}
-      <div className="bg-black/80 py-8 flex justify-center">
+      <div className="bg-black/80 py-8 flex justify-center" style={{ paddingBottom: 'max(32px, env(safe-area-inset-bottom))' }}>
         <button onClick={capture} disabled={!streaming}
           className="w-[72px] h-[72px] rounded-full bg-white disabled:opacity-30 active:scale-95 transition-transform shadow-lg" />
       </div>
@@ -285,6 +431,7 @@ function FieldCard({
   onSubmitted: (entry: DatasetEntry, preview: string | null) => void
 }) {
   const [showCamera, setShowCamera] = useState(false)
+  const [showVideoCapture, setShowVideoCapture] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [local, setLocal] = useState<FieldSession>(session)
   const set = (patch: Partial<FieldSession>) => setLocal(s => ({ ...s, ...patch }))
@@ -458,28 +605,29 @@ function FieldCard({
                   </div>
                 )}
 
-                <div className={clsx('grid gap-2', btnCount >= 3 ? 'grid-cols-3' : btnCount === 2 ? 'grid-cols-2' : 'grid-cols-1')}>
-                  {showPhotoBtn && (
-                    <button onClick={() => setShowCamera(true)}
-                      className="flex items-center justify-center gap-2 py-3 rounded-xl bg-sky-600/20 hover:bg-sky-600/30 border border-sky-600/30 text-sky-400 text-sm font-medium transition-colors active:scale-[0.98]">
-                      <Camera size={16} /> Photo
-                    </button>
-                  )}
-                  {showVideoBtn && (
-                    <>
-                      <button onClick={() => { const el = document.getElementById(`video-capture-${field.id}`) as HTMLInputElement; el?.click() }}
-                        className="flex items-center justify-center gap-2 py-3 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 border border-rose-600/30 text-rose-400 text-sm font-medium transition-colors active:scale-[0.98]">
-                        <Video size={16} /> Record
-                      </button>
-                      <input id={`video-capture-${field.id}`} type="file" accept="video/*" capture="environment"
-                        className="hidden" onChange={e => { if (e.target.files?.[0]) { pickFile(e.target.files[0]); e.target.value = '' } }} />
-                    </>
+                {/* Capture / upload buttons — max 2 columns on mobile */}
+                <div className="space-y-2">
+                  {(showPhotoBtn || showVideoBtn) && (
+                    <div className={clsx('grid gap-2', (showPhotoBtn && showVideoBtn) ? 'grid-cols-2' : 'grid-cols-1')}>
+                      {showPhotoBtn && (
+                        <button onClick={() => setShowCamera(true)}
+                          className="flex items-center justify-center gap-2 py-3.5 rounded-xl bg-sky-600/20 active:bg-sky-600/30 border border-sky-600/30 text-sky-400 text-sm font-medium transition-colors [touch-action:manipulation]">
+                          <Camera size={16} /> Photo
+                        </button>
+                      )}
+                      {showVideoBtn && (
+                        <button onClick={() => setShowVideoCapture(true)}
+                          className="flex items-center justify-center gap-2 py-3.5 rounded-xl bg-rose-600/20 active:bg-rose-600/30 border border-rose-600/30 text-rose-400 text-sm font-medium transition-colors [touch-action:manipulation]">
+                          <Video size={16} /> Record
+                        </button>
+                      )}
+                    </div>
                   )}
                   {showUploadBtn && (
                     <>
                       <button onClick={() => fileInputRef.current?.click()}
-                        className="flex items-center justify-center gap-2 py-3 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 border border-purple-600/30 text-purple-400 text-sm font-medium transition-colors active:scale-[0.98]">
-                        <Upload size={16} /> Upload
+                        className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl bg-purple-600/20 active:bg-purple-600/30 border border-purple-600/30 text-purple-400 text-sm font-medium transition-colors [touch-action:manipulation]">
+                        <Upload size={16} /> Upload File
                       </button>
                       <input ref={fileInputRef} type="file" accept={acceptAttr}
                         className="hidden" onChange={e => { if (e.target.files?.[0]) { pickFile(e.target.files[0]); e.target.value = '' } }} />
@@ -492,7 +640,7 @@ function FieldCard({
 
           {field.type === 'text' && (
             <textarea rows={3}
-              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none"
+              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-[16px] leading-snug text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none"
               placeholder="Type your response here…"
               value={local.textValue}
               onChange={e => set({ textValue: e.target.value })} />
@@ -500,7 +648,7 @@ function FieldCard({
 
           {field.type === 'number' && (
             <input type="number"
-              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-[16px] text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
               placeholder="Enter a number"
               value={local.textValue}
               onChange={e => set({ textValue: e.target.value })} />
@@ -513,7 +661,7 @@ function FieldCard({
               </label>
               {field.description_mode === 'free_text' ? (
                 <textarea rows={2}
-                  className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none"
+                  className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-[16px] leading-snug text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none"
                   placeholder="Describe what you see…"
                   value={local.description}
                   onChange={e => set({ description: e.target.value })} />
@@ -541,8 +689,8 @@ function FieldCard({
 
           <button onClick={submit} disabled={local.submitting}
             className={clsx(
-              'w-full py-3 rounded-xl disabled:opacity-50 text-white font-semibold text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.98]',
-              count > 0 ? 'bg-indigo-700 hover:bg-indigo-600' : 'bg-indigo-600 hover:bg-indigo-500',
+              'w-full py-3.5 rounded-xl disabled:opacity-50 text-white font-semibold text-sm flex items-center justify-center gap-2 transition-colors [touch-action:manipulation]',
+              count > 0 ? 'bg-indigo-700 active:bg-indigo-600' : 'bg-indigo-600 active:bg-indigo-500',
             )}>
             {local.submitting
               ? <><Loader2 size={16} className="animate-spin" /> Submitting…</>
@@ -569,6 +717,12 @@ function FieldCard({
         <CameraCapture
           onCapture={file => { pickFile(file); setShowCamera(false) }}
           onClose={() => setShowCamera(false)}
+        />
+      )}
+      {showVideoCapture && (
+        <VideoCapture
+          onCapture={file => { pickFile(file); setShowVideoCapture(false) }}
+          onClose={() => setShowVideoCapture(false)}
         />
       )}
     </div>
@@ -749,9 +903,9 @@ export default function CollectPage({ token }: { token: string }) {
   }
 
   return (
-    <div className="min-h-screen bg-[#060810] text-white">
+    <div className="min-h-[100dvh] bg-[#060810] text-white">
       {/* Sticky header */}
-      <div className="sticky top-0 z-30 bg-[#060810]/95 backdrop-blur border-b border-gray-800/50">
+      <div className="sticky top-0 z-30 bg-[#060810]/95 backdrop-blur border-b border-gray-800/50" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
         <div className="max-w-lg mx-auto px-4 py-3">
           <div className="flex items-center justify-between mb-2">
             <div className="min-w-0">
@@ -773,7 +927,7 @@ export default function CollectPage({ token }: { token: string }) {
         </div>
       </div>
 
-      <div className="max-w-lg mx-auto px-4 py-6 space-y-4 pb-28">
+      <div className="max-w-lg mx-auto px-4 py-6 space-y-4" style={{ paddingBottom: 'calc(7rem + env(safe-area-inset-bottom))' }}>
         {/* Points banner */}
         {dataset.points_enabled && dataset.points_redemption_info && (
           <div className="flex items-center gap-3 bg-amber-900/20 border border-amber-800/40 rounded-2xl px-4 py-3">
@@ -791,13 +945,13 @@ export default function CollectPage({ token }: { token: string }) {
 
         {/* Field tabs */}
         {fields.length > 1 && (
-          <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+          <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-4 px-4 scrollbar-none">
             {fields.map((f, i) => {
               const count = sessions[f.id]?.submissions.length ?? 0
               const done = isFieldDone(f, sessions[f.id] ?? blankSession())
               return (
                 <button key={f.id} onClick={() => setCurrentIdx(i)}
-                  className={clsx('flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap transition-colors shrink-0',
+                  className={clsx('flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium whitespace-nowrap transition-colors shrink-0 [touch-action:manipulation]',
                     i === currentIdx
                       ? 'bg-indigo-600/30 border border-indigo-500/50 text-indigo-300'
                       : done
@@ -851,11 +1005,11 @@ export default function CollectPage({ token }: { token: string }) {
         {fields.length > 1 && (
           <div className="flex gap-3">
             <button onClick={() => setCurrentIdx(i => Math.max(0, i - 1))} disabled={currentIdx === 0}
-              className="flex-1 py-3 rounded-xl bg-gray-800/60 disabled:opacity-30 text-gray-300 text-sm flex items-center justify-center gap-2">
+              className="flex-1 py-3.5 rounded-xl bg-gray-800/60 disabled:opacity-30 text-gray-300 text-sm flex items-center justify-center gap-2 [touch-action:manipulation]">
               <ChevronLeft size={16} /> Previous
             </button>
             <button onClick={() => setCurrentIdx(i => Math.min(fields.length - 1, i + 1))} disabled={currentIdx === fields.length - 1}
-              className="flex-1 py-3 rounded-xl bg-gray-800/60 disabled:opacity-30 text-gray-300 text-sm flex items-center justify-center gap-2">
+              className="flex-1 py-3.5 rounded-xl bg-gray-800/60 disabled:opacity-30 text-gray-300 text-sm flex items-center justify-center gap-2 [touch-action:manipulation]">
               Next <ChevronRight size={16} />
             </button>
           </div>
@@ -864,13 +1018,13 @@ export default function CollectPage({ token }: { token: string }) {
         {/* Finish button — shown when all required fields have ≥1 submission */}
         {requiredDone && (
           <button onClick={() => setFinished(true)}
-            className="w-full py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.98] shadow-lg shadow-emerald-900/30">
+            className="w-full py-4 rounded-2xl bg-emerald-600 active:bg-emerald-500 text-white font-bold text-base flex items-center justify-center gap-2 transition-colors [touch-action:manipulation] shadow-lg shadow-emerald-900/30">
             <CheckCircle2 size={16} /> Finish &amp; Submit
           </button>
         )}
       </div>
 
-      <div className="fixed bottom-0 left-0 right-0 bg-[#060810]/90 backdrop-blur border-t border-gray-800/50 px-4 py-3 text-center">
+      <div className="fixed bottom-0 left-0 right-0 bg-[#060810]/90 backdrop-blur border-t border-gray-800/50 px-4 pt-3 text-center" style={{ paddingBottom: 'max(12px, env(safe-area-inset-bottom))' }}>
         <p className="text-[10px] text-gray-600">Powered by <span className="text-gray-500">MLDock.io</span></p>
       </div>
     </div>
