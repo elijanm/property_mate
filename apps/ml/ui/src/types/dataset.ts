@@ -1,4 +1,4 @@
-export type FieldType = 'image' | 'file' | 'text' | 'number'
+export type FieldType = 'image' | 'video' | 'media' | 'file' | 'text' | 'number'
 export type CaptureMode = 'camera_only' | 'upload_only' | 'both'
 export type DescriptionMode = 'none' | 'free_text' | 'preset'
 export type DatasetStatus = 'draft' | 'active' | 'closed'
@@ -40,6 +40,7 @@ export interface DatasetProfile {
   reference_type: ReferenceType
   entry_count_cache: number
   discoverable: boolean
+  contributor_allowlist: string[]
   points_enabled: boolean
   points_per_entry: number
   points_redemption_info: string
@@ -136,6 +137,7 @@ export interface DatasetCreatePayload {
   fields: Omit<DatasetField, 'id'>[]
   visibility?: DatasetVisibility
   discoverable?: boolean
+  contributor_allowlist?: string[]
   points_enabled: boolean
   points_per_entry: number
   points_redemption_info: string

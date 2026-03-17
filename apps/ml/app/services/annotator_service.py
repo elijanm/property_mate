@@ -92,6 +92,10 @@ async def get_available_tasks(email: str, page: int = 1, limit: int = 20) -> lis
     result = []
     for d in datasets:
         did = str(d.id)
+        # Skip datasets with an allowlist that doesn't include this annotator
+        allowlist = getattr(d, 'contributor_allowlist', []) or []
+        if allowlist and email not in allowlist:
+            continue
         collector = collector_map.get(did)
         field_count = len(d.fields) if d.fields else 0
         is_repeatable = any(getattr(f, 'repeatable', False) for f in d.fields)
@@ -187,6 +191,10 @@ async def join_task(email: str, dataset_id: str) -> DatasetCollector:
         raise ValueError("Dataset is not open to contributors")
     if dataset.status != "active":
         raise ValueError("Dataset is not active")
+    # Enforce allowlist
+    allowlist = getattr(dataset, 'contributor_allowlist', []) or []
+    if allowlist and email not in allowlist:
+        raise ValueError("You are not invited to contribute to this dataset")
 
     # Check for existing collector
     existing = await DatasetCollector.find_one(

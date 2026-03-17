@@ -8,7 +8,6 @@ import type {
   RewardRedemption,
   PlatformRewardRate,
 } from '@/types/annotator'
-import { useAuth } from '@/context/AuthContext'
 import {
   LayoutDashboard, ListTodo, Gift, User,
   Star, CheckCircle, AlertCircle, Copy, Share2,
@@ -654,8 +653,8 @@ function RewardsTab({ profile, onNavigateProfile }: { profile: AnnotatorProfile;
 }
 
 // ── Profile Tab ───────────────────────────────────────────────────────────────
-function ProfileTab({ profile, onUpdated }: { profile: AnnotatorProfile; onUpdated: (p: AnnotatorProfile) => void }) {
-  const { logout } = useAuth()
+function ProfileTab({ profile, onUpdated, onLogout }: { profile: AnnotatorProfile; onUpdated: (p: AnnotatorProfile) => void; onLogout: () => void }) {
+
   const [fullName, setFullName] = useState(profile.full_name)
   const [phone, setPhone] = useState(profile.phone_number ?? '')
   const [country, setCountry] = useState(profile.country)
@@ -859,7 +858,7 @@ function ProfileTab({ profile, onUpdated }: { profile: AnnotatorProfile; onUpdat
 
       {/* Logout */}
       <button
-        onClick={logout}
+        onClick={onLogout}
         className="w-full py-3 rounded-xl border border-red-900/40 text-red-400 hover:bg-red-900/20 text-sm font-semibold transition-colors flex items-center justify-center gap-2"
       >
         <LogOut size={15} /> Sign Out
@@ -869,7 +868,7 @@ function ProfileTab({ profile, onUpdated }: { profile: AnnotatorProfile; onUpdat
 }
 
 // ── Main Component ─────────────────────────────────────────────────────────────
-export default function AnnotatorPortalPage() {
+export default function AnnotatorPortalPage({ onLogout }: { onLogout?: () => void }) {
   const [tab, setTab] = useState<Tab>('dashboard')
   const [profile, setProfile] = useState<AnnotatorProfile | null>(null)
   const [stats, setStats] = useState<AnnotatorStats | null>(null)
@@ -933,7 +932,7 @@ export default function AnnotatorPortalPage() {
           <RewardsTab profile={profile} onNavigateProfile={() => setTab('profile')} />
         )}
         {tab === 'profile' && profile && (
-          <ProfileTab profile={profile} onUpdated={setProfile} />
+          <ProfileTab profile={profile} onUpdated={setProfile} onLogout={onLogout ?? (() => window.location.reload())} />
         )}
       </main>
 

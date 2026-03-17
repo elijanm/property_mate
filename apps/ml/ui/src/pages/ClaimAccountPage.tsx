@@ -16,7 +16,6 @@ import {
 } from 'lucide-react'
 import clsx from 'clsx'
 import client from '@/api/client'
-import { useAuth } from '@/context/AuthContext'
 
 // ── API helpers (no auth required) ────────────────────────────────────────────
 
@@ -292,7 +291,6 @@ function OtpTab({
 // ── Main page ──────────────────────────────────────────────────────────────────
 
 export default function ClaimAccountPage({ token }: { token: string }) {
-  const { loginWithToken } = useAuth()
   const [info, setInfo] = useState<ClaimInfo | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
@@ -311,14 +309,16 @@ export default function ClaimAccountPage({ token }: { token: string }) {
   }, [token])
 
   const handleSuccess = (result: ClaimResult) => {
-    loginWithToken(result.access_token, result.refresh_token, {
+    // Store annotator tokens in separate namespace — never overwrites engineer session
+    localStorage.setItem('ml_annotator_token', result.access_token)
+    localStorage.setItem('ml_annotator_refresh', result.refresh_token)
+    localStorage.setItem('ml_annotator_user', JSON.stringify({
       email: result.user.email,
       role: result.user.role,
       full_name: result.user.name,
       org_id: '',
-    })
+    }))
     setSuccess(true)
-    // App.tsx renders AnnotatorPortalPage for role="annotator" — redirect to /
     setTimeout(() => { window.location.href = '/' }, 1500)
   }
 

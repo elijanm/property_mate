@@ -23,7 +23,8 @@ class DatasetField(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     label: str                                    # shown to collector
     instruction: str = ""                         # guidance text / photo tips
-    type: str = "image"                           # image | file | text | number
+    type: str = "image"                           # image | video | media | file | text | number
+                                                  # media = accept both image + video
     # image / file settings
     capture_mode: str = "both"                    # camera_only | upload_only | both
     required: bool = True
@@ -60,6 +61,8 @@ class DatasetProfile(Document):
 
     # Contributor task discovery — when True, appears in annotator task feed
     discoverable: bool = False
+    # Optional allowlist of annotator emails; empty = open to all contributors
+    contributor_allowlist: List[str] = []
 
     # Points / incentive system
     points_enabled: bool = False

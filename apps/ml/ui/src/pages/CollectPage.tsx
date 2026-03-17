@@ -10,7 +10,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   Camera, Upload, CheckCircle2, ChevronLeft, ChevronRight,
   Loader2, X, Star, Gift, AlertCircle, RefreshCw, Image as ImageIcon,
-  Plus, Repeat2, MapPin, Navigation, ShieldCheck,
+  Plus, Repeat2, MapPin, Navigation, ShieldCheck, Video, Film,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { collectApi } from '@/api/datasets'
@@ -18,7 +18,8 @@ import type { CollectFormDefinition, DatasetField, DatasetEntry } from '@/types/
 
 function getLoggedInAnnotator(): { email: string; name: string } | null {
   try {
-    const raw = localStorage.getItem('ml_user')
+    // Check new separate annotator namespace first, fall back to legacy ml_user
+    const raw = localStorage.getItem('ml_annotator_user') || localStorage.getItem('ml_user')
     if (!raw) return null
     const u = JSON.parse(raw)
     if (u?.role === 'annotator' && u?.email) return { email: u.email, name: u.full_name || u.email }
@@ -294,12 +295,14 @@ function FieldCard({
   }, [session.submissions.length])  // eslint-disable-line
 
   const pickFile = (file: File) => {
-    const preview = file.type.startsWith('image/') ? URL.createObjectURL(file) : null
+    const preview = (file.type.startsWith('image/') || file.type.startsWith('video/'))
+      ? URL.createObjectURL(file)
+      : null
     set({ file, preview, error: '' })
   }
 
   const submit = async () => {
-    if ((field.type === 'image' || field.type === 'file') && !local.file && field.required) {
+    if (['image', 'video', 'media', 'file'].includes(field.type) && !local.file && field.required) {
       set({ error: 'Please capture or upload a file.' }); return
     }
     if ((field.type === 'text' || field.type === 'number') && !local.textValue.trim() && field.required) {
@@ -338,8 +341,16 @@ function FieldCard({
       <div className="px-4 pt-4 pb-3">
         <div className="flex items-start gap-3">
           <div className={clsx('w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5',
-            field.type === 'image' ? 'bg-sky-900/60' : field.type === 'file' ? 'bg-purple-900/60' : 'bg-gray-700/60')}>
-            {field.type === 'image' ? <ImageIcon size={16} className="text-sky-400" /> : field.type === 'file' ? <Upload size={16} className="text-purple-400" /> : <span className="text-xs text-gray-400">T</span>}
+            field.type === 'image' ? 'bg-sky-900/60'
+            : field.type === 'video' ? 'bg-rose-900/60'
+            : field.type === 'media' ? 'bg-violet-900/60'
+            : field.type === 'file' ? 'bg-purple-900/60'
+            : 'bg-gray-700/60')}>
+            {field.type === 'image' ? <ImageIcon size={16} className="text-sky-400" />
+            : field.type === 'video' ? <Video size={16} className="text-rose-400" />
+            : field.type === 'media' ? <Film size={16} className="text-violet-400" />
+            : field.type === 'file' ? <Upload size={16} className="text-purple-400" />
+            : <span className="text-xs text-gray-400">T</span>}
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
@@ -375,8 +386,14 @@ function FieldCard({
           {session.submissions.some(s => s.preview) && (
             <div className="flex gap-1.5 flex-wrap">
               {session.submissions.map((s, i) => s.preview ? (
-                <img key={i} src={s.preview} alt={`capture ${i + 1}`}
-                  className="w-14 h-14 rounded-xl object-cover border border-emerald-800/40" />
+                s.entry.file_mime?.startsWith('video/') ? (
+                  <div key={i} className="w-14 h-14 rounded-xl bg-black border border-emerald-800/40 flex items-center justify-center overflow-hidden">
+                    <Video size={20} className="text-rose-400" />
+                  </div>
+                ) : (
+                  <img key={i} src={s.preview} alt={`capture ${i + 1}`}
+                    className="w-14 h-14 rounded-xl object-cover border border-emerald-800/40" />
+                )
               ) : (
                 <div key={i} className="w-14 h-14 rounded-xl bg-emerald-900/20 border border-emerald-800/30 flex items-center justify-center">
                   <CheckCircle2 size={16} className="text-emerald-500" />
@@ -396,50 +413,82 @@ function FieldCard({
             </p>
           )}
 
-          {(field.type === 'image' || field.type === 'file') && (
-            <>
-              {local.preview ? (
-                <div className="relative">
-                  <img src={local.preview} alt="Preview" className="w-full h-52 object-cover rounded-xl border border-gray-600/50" />
-                  <button onClick={() => set({ file: null, preview: null })}
-                    className="absolute top-2 right-2 p-1.5 rounded-full bg-black/60 text-white hover:bg-black/80">
-                    <X size={14} />
-                  </button>
-                </div>
-              ) : local.file ? (
-                <div className="flex items-center gap-3 bg-gray-700/50 rounded-xl px-3 py-3">
-                  <Upload size={18} className="text-gray-400 shrink-0" />
-                  <span className="text-sm text-gray-300 truncate flex-1">{local.file.name}</span>
-                  <button onClick={() => set({ file: null })} className="text-gray-500 hover:text-white"><X size={14} /></button>
-                </div>
-              ) : (
-                <div className="rounded-xl border-2 border-dashed border-gray-600/50 bg-gray-800/30 p-6 text-center">
-                  <ImageIcon size={28} className="text-gray-600 mx-auto mb-2" />
-                  <p className="text-xs text-gray-500">No image selected</p>
-                </div>
-              )}
-
-              <div className={clsx('grid gap-2', field.capture_mode === 'both' ? 'grid-cols-2' : 'grid-cols-1')}>
-                {(field.capture_mode === 'camera_only' || field.capture_mode === 'both') && (
-                  <button onClick={() => setShowCamera(true)}
-                    className="flex items-center justify-center gap-2 py-3 rounded-xl bg-sky-600/20 hover:bg-sky-600/30 border border-sky-600/30 text-sky-400 text-sm font-medium transition-colors active:scale-[0.98]">
-                    <Camera size={16} /> Take Photo
-                  </button>
-                )}
-                {(field.capture_mode === 'upload_only' || field.capture_mode === 'both') && (
-                  <>
-                    <button onClick={() => fileInputRef.current?.click()}
-                      className="flex items-center justify-center gap-2 py-3 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 border border-purple-600/30 text-purple-400 text-sm font-medium transition-colors active:scale-[0.98]">
-                      <Upload size={16} /> Upload
+          {['image', 'video', 'media', 'file'].includes(field.type) && (() => {
+            const isVideoFile = local.file?.type.startsWith('video/')
+            const acceptAttr = field.type === 'image' ? 'image/*'
+              : field.type === 'video' ? 'video/*'
+              : field.type === 'media' ? 'image/*,video/*'
+              : '*/*'
+            // For media: count of camera buttons determines grid cols
+            const showPhotoBtn = field.type !== 'video' && (field.capture_mode === 'camera_only' || field.capture_mode === 'both')
+            const showVideoBtn = (field.type === 'video' || field.type === 'media') && (field.capture_mode === 'camera_only' || field.capture_mode === 'both')
+            const showUploadBtn = field.capture_mode === 'upload_only' || field.capture_mode === 'both'
+            const btnCount = (showPhotoBtn ? 1 : 0) + (showVideoBtn ? 1 : 0) + (showUploadBtn ? 1 : 0)
+            return (
+              <>
+                {local.preview ? (
+                  <div className="relative">
+                    {isVideoFile ? (
+                      <video src={local.preview} controls className="w-full max-h-52 rounded-xl border border-gray-600/50 bg-black" />
+                    ) : (
+                      <img src={local.preview} alt="Preview" className="w-full h-52 object-cover rounded-xl border border-gray-600/50" />
+                    )}
+                    <button onClick={() => set({ file: null, preview: null })}
+                      className="absolute top-2 right-2 p-1.5 rounded-full bg-black/60 text-white hover:bg-black/80">
+                      <X size={14} />
                     </button>
-                    <input ref={fileInputRef} type="file"
-                      accept={field.type === 'image' ? 'image/*' : '*/*'}
-                      className="hidden" onChange={e => { if (e.target.files?.[0]) { pickFile(e.target.files[0]); e.target.value = '' } }} />
-                  </>
+                  </div>
+                ) : local.file ? (
+                  <div className="flex items-center gap-3 bg-gray-700/50 rounded-xl px-3 py-3">
+                    <Upload size={18} className="text-gray-400 shrink-0" />
+                    <span className="text-sm text-gray-300 truncate flex-1">{local.file.name}</span>
+                    <button onClick={() => set({ file: null })} className="text-gray-500 hover:text-white"><X size={14} /></button>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border-2 border-dashed border-gray-600/50 bg-gray-800/30 p-6 text-center">
+                    {field.type === 'video' ? <Video size={28} className="text-gray-600 mx-auto mb-2" />
+                      : field.type === 'media' ? <Film size={28} className="text-gray-600 mx-auto mb-2" />
+                      : <ImageIcon size={28} className="text-gray-600 mx-auto mb-2" />}
+                    <p className="text-xs text-gray-500">
+                      {field.type === 'video' ? 'No video selected'
+                        : field.type === 'media' ? 'No image or video selected'
+                        : field.type === 'image' ? 'No image selected'
+                        : 'No file selected'}
+                    </p>
+                  </div>
                 )}
-              </div>
-            </>
-          )}
+
+                <div className={clsx('grid gap-2', btnCount >= 3 ? 'grid-cols-3' : btnCount === 2 ? 'grid-cols-2' : 'grid-cols-1')}>
+                  {showPhotoBtn && (
+                    <button onClick={() => setShowCamera(true)}
+                      className="flex items-center justify-center gap-2 py-3 rounded-xl bg-sky-600/20 hover:bg-sky-600/30 border border-sky-600/30 text-sky-400 text-sm font-medium transition-colors active:scale-[0.98]">
+                      <Camera size={16} /> Photo
+                    </button>
+                  )}
+                  {showVideoBtn && (
+                    <>
+                      <button onClick={() => { const el = document.getElementById(`video-capture-${field.id}`) as HTMLInputElement; el?.click() }}
+                        className="flex items-center justify-center gap-2 py-3 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 border border-rose-600/30 text-rose-400 text-sm font-medium transition-colors active:scale-[0.98]">
+                        <Video size={16} /> Record
+                      </button>
+                      <input id={`video-capture-${field.id}`} type="file" accept="video/*" capture="environment"
+                        className="hidden" onChange={e => { if (e.target.files?.[0]) { pickFile(e.target.files[0]); e.target.value = '' } }} />
+                    </>
+                  )}
+                  {showUploadBtn && (
+                    <>
+                      <button onClick={() => fileInputRef.current?.click()}
+                        className="flex items-center justify-center gap-2 py-3 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 border border-purple-600/30 text-purple-400 text-sm font-medium transition-colors active:scale-[0.98]">
+                        <Upload size={16} /> Upload
+                      </button>
+                      <input ref={fileInputRef} type="file" accept={acceptAttr}
+                        className="hidden" onChange={e => { if (e.target.files?.[0]) { pickFile(e.target.files[0]); e.target.value = '' } }} />
+                    </>
+                  )}
+                </div>
+              </>
+            )
+          })()}
 
           {field.type === 'text' && (
             <textarea rows={3}

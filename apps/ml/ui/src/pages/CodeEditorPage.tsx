@@ -878,6 +878,7 @@ export default function CodeEditorPage() {
                 reference_type: null,
                 entry_count_cache: 0,
                 discoverable: false,
+                contributor_allowlist: [],
                 points_enabled: false,
                 points_per_entry: 1,
                 points_redemption_info: '',

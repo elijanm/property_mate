@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, Globe, Lock, GitFork, Link2, BarChart2, MapPin, TrendingUp, Award } from 'lucide-react'
+import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, Globe, Lock, GitFork, Link2, BarChart2, MapPin, TrendingUp, Award, Video, Film } from 'lucide-react'
 import type { DatasetOverview } from '@/types/dataset'
 import clsx from 'clsx'
 import { datasetsApi } from '@/api/datasets'
@@ -11,6 +11,8 @@ import type { DatasetProfile, DatasetCollector, DatasetField, DatasetCreatePaylo
 
 const FIELD_TYPE_ICONS: Record<FieldType, typeof ImageIcon> = {
   image: ImageIcon,
+  video: Video,
+  media: Film,
   file: FileText,
   text: FileText,
   number: Hash,
@@ -37,7 +39,7 @@ function FieldRow({
   const [preset, setPreset] = useState('')
   const [labelInput, setLabelInput] = useState('')
 
-  const isMedia = field.type === 'image' || field.type === 'file'
+  const isMedia = field.type === 'image' || field.type === 'video' || field.type === 'media' || field.type === 'file'
 
   return (
     <div className="border border-gray-700/60 rounded-xl bg-gray-800/40 overflow-hidden">
@@ -48,8 +50,15 @@ function FieldRow({
       >
         <GripVertical size={14} className="text-gray-600 shrink-0" />
         <span className="text-[10px] font-mono text-gray-500 w-5 shrink-0">{idx + 1}</span>
-        <div className={clsx('p-1.5 rounded-lg', field.type === 'image' ? 'bg-sky-900/50' : 'bg-purple-900/50')}>
-          {field.type === 'image' ? <ImageIcon size={12} className="text-sky-400" /> : <FileText size={12} className="text-purple-400" />}
+        <div className={clsx('p-1.5 rounded-lg',
+          field.type === 'image' ? 'bg-sky-900/50'
+          : field.type === 'video' ? 'bg-rose-900/50'
+          : field.type === 'media' ? 'bg-violet-900/50'
+          : 'bg-purple-900/50')}>
+          {field.type === 'image' ? <ImageIcon size={12} className="text-sky-400" />
+          : field.type === 'video' ? <Video size={12} className="text-rose-400" />
+          : field.type === 'media' ? <Film size={12} className="text-violet-400" />
+          : <FileText size={12} className="text-purple-400" />}
         </div>
         <span className="flex-1 text-sm text-white truncate">{field.label || <span className="text-gray-500 italic">Untitled field</span>}</span>
         <button onClick={e => { e.stopPropagation(); onRemove() }} className="p-1 rounded hover:bg-red-900/40 text-gray-500 hover:text-red-400 transition-colors">
@@ -79,7 +88,9 @@ function FieldRow({
                 onChange={e => onChange({ ...field, type: e.target.value as FieldType })}
               >
                 <option value="image">Image</option>
-                <option value="file">File</option>
+                <option value="video">Video</option>
+                <option value="media">Image or Video</option>
+                <option value="file">File (any)</option>
                 <option value="text">Text</option>
                 <option value="number">Number</option>
               </select>
@@ -306,6 +317,9 @@ function DatasetSlideOver({
     initial?.fields?.map(({ id: _id, ...rest }) => rest) ?? [BLANK_FIELD()]
   )
   const [discoverable, setDiscoverable] = useState(initial?.discoverable ?? false)
+  const [allowlistMode, setAllowlistMode] = useState((initial?.contributor_allowlist?.length ?? 0) > 0)
+  const [allowlist, setAllowlist] = useState<string[]>(initial?.contributor_allowlist ?? [])
+  const [allowlistInput, setAllowlistInput] = useState('')
   const [pointsEnabled, setPointsEnabled] = useState(initial?.points_enabled ?? false)
   const [pointsPer, setPointsPer] = useState(initial?.points_per_entry ?? 1)
   const [pointsInfo] = useState(initial?.points_redemption_info ?? '')
@@ -332,6 +346,7 @@ function DatasetSlideOver({
         description: desc, category,
         fields: fields.map((f, i) => ({ ...f, order: i })),
         discoverable,
+        contributor_allowlist: allowlistMode ? allowlist : [],
         points_enabled: pointsEnabled, points_per_entry: pointsPer,
         points_redemption_info: pointsInfo,
         require_location: requireLocation,
@@ -411,21 +426,102 @@ function DatasetSlideOver({
             </div>
           </div>
 
-          {/* Discoverable */}
-          <label className="flex items-start gap-3 bg-gray-800/50 border border-gray-700/50 rounded-xl p-4 cursor-pointer hover:border-indigo-600/50 transition-colors">
-            <input
-              type="checkbox"
-              checked={discoverable}
-              onChange={e => setDiscoverable(e.target.checked)}
-              className="mt-0.5 accent-indigo-500 w-4 h-4 cursor-pointer"
-            />
-            <div>
-              <p className="text-sm font-semibold text-white">Open to contributors</p>
-              <p className="text-xs text-gray-500 mt-0.5">
-                When enabled, any annotator can discover this dataset in their task feed and start contributing.
-              </p>
-            </div>
-          </label>
+          {/* Discoverable + Allowlist */}
+          <div className="border border-gray-700/50 rounded-xl overflow-hidden">
+            <label className="flex items-start gap-3 bg-gray-800/50 p-4 cursor-pointer hover:bg-gray-800/70 transition-colors">
+              <input
+                type="checkbox"
+                checked={discoverable}
+                onChange={e => setDiscoverable(e.target.checked)}
+                className="mt-0.5 accent-indigo-500 w-4 h-4 cursor-pointer"
+              />
+              <div>
+                <p className="text-sm font-semibold text-white">Open to contributors</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Annotators can discover this dataset in their task feed and start contributing.
+                </p>
+              </div>
+            </label>
+
+            {discoverable && (
+              <div className="px-4 pb-4 pt-1 border-t border-gray-700/50 bg-gray-800/20 space-y-3">
+                {/* Audience selector */}
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setAllowlistMode(false)}
+                    className={clsx('flex-1 py-2 rounded-lg border text-xs font-semibold transition-colors',
+                      !allowlistMode
+                        ? 'bg-indigo-600/20 border-indigo-500/60 text-indigo-300'
+                        : 'border-gray-700 text-gray-400 hover:border-gray-600')}
+                  >
+                    All contributors
+                  </button>
+                  <button
+                    onClick={() => setAllowlistMode(true)}
+                    className={clsx('flex-1 py-2 rounded-lg border text-xs font-semibold transition-colors',
+                      allowlistMode
+                        ? 'bg-indigo-600/20 border-indigo-500/60 text-indigo-300'
+                        : 'border-gray-700 text-gray-400 hover:border-gray-600')}
+                  >
+                    Selected only
+                  </button>
+                </div>
+
+                {allowlistMode && (
+                  <div className="space-y-2">
+                    <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Allowed contributor emails</p>
+                    {/* Email tag input */}
+                    <div className="flex gap-2">
+                      <input
+                        type="email"
+                        className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                        placeholder="annotator@example.com"
+                        value={allowlistInput}
+                        onChange={e => setAllowlistInput(e.target.value)}
+                        onKeyDown={e => {
+                          if ((e.key === 'Enter' || e.key === ',') && allowlistInput.trim()) {
+                            e.preventDefault()
+                            const email = allowlistInput.trim().toLowerCase()
+                            if (email && !allowlist.includes(email)) {
+                              setAllowlist(prev => [...prev, email])
+                            }
+                            setAllowlistInput('')
+                          }
+                        }}
+                      />
+                      <button
+                        onClick={() => {
+                          const email = allowlistInput.trim().toLowerCase()
+                          if (email && !allowlist.includes(email)) {
+                            setAllowlist(prev => [...prev, email])
+                          }
+                          setAllowlistInput('')
+                        }}
+                        className="px-3 py-2 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 border border-indigo-600/40 text-indigo-300 text-sm font-medium transition-colors"
+                      >
+                        Add
+                      </button>
+                    </div>
+                    {/* Tags */}
+                    {allowlist.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {allowlist.map(email => (
+                          <span key={email} className="flex items-center gap-1.5 bg-indigo-900/30 border border-indigo-800/50 text-indigo-300 rounded-full px-2.5 py-1 text-xs">
+                            {email}
+                            <button onClick={() => setAllowlist(prev => prev.filter(e => e !== email))} className="text-indigo-400 hover:text-white">
+                              <X size={11} />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-amber-400/80">No contributors added yet. Type an email above and press Enter.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Points */}
           <div className="border border-gray-700/50 rounded-xl p-4 space-y-3">
@@ -651,7 +747,10 @@ function DatasetCard({
             )}
             {dataset.discoverable && (
               <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-indigo-900/40 border border-indigo-800/40 text-indigo-400 font-semibold">
-                <Users size={9} /> Open to contributors
+                <Users size={9} />
+                {dataset.contributor_allowlist?.length > 0
+                  ? `${dataset.contributor_allowlist.length} contributor${dataset.contributor_allowlist.length !== 1 ? 's' : ''}`
+                  : 'Open to contributors'}
               </span>
             )}
             {dataset.points_enabled && (

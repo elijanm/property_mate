@@ -37,6 +37,7 @@ class DatasetCreateRequest(BaseModel):
     fields: List[FieldIn] = []
     visibility: str = "private"
     discoverable: bool = False
+    contributor_allowlist: List[str] = []
     points_enabled: bool = False
     points_per_entry: int = 1
     points_redemption_info: str = ""
@@ -52,6 +53,7 @@ class DatasetUpdateRequest(BaseModel):
     status: Optional[str] = None
     visibility: Optional[str] = None
     discoverable: Optional[bool] = None
+    contributor_allowlist: Optional[List[str]] = None
     fields: Optional[List[FieldIn]] = None
     points_enabled: Optional[bool] = None
     points_per_entry: Optional[int] = None

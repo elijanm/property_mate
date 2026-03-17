@@ -163,6 +163,20 @@ const PAGE_TITLE: Record<Page, string> = {
 
 export default function App() {
   const { user, logout, loading: authLoading, pendingEmail, clearPending, login } = useAuth()
+
+  // Annotator session — stored separately from engineer/admin session
+  const [annotatorUser, setAnnotatorUser] = useState(() => {
+    try {
+      const raw = localStorage.getItem('ml_annotator_user')
+      return raw ? JSON.parse(raw) : null
+    } catch { return null }
+  })
+  const logoutAnnotator = () => {
+    localStorage.removeItem('ml_annotator_token')
+    localStorage.removeItem('ml_annotator_refresh')
+    localStorage.removeItem('ml_annotator_user')
+    setAnnotatorUser(null)
+  }
   const [resetToken, setResetToken] = useState<string | null>(_RESET_TOKEN_FROM_URL)
   const [authPage, setAuthPage] = useState<'login' | 'register' | 'landing' | 'getting-started' | 'api-docs' | 'privacy' | 'terms' | 'forgot-password' | 'reset-password'>(
     _RESET_TOKEN_FROM_URL ? 'reset-password' : 'landing'
@@ -315,6 +329,10 @@ export default function App() {
   }
 
   if (!user) {
+    // Annotator with separate session (no engineer login) → show annotator portal
+    if (annotatorUser) {
+      return <AnnotatorPortalPage onLogout={logoutAnnotator} />
+    }
     if (pendingEmail) {
       return (
         <VerifyEmailPage
@@ -379,9 +397,9 @@ export default function App() {
       : <RegisterPage onGoLogin={() => setAuthPage('login')} />
   }
 
-  // Annotators get their own mobile portal — no sidebar
+  // Legacy: annotator token stored in main session — show annotator portal
   if (user?.role === 'annotator') {
-    return <AnnotatorPortalPage />
+    return <AnnotatorPortalPage onLogout={logout} />
   }
 
   return (
