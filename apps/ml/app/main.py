@@ -12,6 +12,7 @@ from app.services.scheduler_service import start_scheduler, stop_scheduler
 from app.services.auth_service import ensure_admin_exists, ensure_sample_model_deployed
 from app.services.gpu_dispatch_service import resume_interrupted_gpu_jobs
 from app.middleware.request_logger import RequestLoggerMiddleware
+from app.utils.s3_url import ensure_bucket_exists
 
 logger = structlog.get_logger(__name__)
 
@@ -21,6 +22,7 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("ml_service_starting", app=settings.APP_NAME, port=settings.PORT)
     await init_db()
+    ensure_bucket_exists()
     await scan_and_register_plugins()
     await start_scheduler()
     await ensure_admin_exists()
