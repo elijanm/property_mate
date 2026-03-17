@@ -1096,6 +1096,29 @@ async def update_contributor_status(
     return {"email": email, "is_active": ml_user.is_active}
 
 
+@router.get("/accounts", dependencies=[RequireAdmin])
+async def list_accounts():
+    """Return all self-registered account owners (engineer/admin role = created their own org).
+    Excludes invite-registered sub-users who start with role 'viewer'."""
+    users = await MLUser.find(
+        {"role": {"$in": ["engineer", "admin"]}, "is_active": True}
+    ).sort("-created_at").to_list()
+
+    return [
+        {
+            "email": u.email,
+            "full_name": u.full_name,
+            "role": u.role,
+            "org_id": u.org_id,
+            "is_verified": u.is_verified,
+            "is_active": u.is_active,
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+            "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
+        }
+        for u in users
+    ]
+
+
 @router.post("/backfill/model-sizes", dependencies=[RequireAdmin])
 async def backfill_model_sizes():
     """One-shot: populate model_size_bytes on existing ModelDeployment records that have it unset."""

@@ -3,6 +3,7 @@ from app.api.v1 import trainers, training, inference, evaluation, models, config
 from app.api.v1 import auth, api_keys, ab_tests, alert_rules, batch, audit, experiments, explain, users, wallet, admin
 from app.api.v1 import datasets, collect, editor, annotate
 from app.api.v1 import staff, annotator_portal
+from app.api.v1 import billing
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(editor.router)
@@ -32,3 +33,4 @@ api_router.include_router(wallet.router)
 api_router.include_router(admin.router)
 api_router.include_router(datasets.router)
 api_router.include_router(collect.router)
+api_router.include_router(billing.router)

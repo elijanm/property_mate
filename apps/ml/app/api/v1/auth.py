@@ -163,3 +163,34 @@ async def me(authorization: Optional[str] = Header(None)):
     token = authorization.split(" ", 1)[1]
     user = await auth_service.get_current_user(token)
     return {"email": user.email, "full_name": user.full_name, "role": user.role, "org_id": user.org_id, "last_login_at": user.last_login_at}
+
+
+class UpdateProfileRequest(BaseModel):
+    full_name: Optional[str] = None
+    role: Optional[str] = None
+
+
+@router.patch("/profile")
+async def update_profile(body: UpdateProfileRequest, authorization: Optional[str] = Header(None)):
+    """Update the authenticated user's profile (full_name and/or role)."""
+    from fastapi import HTTPException
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = authorization.split(" ", 1)[1]
+    user = await auth_service.get_current_user(token)
+
+    # Only allow valid role upgrades: viewer → engineer
+    if body.role is not None:
+        allowed_roles = {"viewer", "engineer", "admin", "annotator"}
+        if body.role not in allowed_roles:
+            raise HTTPException(status_code=400, detail="Invalid role")
+        # Viewers can only upgrade to engineer; other roles unchanged by self
+        if user.role == "viewer" and body.role not in ("viewer", "engineer"):
+            raise HTTPException(status_code=403, detail="Viewers may only upgrade to engineer")
+        user.role = body.role
+
+    if body.full_name is not None:
+        user.full_name = body.full_name.strip()
+
+    await user.save()
+    return {"email": user.email, "full_name": user.full_name, "role": user.role, "org_id": user.org_id}

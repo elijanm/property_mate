@@ -24,6 +24,7 @@ import UsersPage from './components/UsersPage'
 import WalletPage from './pages/WalletPage'
 import AdminAnalyticsPage from './pages/AdminAnalyticsPage'
 import BillingSettingsPage from './components/BillingSettingsPage'
+import UserBillingPage from './pages/UserBillingPage'
 import UsageTrackerPage from './pages/UsageTrackerPage'
 import ProfilePage from './pages/ProfilePage'
 import AccountsPage from './pages/AccountsPage'
@@ -736,7 +737,7 @@ export default function App() {
               {page === 'analytics' && <AdminAnalyticsPage />}
               {page === 'datasets' && <DatasetPage />}
               {page === 'wallet' && <WalletPage />}
-              {page === 'billing' && <BillingSettingsPage />}
+              {page === 'billing' && (effectiveRole === 'admin' ? <BillingSettingsPage /> : <UserBillingPage />)}
               {page === 'usage' && <UsageTrackerPage />}
               {page === 'staff' && <StaffPage />}
               {page === 'profile' && <ProfilePage />}
