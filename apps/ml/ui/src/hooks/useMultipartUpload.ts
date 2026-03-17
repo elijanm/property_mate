@@ -45,10 +45,11 @@ export function useMultipartUpload(opts: MultipartUploadOptions = {}) {
 
         const { url } = await collectApi.getPartUrl(token, key, upload_id, partNumber)
 
+        // Do NOT set Content-Type — boto3 presigns upload_part without it,
+        // so including it causes a signature mismatch (403).
         const resp = await fetch(url, {
           method: 'PUT',
           body: chunk,
-          headers: { 'Content-Type': file.type || 'application/octet-stream' },
         })
 
         if (!resp.ok) throw new Error(`Part ${partNumber} failed (${resp.status})`)
