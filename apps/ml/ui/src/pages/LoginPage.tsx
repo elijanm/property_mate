@@ -4,7 +4,7 @@ import { authApi } from '../api/auth'
 import { Eye, EyeOff, Loader2, Mail, ArrowRight, Cpu, Zap, BarChart2, Layers } from 'lucide-react'
 import Logo from '@/components/Logo'
 
-interface Props { onGoRegister: () => void; onForgotPassword: () => void }
+interface Props { onGoHome: () => void; onGoRegister: () => void; onForgotPassword: () => void }
 
 const FEATURE_CARDS = [
   {
@@ -37,7 +37,7 @@ const FEATURE_CARDS = [
   },
 ]
 
-export default function LoginPage({ onGoRegister, onForgotPassword }: Props) {
+export default function LoginPage({ onGoHome, onGoRegister, onForgotPassword }: Props) {
   const { login } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -104,7 +104,9 @@ export default function LoginPage({ onGoRegister, onForgotPassword }: Props) {
         </div>
 
         <div className="relative">
-          <Logo size="md" />
+          <button onClick={onGoHome} className="outline-none">
+            <Logo size="md" />
+          </button>
         </div>
 
         <div className="relative space-y-8">
@@ -140,7 +142,9 @@ export default function LoginPage({ onGoRegister, onForgotPassword }: Props) {
       <div className="flex-1 flex flex-col items-center justify-center p-6 sm:p-12">
         {/* Mobile logo */}
         <div className="lg:hidden mb-10">
-          <Logo size="md" />
+          <button onClick={onGoHome} className="outline-none">
+            <Logo size="md" />
+          </button>
         </div>
 
         <div className="w-full max-w-sm">

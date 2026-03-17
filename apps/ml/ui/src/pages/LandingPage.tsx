@@ -12,6 +12,7 @@ import type { MLPlan } from '@/types/plan'
 interface Props {
   onSignIn: () => void
   onGetStarted: () => void
+  onGoContributor: () => void
   onApiDocs: () => void
   onGettingStarted: () => void
   onPrivacy: () => void
@@ -175,7 +176,7 @@ function FaqAccordion({ items }: { items: { q: string; a: string }[] }) {
   )
 }
 
-export default function LandingPage({ onSignIn, onGetStarted, onApiDocs, onGettingStarted, onPrivacy, onTerms }: Props) {
+export default function LandingPage({ onSignIn, onGetStarted, onGoContributor, onApiDocs, onGettingStarted, onPrivacy, onTerms }: Props) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [billingMode, setBillingMode] = useState<'ondemand' | 'monthly'>('monthly')
   const [rates, setRates] = useState(DEFAULT_ONDEMAND)
@@ -209,7 +210,9 @@ export default function LandingPage({ onSignIn, onGetStarted, onApiDocs, onGetti
       {/* ── Nav ── */}
       <nav className="sticky top-0 z-50 border-b border-white/5 bg-[#060810]/95 backdrop-blur">
         <div className="max-w-6xl mx-auto px-5 sm:px-8 flex items-center justify-between h-14">
-          <Logo size="sm" />
+          <button onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} className="outline-none">
+            <Logo size="sm" />
+          </button>
 
           <div className="hidden md:flex items-center gap-7 text-sm text-gray-500">
             <a href="#how" className="hover:text-white transition-colors">How it works</a>
@@ -295,6 +298,10 @@ export default function LandingPage({ onSignIn, onGetStarted, onApiDocs, onGetti
                   Log In
                 </button>
               </div>
+              <button onClick={onGoContributor}
+                className="mt-3 inline-flex items-center gap-1.5 text-sm text-emerald-400 hover:text-emerald-300 transition-colors font-medium">
+                Join as Data Contributor <ChevronRight size={14} />
+              </button>
 
               <p className="text-gray-700 text-xs mt-5">
                 No AWS account · No credit card required · No infrastructure to manage
@@ -750,7 +757,9 @@ export default function LandingPage({ onSignIn, onGetStarted, onApiDocs, onGetti
         <div className="max-w-6xl mx-auto px-5 sm:px-8 py-10">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
             <div className="space-y-1.5">
-              <Logo size="xs" />
+              <button onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} className="outline-none">
+                <Logo size="xs" />
+              </button>
               <div className="text-[10px] text-gray-700 pl-[34px]">Kreateyou Technologies Ltd, Kenya</div>
             </div>
             <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-gray-600">
@@ -758,7 +767,7 @@ export default function LandingPage({ onSignIn, onGetStarted, onApiDocs, onGetti
               <button onClick={onApiDocs} className="hover:text-gray-400 transition-colors">API</button>
               <button onClick={onPrivacy} className="hover:text-gray-400 transition-colors">Privacy</button>
               <button onClick={onTerms} className="hover:text-gray-400 transition-colors">Terms</button>
-              <button onClick={onGetStarted} className="hover:text-brand-400 transition-colors text-gray-500">Contribute a model</button>
+              <button onClick={onGoContributor} className="hover:text-emerald-400 transition-colors text-gray-500">Join as Contributor</button>
             </div>
           </div>
           <div className="mt-8 pt-6 border-t border-white/5 text-[11px] text-gray-700">

@@ -186,6 +186,7 @@ export default function App() {
   const [authPage, setAuthPage] = useState<'login' | 'register' | 'landing' | 'getting-started' | 'api-docs' | 'privacy' | 'terms' | 'forgot-password' | 'reset-password'>(
     _RESET_TOKEN_FROM_URL ? 'reset-password' : _INVITE_TOKEN_FROM_URL ? 'register' : 'landing'
   )
+  const [registerRole, setRegisterRole] = useState<'engineer' | 'annotator' | undefined>(undefined)
   const [docsSection, setDocsSection] = useState<string | undefined>()
   const [linkVerifying, setLinkVerifying] = useState(false)
   const [linkEmail, setLinkEmail] = useState('')
@@ -205,6 +206,9 @@ export default function App() {
       .then(res => { setLinkEmail(res.email); setLinkVerifying(false) })
       .catch(() => setLinkVerifying(false))
   }, [])
+
+  const [viewRole, setViewRole] = useState<string | null>(null)
+  const effectiveRole = viewRole ?? user?.role ?? ''
 
   const [deployments, setDeployments] = useState<ModelDeployment[]>([])
   const [selected, setSelected] = useState<ModelDeployment | null>(null)
@@ -383,7 +387,8 @@ export default function App() {
         <>
           <LandingPage
             onSignIn={() => setAuthPage('login')}
-            onGetStarted={() => setAuthPage('register')}
+            onGetStarted={() => { setRegisterRole(undefined); setAuthPage('register') }}
+            onGoContributor={() => { setRegisterRole('annotator'); setAuthPage('register') }}
             onApiDocs={() => { setDocsSection(undefined); setAuthPage('api-docs') }}
             onGettingStarted={() => setAuthPage('getting-started')}
             onPrivacy={() => setAuthPage('privacy')}
@@ -400,8 +405,8 @@ export default function App() {
       return <ResetPasswordPage token={resetToken} onDone={() => { setResetToken(null); setAuthPage('login') }} />
     }
     return authPage === 'login'
-      ? <LoginPage onGoRegister={() => setAuthPage('register')} onForgotPassword={() => setAuthPage('forgot-password')} />
-      : <RegisterPage onGoLogin={() => setAuthPage('login')} />
+      ? <LoginPage onGoHome={() => setAuthPage('landing')} onGoRegister={() => { setRegisterRole(undefined); setAuthPage('register') }} onForgotPassword={() => setAuthPage('forgot-password')} />
+      : <RegisterPage onGoHome={() => setAuthPage('landing')} onGoLogin={() => setAuthPage('login')} initialRole={registerRole} />
   }
 
   // Legacy: annotator token stored in main session — show annotator portal
@@ -424,13 +429,13 @@ export default function App() {
         {/* Nav — layout 1: grouped flat */}
         {navLayout === 1 && (
           <nav className="flex-1 p-3 overflow-y-auto space-y-4">
-            {NAV_GROUPS.filter(g => g.id !== 'admin' || user?.role === 'admin').map(group => (
+            {NAV_GROUPS.filter(g => g.id !== 'admin' || effectiveRole === 'admin').map(group => (
               <div key={group.id}>
                 <div className="px-3 pb-1 text-[10px] font-semibold text-gray-600 uppercase tracking-wider">
                   {group.label}
                 </div>
                 <div className="space-y-0.5">
-                  {group.items.filter(i => !i.roles || i.roles.includes(user?.role ?? '')).map(item => (
+                  {group.items.filter(i => !i.roles || i.roles.includes(effectiveRole)).map(item => (
                     <button key={item.id} onClick={() => navigate(item.id)}
                       className={clsx('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors',
                         page === item.id && !selected ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200'
@@ -447,7 +452,7 @@ export default function App() {
         {/* Nav — layout 2: collapsible groups */}
         {navLayout === 2 && (
           <nav className="flex-1 p-3 overflow-y-auto space-y-1">
-            {NAV_GROUPS.filter(g => g.id !== 'admin' || user?.role === 'admin').map(group => {
+            {NAV_GROUPS.filter(g => g.id !== 'admin' || effectiveRole === 'admin').map(group => {
               const isCollapsed = collapsedGroups.has(group.id)
               const hasActive = group.items.some(i => i.id === page)
               return (
@@ -468,7 +473,7 @@ export default function App() {
                   </button>
                   {!isCollapsed && (
                     <div className="space-y-0.5 mt-0.5 mb-1">
-                      {group.items.filter(i => !i.roles || i.roles.includes(user?.role ?? '')).map(item => (
+                      {group.items.filter(i => !i.roles || i.roles.includes(effectiveRole)).map(item => (
                         <button key={item.id} onClick={() => navigate(item.id)}
                           className={clsx('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors',
                             page === item.id && !selected ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200'
@@ -489,7 +494,7 @@ export default function App() {
           <div className="flex flex-1 min-h-0">
             {/* Rail */}
             <div className="w-12 flex-shrink-0 flex flex-col items-center py-2 gap-1 border-r border-gray-800">
-              {NAV_GROUPS.filter(g => g.id !== 'admin' || user?.role === 'admin').map(group => {
+              {NAV_GROUPS.filter(g => g.id !== 'admin' || effectiveRole === 'admin').map(group => {
                 const isActive = railActiveGroup === group.id
                 const hasPageActive = group.items.some(i => i.id === page)
                 return (
@@ -514,7 +519,7 @@ export default function App() {
             </div>
             {/* Flyout items */}
             <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
-              {(NAV_GROUPS.find(g => g.id === railActiveGroup)?.items ?? []).filter(i => !i.roles || i.roles.includes(user?.role ?? '')).map(item => (
+              {(NAV_GROUPS.find(g => g.id === railActiveGroup)?.items ?? []).filter(i => !i.roles || i.roles.includes(effectiveRole)).map(item => (
                 <button key={item.id} onClick={() => navigate(item.id)}
                   className={clsx('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors',
                     page === item.id && !selected ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200'
@@ -570,6 +575,26 @@ export default function App() {
               <LogOut size={12} />
             </button>
           </div>
+          {/* View-as role toggle (admin only) */}
+          {user?.role === 'admin' && (
+            <div className="flex items-center gap-1.5 mb-1">
+              <span className="text-[10px] text-gray-600">View as:</span>
+              {(['admin', 'engineer'] as const).map(r => (
+                <button
+                  key={r}
+                  onClick={() => setViewRole(r === user.role && viewRole === null ? r : r)}
+                  className={clsx(
+                    'px-2 py-0.5 rounded text-[10px] font-medium transition-colors capitalize',
+                    effectiveRole === r
+                      ? 'bg-brand-900/50 border border-brand-600 text-brand-300'
+                      : 'bg-gray-900 border border-gray-800 text-gray-500 hover:text-gray-300 hover:border-gray-700'
+                  )}
+                >
+                  {r}
+                </button>
+              ))}
+            </div>
+          )}
           <a href="/plugin-guide.html" target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-1.5 text-[11px] text-gray-500 hover:text-brand-400 transition-colors">
             <BookOpen size={11} /> Plugin Developer Guide
