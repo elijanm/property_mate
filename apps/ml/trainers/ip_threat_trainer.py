@@ -20,7 +20,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig
+from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig, OutputFieldSpec
 from app.abstract.data_source import InMemoryDataSource
 
 
@@ -39,6 +39,14 @@ class IPThreatDetector(BaseTrainer):
     schedule = "*/30 * * * *"          # retrain every 30 minutes
     data_source = InMemoryDataSource()  # data loaded directly from MongoDB in preprocess()
     category = {"key": "security", "label": "Security"}
+
+    output_display = [
+        OutputFieldSpec("risk_level",         "label",      "Risk Level",         primary=True,
+                        hint="safe / low / medium / high / critical"),
+        OutputFieldSpec("is_malicious",       "label",      "Malicious"),
+        OutputFieldSpec("threat_probability", "confidence", "Threat Probability"),
+        OutputFieldSpec("confidence",         "confidence", "Model Confidence"),
+    ]
 
     input_schema = {
         "rate_1m":         {"type": "number", "label": "Requests / last min",    "required": True, "default": 0},

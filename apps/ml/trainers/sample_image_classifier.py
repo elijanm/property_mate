@@ -58,7 +58,7 @@ from torch.utils.data import DataLoader, Dataset
 import torchvision.models as models
 import torchvision.transforms as T
 
-from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig
+from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig, OutputFieldSpec
 from app.abstract.data_source import DatasetDataSource, InMemoryDataSource
 
 
@@ -110,6 +110,13 @@ class SampleImageClassifier(BaseTrainer):
     description = "Custom image classifier — ResNet-18 fine-tuned on your dataset"
     framework   = "pytorch"
     category    = {"key": "classification", "label": "Classification"}
+
+    output_display = [
+        OutputFieldSpec("label",      "label",      "Predicted Label", primary=True,
+                        hint="Enter the correct class label"),
+        OutputFieldSpec("confidence", "confidence", "Confidence"),
+        OutputFieldSpec("top3",       "ranked_list", "Top 3 Predictions"),
+    ]
 
     # Replace InMemoryDataSource with DatasetDataSource once you have a dataset:
     #   data_source = DatasetDataSource(dataset_id=DATASET_ID)

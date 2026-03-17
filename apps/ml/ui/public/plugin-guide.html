@@ -201,6 +201,22 @@
     <li><a href="#performance-monitoring">Performance Monitoring</a></li>
     <li><a href="#drift-detection">Data Drift Detection</a></li>
   </ul>
+  <div class="section-label">A/B Testing</div>
+  <ul>
+    <li><a href="#ab-overview">What is A/B testing?</a></li>
+    <li><a href="#ab-how-it-works">How it works</a></li>
+    <li><a href="#ab-metrics">Metrics (derived_metrics)</a></li>
+    <li><a href="#ab-workflow">End-to-end workflow</a></li>
+    <li><a href="#ab-promote">Promoting the winner</a></li>
+  </ul>
+  <div class="section-label">UI Schema</div>
+  <ul>
+    <li><a href="#output-display">output_display</a></li>
+    <li><a href="#output-display-types">Field Types</a></li>
+    <li><a href="#derived-metrics">derived_metrics</a></li>
+    <li><a href="#derived-metrics-builtin">Built-in Metric Keys</a></li>
+    <li><a href="#ui-schema-pyfunc">Pyfunc / Pre-trained</a></li>
+  </ul>
   <div class="section-label">Reference</div>
   <ul>
     <li><a href="#env-vars">Environment Variables</a></li>
@@ -730,7 +746,7 @@ curl https://api.mldock.io/api/v1/training/jobs/{job_id}</code></pre>
   <!-- BaseTrainer -->
   <section id="base-trainer">
     <h2>BaseTrainer Contract</h2>
-    <pre><code><span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> BaseTrainer, TrainingConfig, EvaluationResult
+    <pre><code><span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> BaseTrainer, TrainingConfig, EvaluationResult, OutputFieldSpec, DerivedMetricSpec
 <span class="kw">from</span> app.abstract.data_source <span class="kw">import</span> S3DataSource  <span class="cm"># choose any data source</span>
 
 
@@ -749,6 +765,17 @@ curl https://api.mldock.io/api/v1/training/jobs/{job_id}</code></pre>
     framework   = <span class="st">"sklearn"</span>             <span class="cm"># sklearn | pytorch | tensorflow | custom</span>
     schedule    = <span class="st">"0 2 * * *"</span>           <span class="cm"># cron — auto-retrain at 2am daily</span>
     tags        = {<span class="st">"domain"</span>: <span class="st">"billing"</span>}
+
+    <span class="cm"># ── UI display schema (see "UI Schema" section) ────────────────────────────</span>
+    output_display = [
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"prediction"</span>, <span class="st">"label"</span>,      <span class="st">"Predicted Class"</span>, primary=<span class="kw">True</span>,  hint=<span class="st">"Enter the correct class"</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"confidence"</span>, <span class="st">"confidence"</span>, <span class="st">"Confidence"</span>),
+    ]
+
+    <span class="cm"># ── Derived metrics for A/B comparison (see "UI Schema" section) ──────────</span>
+    derived_metrics = [
+        <span class="cl">DerivedMetricSpec</span>(<span class="st">"exact_match"</span>, <span class="st">"Exact Match Rate"</span>, unit=<span class="st">"%"</span>, higher_is_better=<span class="kw">True</span>),
+    ]
 
     <span class="cm"># ── Required methods ───────────────────────────────────────────────────────</span>
 
@@ -2169,6 +2196,616 @@ data: {
     <div class="callout warn">
       <strong>Baseline drift</strong>
       The baseline is a snapshot — it does not update automatically. After retraining a model or deploying a new version, always call <code class="inline">POST /monitoring/drift/{trainer}/baseline</code> to reset the reference distribution.
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!--                 A/B TESTING                 -->
+  <!-- ═══════════════════════════════════════════ -->
+
+  <section id="ab-overview">
+    <h2>A/B Testing</h2>
+    <p>
+      A/B testing in ML Studio compares <strong>two or more versions of the same model</strong> against
+      identical inputs. Version A and version B are both deployments of the same trainer —
+      B is selected from the same model's version history, not from a different model entirely.
+    </p>
+
+    <div class="callout info">
+      <strong>Key mental model</strong>
+      You train your model, collect feedback, improve the training data or hyper-parameters,
+      retrain — and now you have v1 and v2 of the <em>same</em> model. A/B testing answers:
+      <em>"Is v2 actually better than v1 on real production inputs?"</em>
+    </div>
+
+    <div class="card-grid">
+      <div class="card">
+        <div class="icon">🅰</div>
+        <h3>Version A — the baseline</h3>
+        <p>Your current production deployment. Already has accumulated feedback from real users — EMR, digit accuracy, billing impact are all computed from this history.</p>
+      </div>
+      <div class="card">
+        <div class="icon">🅱</div>
+        <h3>Version B — the challenger</h3>
+        <p>A newer deployment of <em>the same trainer</em>. Selected from the same model's version list. May have little or no feedback yet — live output comparison fills the gap.</p>
+      </div>
+    </div>
+
+    <div class="callout warn">
+      <strong>Not cross-model comparison</strong>
+      A/B testing is <em>not</em> "compare WaterMeterOCR vs PlateDetector". It is
+      "compare WaterMeterOCR v1 vs WaterMeterOCR v2". Both versions share the same
+      <code class="inline">trainer_name</code>, the same input schema, and the same <code class="inline">derived_metrics</code> spec —
+      making the comparison meaningful.
+    </div>
+  </section>
+
+  <section id="ab-how-it-works">
+    <h2>How it works</h2>
+    <p>Open any model in ML Studio → <strong>Compare</strong> tab. The panel shows all deployments of that trainer, split into two explicit pickers.</p>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-body">
+          <h4>Pick version A — the baseline</h4>
+          <p>Select one version from the <strong>A — Baseline</strong> column. This is the version you are measuring against — typically the current production deployment. It defaults to whichever deployment is currently open.</p>
+          <p>The selected version gets a filled <span style="color:var(--accent)">●</span> dot and a blue version label. All other versions in the B column remain selectable.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-body">
+          <h4>Pick version B — the challenger</h4>
+          <p>Select one version from the <strong>B — Challenger</strong> column. This must be a <em>different deployment of the same trainer</em> — not a different model. The version chosen as A is automatically disabled in the B list (shown greyed with a note), preventing the same version from being picked twice.</p>
+          <p>If the two versions have different input schemas a warning banner appears — results may not be directly comparable.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-body">
+          <h4>Supply test inputs</h4>
+          <p>The JSON inputs from your last inference run are pre-populated. Edit to use a representative real-world sample — not a toy example. Use an input that exercises a known-tricky case (e.g. a blurry meter image) for the most meaningful comparison.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-body">
+          <h4>Run — three result areas appear</h4>
+          <p>Click <strong>Compare A vs B</strong>. Both deployments run in parallel with identical inputs. Three areas render:</p>
+          <table style="margin-top: 10px">
+            <thead><tr><th>Area</th><th>What it shows</th><th>Available</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Trainer Metrics</strong></td><td>Derived metrics from collected feedback — EMR, digit accuracy, edit distance, billing impact — with Δ column showing B minus A and ▲/▼ winner badges</td><td>After feedback collected</td></tr>
+              <tr><td><strong>Live Output cards</strong></td><td>Full raw output side by side for the test input</td><td>Immediately</td></tr>
+              <tr><td><strong>Numeric Output Fields</strong></td><td>Diff table for all numeric output keys, B highlighted green when higher</td><td>Immediately</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <h3>What the results look like</h3>
+    <pre><code><span class="cm">┌──────────────────────────────────────────────────────────────────────────────┐</span>
+<span class="cm">│  Trainer Metrics  (computed from feedback — primary comparison)               │</span>
+<span class="cm">│  ┌────────────────────┬───────────────┬───────────────┬──────────────┐       │</span>
+<span class="cm">│  │ Metric             │  A · v1       │  B · v2 ★     │  Δ vs A      │       │</span>
+<span class="cm">│  │ Exact Match Rate ↑ │  87.0%        │  91.2% ▲      │ +4.2% (+4.8%)│       │</span>
+<span class="cm">│  │ Digit Accuracy   ↑ │  96.1%        │  97.4% ▲      │ +1.3% (+1.4%)│       │</span>
+<span class="cm">│  │ Edit Distance    ↓ │  0.18 chars   │   0.09 ▲      │ -0.09 (-50%) │       │</span>
+<span class="cm">│  │ Billing Impact   ↓ │  12.40 units  │   6.10 ▲      │ -6.30 (-50%) │       │</span>
+<span class="cm">│  └────────────────────┴───────────────┴───────────────┴──────────────┘       │</span>
+<span class="cm">│                                                                                │</span>
+<span class="cm">│  Live Output — same inputs, both versions                                      │</span>
+<span class="cm">│  ┌───────────────────────┐   ┌───────────────────────┐                        │</span>
+<span class="cm">│  │  A  v1                │   │  B  v2 ★ latest       │                        │</span>
+<span class="cm">│  │  reading: 04823       │   │  reading: 04823       │                        │</span>
+<span class="cm">│  │  confidence: 81.0%    │   │  confidence: 94.0%    │                        │</span>
+<span class="cm">│  └───────────────────────┘   └───────────────────────┘                        │</span>
+<span class="cm">│                                                                                │</span>
+<span class="cm">│  Numeric Output Fields                                                         │</span>
+<span class="cm">│  ┌────────────────┬───────────────┬───────────────┐                           │</span>
+<span class="cm">│  │ Field          │  A · v1       │  B · v2 ★     │                           │</span>
+<span class="cm">│  │ confidence_avg │  0.8100       │  0.9400 (bold)│  ← higher B = green bold  │</span>
+<span class="cm">│  └────────────────┴───────────────┴───────────────┘                           │</span>
+<span class="cm">└──────────────────────────────────────────────────────────────────────────────┘</span></code></pre>
+
+    <div class="callout tip">
+      <strong>Trainer Metrics appear first</strong>
+      The Trainer Metrics table (derived from feedback) is deliberately shown at the top — before the
+      live output cards — because feedback-based metrics are statistically grounded across many
+      real production inputs. The live output cards show just one sample; useful for a sanity
+      check but not sufficient for a promotion decision on their own.
+    </div>
+  </section>
+
+  <section id="ab-metrics">
+    <h2>Trainer Metrics — not just accuracy</h2>
+    <p>
+      The <strong>Trainer Metrics</strong> table shown at the top of every A/B comparison is
+      <em>entirely determined by what the trainer declares in <code class="inline">derived_metrics</code></em>.
+      It is <strong>not</strong> a generic accuracy score — it is whatever set of measurements
+      makes sense for that model's domain. A classifier, an OCR model, and a regression model
+      all have different meaningful measures.
+    </p>
+
+    <div class="callout info">
+      <strong>Why trainer-declared, not platform-default?</strong>
+      The platform cannot know whether a difference of 1 in a meter reading is serious
+      (a 1-unit billing error) or irrelevant (a 1-digit reading confidence score).
+      Only the trainer author knows. Declaring <code class="inline">derived_metrics</code> puts that domain
+      knowledge directly in the code, next to the model.
+    </div>
+
+    <h3>Accuracy is not enough for OCR</h3>
+    <p>
+      For a water meter reader, a binary "correct / incorrect" accuracy misses critical nuance.
+      A reading of <code class="inline">04823</code> vs <code class="inline">04924</code> is "wrong" in both cases, but one has an edit distance
+      of 1 (one digit off) while the other might have an edit distance of 5 (completely wrong) —
+      and the billing impact is wildly different. Declare all four metrics:
+    </p>
+    <pre><code>derived_metrics = [
+    <span class="cm"># Binary: was the full reading correct?</span>
+    <span class="cl">DerivedMetricSpec</span>(<span class="st">"exact_match"</span>,    <span class="st">"Exact Match Rate"</span>,
+                      description=<span class="st">"% of readings 100% correct"</span>,
+                      unit=<span class="st">"%"</span>, higher_is_better=<span class="kw">True</span>),
+
+    <span class="cm"># Partial credit: how many digit positions are right</span>
+    <span class="cm"># "04823" vs "04924" → 3/5 = 60% digit accuracy</span>
+    <span class="cl">DerivedMetricSpec</span>(<span class="st">"digit_accuracy"</span>, <span class="st">"Digit Accuracy"</span>,
+                      description=<span class="st">"Per-character digit position accuracy"</span>,
+                      unit=<span class="st">"%"</span>, higher_is_better=<span class="kw">True</span>),
+
+    <span class="cm"># String edit distance: distance("04823", "04924") = 2</span>
+    <span class="cl">DerivedMetricSpec</span>(<span class="st">"edit_distance"</span>,  <span class="st">"Edit Distance"</span>,
+                      description=<span class="st">"Mean Levenshtein distance (lower = better)"</span>,
+                      unit=<span class="st">"chars"</span>, higher_is_better=<span class="kw">False</span>),
+
+    <span class="cm"># Business impact: abs(4823 - 4924) = 101 units over-billed</span>
+    <span class="cl">DerivedMetricSpec</span>(<span class="st">"numeric_delta"</span>,  <span class="st">"Billing Impact"</span>,
+                      description=<span class="st">"Mean abs(predicted − actual) in meter units"</span>,
+                      unit=<span class="st">"units"</span>, higher_is_better=<span class="kw">False</span>),
+]</code></pre>
+
+    <h3>Metrics per domain</h3>
+    <table>
+      <thead><tr><th>Domain</th><th>Recommended metrics</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Water / electricity meter OCR</td>
+          <td><code class="inline">exact_match</code>, <code class="inline">digit_accuracy</code>, <code class="inline">edit_distance</code>, <code class="inline">numeric_delta</code></td>
+          <td>Binary accuracy ignores partial correctness; billing impact is the real business cost</td>
+        </tr>
+        <tr>
+          <td>Document / text OCR</td>
+          <td><code class="inline">exact_match</code>, <code class="inline">edit_distance</code></td>
+          <td>Edit distance captures near-misses that binary correct/wrong misses</td>
+        </tr>
+        <tr>
+          <td>Classification (low cardinality)</td>
+          <td><code class="inline">exact_match</code></td>
+          <td>Binary is sufficient; confusion matrix in the Feedback tab provides per-class detail</td>
+        </tr>
+        <tr>
+          <td>Classification (high cardinality)</td>
+          <td><code class="inline">exact_match</code>, <code class="inline">edit_distance</code></td>
+          <td>High-cardinality label spaces benefit from string similarity as a proxy for semantic closeness</td>
+        </tr>
+        <tr>
+          <td>Numeric regression</td>
+          <td><code class="inline">numeric_delta</code></td>
+          <td>Mean absolute error in the problem's native unit (KES, kg, kWh) is the most interpretable</td>
+        </tr>
+        <tr>
+          <td>Object detection / counting</td>
+          <td><code class="inline">exact_match</code>, <code class="inline">numeric_delta</code></td>
+          <td>Exact count match + mean count error tell you both precision and operational impact</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout tip">
+      <strong>Feedback required for Trainer Metrics</strong>
+      Trainer Metrics are computed from <code class="inline">InferenceFeedback</code> records — human approvals and
+      corrections collected from production use. A brand-new deployment with no feedback
+      shows <code class="inline">—</code> for all metrics and the table shows a hint to declare
+      <code class="inline">derived_metrics</code>. This is by design: run the model in production, collect
+      feedback, then return to the Compare tab to see statistically grounded numbers.
+      The <strong>Live Output</strong> cards and <strong>Numeric Output Fields</strong> table
+      (from the parallel run against your test input) are always available immediately
+      regardless of feedback history.
+    </div>
+  </section>
+
+  <section id="ab-workflow">
+    <h2>End-to-end workflow</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-body">
+          <h4>Deploy v1 — establish baseline</h4>
+          <p>Train and deploy your initial model. Declare <code class="inline">output_display</code> and <code class="inline">derived_metrics</code> at this point so metrics are tracked from day one.</p>
+          <pre><code><span class="cm"># Train</span>
+POST /trainers/trigger/{name}
+
+<span class="cm"># Or upload pre-trained ZIP</span>
+POST /models/deploy-pretrained/zip</code></pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-body">
+          <h4>Collect production feedback</h4>
+          <p>As users run inference, they review results in the ML Studio inference panel. Clicking <strong>Approve</strong> records <code class="inline">is_correct=True</code>; clicking <strong>Correct</strong> records the actual value. The system accumulates <code class="inline">InferenceFeedback</code> documents per deployment.</p>
+          <pre><code><span class="cm"># Feedback stored automatically via inference UI</span>
+<span class="cm"># Or submit programmatically:</span>
+POST /feedback
+{
+  <span class="st">"trainer_name"</span>: <span class="st">"water-meter-ocr"</span>,
+  <span class="st">"deployment_id"</span>: <span class="st">"&lt;v1-deployment-id&gt;"</span>,
+  <span class="st">"predicted_label"</span>: <span class="st">"04823"</span>,
+  <span class="st">"actual_label"</span>: <span class="st">"04924"</span>,
+  <span class="st">"is_correct"</span>: <span class="kw">false</span>
+}</code></pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-body">
+          <h4>Improve and retrain → v2</h4>
+          <p>Review common errors in the Feedback tab → confusion matrix or OCR metrics. Augment training data, tune hyper-parameters, or switch backbone. Retrain — this creates a new deployment (v2) of the <em>same</em> trainer. Both v1 and v2 are now available for comparison.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-body">
+          <h4>Compare tab → select v1 and v2</h4>
+          <p>Open the model → Compare tab. Both versions are listed. Supply a representative input (or use the pre-populated last inference inputs). Click <strong>Compare 2 versions</strong>.</p>
+          <p>Three result areas appear:</p>
+          <table style="margin-top:8px">
+            <thead><tr><th>Area</th><th>What it shows</th><th>Available</th></tr></thead>
+            <tbody>
+              <tr><td>Side-by-side cards</td><td>Full raw output per version</td><td>Immediately</td></tr>
+              <tr><td>Numeric Comparison</td><td>All numeric output fields, highest highlighted</td><td>Immediately</td></tr>
+              <tr><td>Derived Metrics</td><td>EMR / digit accuracy / edit distance / billing impact from feedback history</td><td>After feedback collected</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-body">
+          <h4>Read the winner</h4>
+          <p>The Derived Metrics table marks the best value per row with <strong>▲ best</strong> in green. Direction is automatic — higher is better for accuracy metrics, lower is better for error/billing metrics, as declared in <code class="inline">higher_is_better</code>.</p>
+          <p>If both versions have similar EMR but v2 has a significantly lower billing impact, v2 is the operational winner even if binary accuracy looks similar.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="ab-promote">
+    <h2>Promoting the winner</h2>
+    <p>
+      Once the A/B comparison shows a clear winner, promote it to receive all future
+      <code class="inline">POST /inference/{name}</code> traffic (calls without an explicit <code class="inline">deployment_id</code>).
+    </p>
+
+    <h3>Via the UI</h3>
+    <p>Deployments tab → click the winning version card → <strong>Set as Default</strong> button.
+    The <strong>★ latest</strong> badge moves to the new version.</p>
+
+    <h3>Via the API</h3>
+    <pre><code><span class="cm"># Mark v2 as the default deployment</span>
+PATCH /deployments/{v2-deployment-id}
+{
+  <span class="st">"is_default"</span>: <span class="kw">true</span>
+}
+
+<span class="cm"># Verify — all calls to /inference/water-meter-ocr now route to v2</span>
+GET /deployments?trainer_name=water-meter-ocr</code></pre>
+
+    <div class="callout tip">
+      <strong>Shadow mode pattern</strong>
+      Before fully promoting, you can run v2 in <em>shadow mode</em> — keep v1 as default but
+      also call v2 on every request by passing <code class="inline">deployment_id</code> explicitly. Compare real
+      traffic results before committing. Once confident, flip <code class="inline">is_default</code>.
+    </div>
+
+    <h3>Decision checklist</h3>
+    <table>
+      <thead><tr><th>Check</th><th>What to look for</th></tr></thead>
+      <tbody>
+        <tr><td>Exact Match Rate</td><td>v2 EMR ≥ v1 EMR (or within acceptable margin)</td></tr>
+        <tr><td>Billing Impact</td><td>v2 mean <code class="inline">numeric_delta</code> is lower — fewer over/under-billing incidents</td></tr>
+        <tr><td>Confidence</td><td>v2 average <code class="inline">confidence_avg</code> is higher — model is more certain</td></tr>
+        <tr><td>Edge cases</td><td>Side-by-side cards: does v2 handle blurry / low-light images better?</td></tr>
+        <tr><td>Feedback volume</td><td>At least ~50 feedback records per deployment for statistically meaningful metrics</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout danger">
+      <strong>Don't promote on a single input</strong>
+      The live comparison (Numeric Comparison table) runs one input — it tells you what each
+      version <em>would</em> output for that sample, not how each version performs across your
+      production distribution. Always combine live output with derived metrics from a meaningful
+      feedback sample before making a promotion decision.
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!--                  UI SCHEMA                  -->
+  <!-- ═══════════════════════════════════════════ -->
+
+  <section id="output-display">
+    <h2>output_display — UI Field Schema</h2>
+    <p>
+      Declare <code class="inline">output_display</code> on your trainer class to tell the ML Studio UI exactly how to
+      render each field returned by <code class="inline">predict()</code>. Without it the UI uses a generic key-name
+      heuristic; with it you get typed renderers, labelled cards, feedback pre-fill, and a
+      ground-truth hint for human reviewers.
+    </p>
+
+    <div class="callout info">
+      <strong>Where it flows</strong>
+      <code class="inline">output_display</code> is stored in <code class="inline">TrainerRegistration.output_display</code> on every deploy.
+      The schema endpoint (<code class="inline">GET /inference/{name}/schema</code>), the
+      <strong>InferenceResultRenderer</strong> component, and the feedback form all read from this spec.
+    </div>
+
+    <h3>OutputFieldSpec constructor</h3>
+    <pre><code><span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> OutputFieldSpec
+
+<span class="cl">OutputFieldSpec</span>(
+    key     = <span class="st">"reading"</span>,       <span class="cm"># must match a key returned by predict()</span>
+    type    = <span class="st">"reading"</span>,       <span class="cm"># see field type table below</span>
+    label   = <span class="st">"Meter Reading"</span>, <span class="cm"># display name shown in the UI card</span>
+    primary = <span class="kw">True</span>,            <span class="cm"># one field should be primary=True</span>
+    hint    = <span class="st">"Enter the correct reading"</span>,  <span class="cm"># placeholder in feedback input</span>
+    span    = <span class="nu">2</span>,               <span class="cm"># 1 = half-width, 2 = full-width grid column</span>
+)</code></pre>
+
+    <table>
+      <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">key</code></td><td>str</td><td><span class="badge required">required</span></td><td>Key in the <code class="inline">predict()</code> return dict</td></tr>
+        <tr><td><code class="inline">type</code></td><td>str</td><td><span class="badge required">required</span></td><td>Renderer type — see table below</td></tr>
+        <tr><td><code class="inline">label</code></td><td>str</td><td><span class="badge required">required</span></td><td>Human-readable display name</td></tr>
+        <tr><td><code class="inline">primary</code></td><td>bool</td><td><code class="inline">False</code></td><td>Set <code class="inline">True</code> on exactly one field — used as <code class="inline">predicted_label_hint</code> and pre-fills the feedback "actual value" input. Drives the confusion matrix and OCR metrics.</td></tr>
+        <tr><td><code class="inline">hint</code></td><td>str</td><td><code class="inline">""</code></td><td>Placeholder text for the feedback correction input (only shown on the primary field)</td></tr>
+        <tr><td><code class="inline">span</code></td><td>int</td><td><code class="inline">1</code></td><td>Grid column span: <code class="inline">1</code> = half-width, <code class="inline">2</code> = full-width</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="output-display-types">Field types</h3>
+    <table>
+      <thead><tr><th>Type</th><th>Rendered as</th><th>Expected value shape</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">image</code></td><td><code>&lt;img&gt;</code> tag</td><td>URL string (presigned S3, data-URI, or any public URL)</td></tr>
+        <tr><td><code class="inline">reading</code></td><td>Large monospace badge</td><td>Short string or number — typical for meter readings, counts, scores</td></tr>
+        <tr><td><code class="inline">label</code></td><td>Colour chip / pill</td><td>Classification label string, e.g. <code class="inline">"cat"</code>, <code class="inline">"fraud"</code></td></tr>
+        <tr><td><code class="inline">confidence</code></td><td>Progress bar + percentage</td><td>Float 0–1</td></tr>
+        <tr><td><code class="inline">ranked_list</code></td><td>Compact ranked table</td><td>List of <code class="inline">{"label": str, "confidence": float}</code> dicts</td></tr>
+        <tr><td><code class="inline">bbox_list</code></td><td>Detection cards with coords</td><td>List of <code class="inline">{"label": str, "bbox": [x1,y1,x2,y2], "confidence": float}</code></td></tr>
+        <tr><td><code class="inline">text</code></td><td>Plain paragraph</td><td>Any multi-word string</td></tr>
+        <tr><td><code class="inline">json</code></td><td>Collapsible <code>&lt;pre&gt;</code></td><td>Any JSON-serialisable value (dict, list, etc.)</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Full water-meter OCR example</h3>
+    <pre><code><span class="kw">class</span> <span class="cl">WaterMeterOCR</span>(<span class="cl">BaseTrainer</span>):
+
+    output_display = [
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"annotated_url"</span>, <span class="st">"image"</span>,      <span class="st">"Annotated Image"</span>,  span=<span class="nu">1</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"original_url"</span>,  <span class="st">"image"</span>,      <span class="st">"Original Image"</span>,   span=<span class="nu">1</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"reading"</span>,        <span class="st">"reading"</span>,    <span class="st">"Meter Reading"</span>,
+                        primary=<span class="kw">True</span>, hint=<span class="st">"Enter the correct reading (digits only)"</span>, span=<span class="nu">2</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"confidence_avg"</span>, <span class="st">"confidence"</span>, <span class="st">"Confidence"</span>,       span=<span class="nu">1</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"digit_count"</span>,    <span class="st">"reading"</span>,    <span class="st">"Digits Detected"</span>,  span=<span class="nu">1</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"detections"</span>,     <span class="st">"json"</span>,       <span class="st">"Detection Details"</span>,span=<span class="nu">2</span>),
+    ]</code></pre>
+
+    <h3>Classifier example</h3>
+    <pre><code><span class="kw">class</span> <span class="cl">IrisClassifier</span>(<span class="cl">BaseTrainer</span>):
+
+    output_display = [
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"predicted_class"</span>, <span class="st">"label"</span>,       <span class="st">"Predicted Species"</span>,
+                        primary=<span class="kw">True</span>, hint=<span class="st">"Enter the correct species name"</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"confidence"</span>,       <span class="st">"confidence"</span>,  <span class="st">"Confidence"</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"probabilities"</span>,    <span class="st">"json"</span>,        <span class="st">"Class Probabilities"</span>, span=<span class="nu">2</span>),
+    ]</code></pre>
+
+    <h3>Object detector example</h3>
+    <pre><code><span class="kw">class</span> <span class="cl">PlateDetector</span>(<span class="cl">BaseTrainer</span>):
+
+    output_display = [
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"annotated_url"</span>, <span class="st">"image"</span>,     <span class="st">"Annotated Image"</span>, span=<span class="nu">2</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"count"</span>,          <span class="st">"reading"</span>,   <span class="st">"Plates Found"</span>,   primary=<span class="kw">True</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"plates"</span>,         <span class="st">"bbox_list"</span>, <span class="st">"Detections"</span>,     span=<span class="nu">2</span>),
+    ]</code></pre>
+
+    <div class="callout tip">
+      <strong>primary=True rule</strong>
+      Exactly one field per trainer should be <code class="inline">primary=True</code>. This value becomes the
+      <code class="inline">predicted_label</code> stored in <code class="inline">InferenceFeedback</code>, drives the confusion matrix, and
+      pre-fills the "actual value" box so reviewers can correct it with one click.
+    </div>
+  </section>
+
+  <section id="derived-metrics">
+    <h2>derived_metrics — A/B Comparison Metrics</h2>
+    <p>
+      Declare <code class="inline">derived_metrics</code> to unlock computed quality metrics in the
+      <strong>Version Comparison</strong> panel. The platform queries <code class="inline">InferenceFeedback</code> records
+      collected from real users and computes each metric per deployment, showing which
+      version wins — with the winner highlighted automatically.
+    </p>
+
+    <div class="callout info">
+      <strong>How it flows</strong>
+      Specs are stored in <code class="inline">TrainerRegistration.derived_metrics</code> at deploy time.
+      The endpoint <code class="inline">GET /feedback/{trainer}/derived-metrics?deployment_ids=a,b</code> reads
+      the specs and computes the values from feedback. The VersionComparePanel fetches
+      this alongside the live inference run and appends a "Derived Metrics" table with
+      winner highlighting.
+    </div>
+
+    <h3>DerivedMetricSpec constructor</h3>
+    <pre><code><span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> DerivedMetricSpec
+
+<span class="cl">DerivedMetricSpec</span>(
+    key              = <span class="st">"exact_match"</span>,          <span class="cm"># built-in metric key — see table below</span>
+    label            = <span class="st">"Exact Match Rate"</span>,      <span class="cm"># display name in the UI</span>
+    description      = <span class="st">"% of readings fully correct"</span>,  <span class="cm"># tooltip shown to users</span>
+    unit             = <span class="st">"%"</span>,                      <span class="cm"># appended to formatted value</span>
+    higher_is_better = <span class="kw">True</span>,                     <span class="cm"># controls which version wins</span>
+    category         = <span class="st">"accuracy"</span>,              <span class="cm"># accuracy | error | financial</span>
+)</code></pre>
+
+    <table>
+      <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">key</code></td><td>str</td><td><span class="badge required">required</span></td><td>Built-in metric key — one of the four values in the table below</td></tr>
+        <tr><td><code class="inline">label</code></td><td>str</td><td><span class="badge required">required</span></td><td>Column header shown in the A/B table</td></tr>
+        <tr><td><code class="inline">description</code></td><td>str</td><td><code class="inline">""</code></td><td>Tooltip / sub-label text explaining what the metric means</td></tr>
+        <tr><td><code class="inline">unit</code></td><td>str</td><td><code class="inline">""</code></td><td>Unit suffix, e.g. <code class="inline">%</code>, <code class="inline">chars</code>, <code class="inline">KES</code></td></tr>
+        <tr><td><code class="inline">higher_is_better</code></td><td>bool</td><td><code class="inline">True</code></td><td>When <code class="inline">True</code>, the highest value across deployments is the winner. When <code class="inline">False</code>, the lowest wins.</td></tr>
+        <tr><td><code class="inline">category</code></td><td>str</td><td><code class="inline">"accuracy"</code></td><td>Visual grouping: <code class="inline">accuracy</code> | <code class="inline">error</code> | <code class="inline">financial</code></td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="derived-metrics-builtin">Built-in metric keys</h3>
+    <p>The platform computes these automatically from <code class="inline">InferenceFeedback</code> records — no custom code needed.</p>
+    <table>
+      <thead><tr><th>Key</th><th>Name</th><th>Formula</th><th>Direction</th><th>Best for</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code class="inline">exact_match</code></td>
+          <td>Exact Match Rate (EMR)</td>
+          <td><code class="inline">count(is_correct=True) / total</code></td>
+          <td>Higher ↑</td>
+          <td>OCR, classification, any discrete output</td>
+        </tr>
+        <tr>
+          <td><code class="inline">digit_accuracy</code></td>
+          <td>Digit Accuracy</td>
+          <td>Per-position character accuracy (zero-padded to same length)</td>
+          <td>Higher ↑</td>
+          <td>Numeric OCR — partial-credit metric when readings differ by one digit</td>
+        </tr>
+        <tr>
+          <td><code class="inline">edit_distance</code></td>
+          <td>Edit Distance</td>
+          <td>Mean Levenshtein distance between predicted and actual strings</td>
+          <td>Lower ↓</td>
+          <td>OCR, text generation — <code class="inline">distance("12345", "12395") = 1</code></td>
+        </tr>
+        <tr>
+          <td><code class="inline">numeric_delta</code></td>
+          <td>Numeric Delta / Billing Impact</td>
+          <td><code class="inline">mean(abs(int(predicted) − int(actual)))</code></td>
+          <td>Lower ↓</td>
+          <td>Water/electricity meters — directly maps to billing error in units</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout warn">
+      <strong>Feedback required</strong>
+      Derived metrics are <em>only</em> computed once users have submitted feedback (approved or
+      corrected predictions). A deployment with zero feedback returns <code class="inline">null</code> for all metrics
+      and the UI displays <code class="inline">—</code>. The more feedback collected, the more statistically
+      meaningful the comparison becomes.
+    </div>
+
+    <h3>Water meter OCR — full example</h3>
+    <pre><code><span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> BaseTrainer, OutputFieldSpec, DerivedMetricSpec
+
+
+<span class="kw">class</span> <span class="cl">WaterMeterOCR</span>(<span class="cl">BaseTrainer</span>):
+    name = <span class="st">"water-meter-ocr"</span>
+
+    output_display = [
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"annotated_url"</span>, <span class="st">"image"</span>,      <span class="st">"Annotated Image"</span>,  span=<span class="nu">1</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"original_url"</span>,  <span class="st">"image"</span>,      <span class="st">"Original Image"</span>,   span=<span class="nu">1</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"reading"</span>,        <span class="st">"reading"</span>,    <span class="st">"Meter Reading"</span>,
+                        primary=<span class="kw">True</span>, hint=<span class="st">"Enter the correct reading (digits only)"</span>, span=<span class="nu">2</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"confidence_avg"</span>, <span class="st">"confidence"</span>, <span class="st">"Confidence"</span>,       span=<span class="nu">1</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"digit_count"</span>,    <span class="st">"reading"</span>,    <span class="st">"Digits Detected"</span>,  span=<span class="nu">1</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"detections"</span>,     <span class="st">"json"</span>,       <span class="st">"Detection Details"</span>,span=<span class="nu">2</span>),
+    ]
+
+    derived_metrics = [
+        <span class="cm"># Proportion of readings that are 100% correct</span>
+        <span class="cl">DerivedMetricSpec</span>(<span class="st">"exact_match"</span>,
+                          <span class="st">"Exact Match Rate"</span>,
+                          description=<span class="st">"% of readings fully correct"</span>,
+                          unit=<span class="st">"%"</span>, higher_is_better=<span class="kw">True</span>, category=<span class="st">"accuracy"</span>),
+
+        <span class="cm"># Partial credit: how many individual digit positions are right</span>
+        <span class="cl">DerivedMetricSpec</span>(<span class="st">"digit_accuracy"</span>,
+                          <span class="st">"Digit Accuracy"</span>,
+                          description=<span class="st">"Per-character digit position accuracy"</span>,
+                          unit=<span class="st">"%"</span>, higher_is_better=<span class="kw">True</span>, category=<span class="st">"accuracy"</span>),
+
+        <span class="cm"># String edit distance: distance("12345", "12395") = 1</span>
+        <span class="cl">DerivedMetricSpec</span>(<span class="st">"edit_distance"</span>,
+                          <span class="st">"Edit Distance"</span>,
+                          description=<span class="st">"Mean Levenshtein distance (lower = better)"</span>,
+                          unit=<span class="st">"chars"</span>, higher_is_better=<span class="kw">False</span>, category=<span class="st">"error"</span>),
+
+        <span class="cm"># Billing impact: mean absolute difference in raw meter units</span>
+        <span class="cl">DerivedMetricSpec</span>(<span class="st">"numeric_delta"</span>,
+                          <span class="st">"Billing Impact"</span>,
+                          description=<span class="st">"Mean abs(predicted − actual) in meter units"</span>,
+                          unit=<span class="st">"units"</span>, higher_is_better=<span class="kw">False</span>, category=<span class="st">"financial"</span>),
+    ]</code></pre>
+
+    <h3>API endpoint</h3>
+    <div class="endpoint">
+      <span class="method get">GET</span>
+      <code>/feedback/{trainer_name}/derived-metrics?deployment_ids=abc,def</code>
+      <span>Compute derived metrics per deployment</span>
+    </div>
+    <p>Returns:</p>
+    <pre><code>{
+  <span class="st">"specs"</span>: [
+    { <span class="st">"key"</span>: <span class="st">"exact_match"</span>, <span class="st">"label"</span>: <span class="st">"Exact Match Rate"</span>, <span class="st">"unit"</span>: <span class="st">"%"</span>, <span class="st">"higher_is_better"</span>: <span class="kw">true</span>, <span class="st">"category"</span>: <span class="st">"accuracy"</span>, ... },
+    ...
+  ],
+  <span class="st">"per_deployment"</span>: {
+    <span class="st">"abc"</span>: { <span class="st">"exact_match"</span>: <span class="nu">0.87</span>, <span class="st">"digit_accuracy"</span>: <span class="nu">0.96</span>, <span class="st">"edit_distance"</span>: <span class="nu">0.18</span>, <span class="st">"numeric_delta"</span>: <span class="nu">12.4</span> },
+    <span class="st">"def"</span>: { <span class="st">"exact_match"</span>: <span class="nu">0.91</span>, <span class="st">"digit_accuracy"</span>: <span class="nu">0.97</span>, <span class="st">"edit_distance"</span>: <span class="nu">0.09</span>, <span class="st">"numeric_delta"</span>: <span class="nu">6.1</span>  }
+  }
+}</code></pre>
+
+    <h3 id="ui-schema-pyfunc">Pyfunc / pre-trained models</h3>
+    <p>
+      <code class="inline">mlflow.pyfunc.PythonModel</code> subclasses (used in pre-trained ZIP plugins) cannot import
+      <code class="inline">OutputFieldSpec</code> or <code class="inline">DerivedMetricSpec</code> because those classes live inside the ML service,
+      not inside the plugin's isolated environment. Use plain <strong>list-of-dicts</strong> with the same
+      keys instead — the platform accepts both forms.
+    </p>
+    <pre><code><span class="kw">import</span> mlflow.pyfunc
+
+<span class="kw">class</span> <span class="cl">WaterMeterOCR</span>(<span class="cl">mlflow.pyfunc.PythonModel</span>):
+
+    <span class="cm"># Plain dicts — same keys as OutputFieldSpec.to_dict()</span>
+    output_display = [
+        {<span class="st">"key"</span>: <span class="st">"reading"</span>, <span class="st">"type"</span>: <span class="st">"reading"</span>, <span class="st">"label"</span>: <span class="st">"Meter Reading"</span>,
+         <span class="st">"primary"</span>: <span class="kw">True</span>, <span class="st">"hint"</span>: <span class="st">"Enter the correct reading (digits only)"</span>, <span class="st">"span"</span>: <span class="nu">2</span>},
+        {<span class="st">"key"</span>: <span class="st">"annotated_url"</span>, <span class="st">"type"</span>: <span class="st">"image"</span>, <span class="st">"label"</span>: <span class="st">"Annotated Image"</span>,
+         <span class="st">"primary"</span>: <span class="kw">False</span>, <span class="st">"hint"</span>: <span class="st">""</span>, <span class="st">"span"</span>: <span class="nu">1</span>},
+    ]
+
+    <span class="cm"># Plain dicts — same keys as DerivedMetricSpec.to_dict()</span>
+    derived_metrics = [
+        {<span class="st">"key"</span>: <span class="st">"exact_match"</span>,    <span class="st">"label"</span>: <span class="st">"Exact Match Rate"</span>,
+         <span class="st">"description"</span>: <span class="st">"% of readings fully correct"</span>,
+         <span class="st">"unit"</span>: <span class="st">"%"</span>, <span class="st">"higher_is_better"</span>: <span class="kw">True</span>,  <span class="st">"category"</span>: <span class="st">"accuracy"</span>},
+        {<span class="st">"key"</span>: <span class="st">"numeric_delta"</span>,  <span class="st">"label"</span>: <span class="st">"Billing Impact"</span>,
+         <span class="st">"description"</span>: <span class="st">"Mean abs(predicted − actual) in units"</span>,
+         <span class="st">"unit"</span>: <span class="st">"units"</span>, <span class="st">"higher_is_better"</span>: <span class="kw">False</span>, <span class="st">"category"</span>: <span class="st">"financial"</span>},
+    ]
+
+    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, context, model_input):
+        ...</code></pre>
+
+    <div class="callout tip">
+      <strong>Automatic registration for pyfunc plugins</strong>
+      When you deploy a pre-trained ZIP plugin that contains a <code class="inline">PythonModel</code> subclass
+      with <code class="inline">output_display</code> or <code class="inline">derived_metrics</code>, the deploy service reads those attributes
+      and upserts a <code class="inline">TrainerRegistration</code> automatically — no manual registration step needed.
     </div>
   </section>
 

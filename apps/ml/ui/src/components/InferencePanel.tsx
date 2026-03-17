@@ -2,12 +2,14 @@ import { useState, useRef, useEffect } from 'react'
 import type { ModelDeployment, SchemaField, OutputSchemaField } from '@/types/trainer'
 import type { InferenceResult } from '@/types/inference'
 import { inferenceApi } from '@/api/inference'
-import { Upload, Send, Loader2, Info, RefreshCw, Sparkles, ChevronRight, ImageIcon, X } from 'lucide-react'
+import { Upload, Send, Loader2, Info, RefreshCw, Sparkles, ChevronRight, ChevronDown, ImageIcon, X, GitBranch } from 'lucide-react'
 import clsx from 'clsx'
 
 interface Props {
   deployment: ModelDeployment
+  allDeployments?: ModelDeployment[]
   onResult: (result: InferenceResult, inputs?: unknown) => void
+  onDeploymentChange?: (d: ModelDeployment) => void
 }
 
 // Build initial field values — use schema default, fall back to type zero-value
@@ -58,7 +60,7 @@ function formatExample(val: unknown, f: OutputSchemaField): string {
   return String(val)
 }
 
-export default function InferencePanel({ deployment, onResult }: Props) {
+export default function InferencePanel({ deployment, allDeployments, onResult, onDeploymentChange }: Props) {
   const schema = deployment.input_schema ?? {}
   const outputSchema = deployment.output_schema ?? {}
   const hasSchema = Object.keys(schema).length > 0
@@ -94,7 +96,7 @@ export default function InferencePanel({ deployment, onResult }: Props) {
       let submittedInputs: unknown
       if (mode === 'file' && file) {
         const extra = Object.keys(fields).length ? fields : undefined
-        result = await inferenceApi.predictFile(deployment.trainer_name, file, extra)
+        result = await inferenceApi.predictFile(deployment.trainer_name, file, extra, deployment.mlflow_model_version)
         submittedInputs = { file: file.name, ...extra }
       } else {
         let inputs: Record<string, unknown>
@@ -112,7 +114,7 @@ export default function InferencePanel({ deployment, onResult }: Props) {
           inputs = JSON.parse(rawJson)
         }
         submittedInputs = inputs
-        result = await inferenceApi.predict(deployment.trainer_name, inputs)
+        result = await inferenceApi.predict(deployment.trainer_name, inputs, deployment.mlflow_model_version)
       }
       onResult(result, submittedInputs)
     } catch (err: unknown) {
@@ -131,10 +133,39 @@ export default function InferencePanel({ deployment, onResult }: Props) {
         : (fields[k] ?? '').trim() !== ''
     )
 
+  const sortedDeploys = allDeployments
+    ? [...allDeployments].sort((a, b) => parseInt(b.mlflow_model_version || '0') - parseInt(a.mlflow_model_version || '0'))
+    : null
+
   return (
     <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
       {/* Left: input form */}
       <div className="xl:col-span-3 space-y-5">
+        {/* Version selector — shown only when multiple deployments exist */}
+        {sortedDeploys && sortedDeploys.length > 1 && (
+          <div className="flex items-center gap-2">
+            <GitBranch size={13} className="text-gray-500 shrink-0" />
+            <span className="text-xs text-gray-500">Run against:</span>
+            <div className="relative flex-1">
+              <select
+                value={deployment.id}
+                onChange={e => {
+                  const d = sortedDeploys.find(d => d.id === e.target.value)
+                  if (d && onDeploymentChange) onDeploymentChange(d)
+                }}
+                className="w-full appearance-none bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 pr-7 text-xs text-gray-200 focus:outline-none focus:border-brand-500"
+              >
+                {sortedDeploys.map(d => (
+                  <option key={d.id} value={d.id}>
+                    v{d.mlflow_model_version}{d.is_default ? ' ★ default' : ''}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={11} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+            </div>
+          </div>
+        )}
+
         {/* Mode tabs */}
         <div className="flex items-center justify-between">
           <div className="flex gap-1 bg-gray-900 rounded-lg p-1">

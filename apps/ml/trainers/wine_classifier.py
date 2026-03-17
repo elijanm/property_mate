@@ -28,7 +28,7 @@ Inference:
         }
     }
 """
-from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig
+from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig, OutputFieldSpec
 from app.abstract.data_source import InMemoryDataSource
 
 _CLASS_NAMES = ["Cultivar A", "Cultivar B", "Cultivar C"]
@@ -79,6 +79,13 @@ class WineClassifier(BaseTrainer):
     schedule = None
     data_source = InMemoryDataSource()
     category = {"key": "classification", "label": "Classification"}
+
+    output_display = [
+        OutputFieldSpec("predicted_cultivar", "label",      "Predicted Cultivar", primary=True,
+                        hint="Enter the correct cultivar name (A, B, or C)"),
+        OutputFieldSpec("confidence",         "confidence", "Confidence"),
+        OutputFieldSpec("probabilities",      "json",       "Class Probabilities"),
+    ]
 
     input_schema = {key: _field_schema(key) for key in _FEATURE_ORDER}
 

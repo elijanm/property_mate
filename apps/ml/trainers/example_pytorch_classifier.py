@@ -37,7 +37,7 @@ Run inference:
 """
 import io
 from typing import Optional
-from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig
+from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig, OutputFieldSpec
 from app.abstract.data_source import InMemoryDataSource
 
 
@@ -52,6 +52,13 @@ class MeterTypeClassifier(BaseTrainer):
     schedule = None
     data_source = InMemoryDataSource()
     category = {"key": "classification", "label": "Classification"}
+
+    output_display = [
+        OutputFieldSpec("label",         "label",      "Meter Type",  primary=True,
+                        hint="Enter the correct meter type (water / electricity / gas / heat)"),
+        OutputFieldSpec("confidence",    "confidence", "Confidence"),
+        OutputFieldSpec("probabilities", "json",       "Class Probabilities"),
+    ]
 
     input_schema = {
         "image_b64": {

@@ -34,6 +34,22 @@ def _utc_ts() -> str:
 
 
 class MeterOCRModel(mlflow.pyfunc.PythonModel):
+    # Declare how predict() output should be displayed in the ML Studio UI.
+    # The schema endpoint and InferenceResultRenderer use this spec.
+    output_display = [
+        {"key": "annotated_url",    "type": "image",      "label": "Annotated Image",   "primary": False, "hint": "", "span": 1},
+        {"key": "original_url",     "type": "image",      "label": "Original Image",    "primary": False, "hint": "", "span": 1},
+        {"key": "reading",          "type": "reading",    "label": "Meter Reading",      "primary": True,  "hint": "Enter the correct meter reading (digits only)", "span": 2},
+        {"key": "confidence_avg",   "type": "confidence", "label": "Confidence",         "primary": False, "hint": "", "span": 1},
+        {"key": "digit_count",      "type": "reading",    "label": "Digits Detected",    "primary": False, "hint": "", "span": 1},
+        {"key": "detections",       "type": "json",       "label": "Detection Details",  "primary": False, "hint": "", "span": 2},
+    ]
+    derived_metrics = [
+        {"key": "exact_match",    "label": "Exact Match Rate",  "description": "% of readings fully correct",               "unit": "%",     "higher_is_better": True,  "category": "accuracy"},
+        {"key": "digit_accuracy", "label": "Digit Accuracy",    "description": "Per-character digit position accuracy",     "unit": "%",     "higher_is_better": True,  "category": "accuracy"},
+        {"key": "edit_distance",  "label": "Edit Distance",     "description": "Mean Levenshtein distance (lower = better)", "unit": "chars", "higher_is_better": False, "category": "error"},
+        {"key": "numeric_delta",  "label": "Billing Impact",    "description": "Mean abs(predicted − actual) in units",     "unit": "units", "higher_is_better": False, "category": "financial"},
+    ]
 
     def load_context(self, context):
         from ultralytics import YOLO

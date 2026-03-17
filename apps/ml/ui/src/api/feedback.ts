@@ -1,5 +1,5 @@
 import client from './client'
-import type { FeedbackRecord, ConfusionMatrix, AccuracyTrend, FeedbackSummary } from '@/types/feedback'
+import type { FeedbackRecord, ConfusionMatrix, AccuracyTrend, FeedbackSummary, OcrMetrics, DerivedMetricsResult } from '@/types/feedback'
 
 export interface FeedbackPayload {
   trainer_name: string
@@ -20,10 +20,26 @@ export const feedbackApi = {
     client.post('/feedback', payload).then(r => r.data),
   list: (trainerName: string, limit = 50) =>
     client.get<FeedbackRecord[]>(`/feedback/${trainerName}`, { params: { limit } }).then(r => r.data),
-  confusionMatrix: (trainerName: string) =>
-    client.get<ConfusionMatrix>(`/feedback/${trainerName}/confusion-matrix`).then(r => r.data),
-  accuracyTrend: (trainerName: string, bucket: 'day' | 'hour' = 'day') =>
-    client.get<AccuracyTrend[]>(`/feedback/${trainerName}/accuracy-trend`, { params: { bucket } }).then(r => r.data),
-  summary: (trainerName: string) =>
-    client.get<FeedbackSummary>(`/feedback/${trainerName}/summary`).then(r => r.data),
+  confusionMatrix: (trainerName: string, deploymentId?: string) =>
+    client.get<ConfusionMatrix>(`/feedback/${trainerName}/confusion-matrix`, {
+      params: deploymentId ? { deployment_id: deploymentId } : {},
+    }).then(r => r.data),
+  accuracyTrend: (trainerName: string, bucket: 'day' | 'hour' = 'day', deploymentId?: string) =>
+    client.get<AccuracyTrend[]>(`/feedback/${trainerName}/accuracy-trend`, {
+      params: { bucket, ...(deploymentId ? { deployment_id: deploymentId } : {}) },
+    }).then(r => r.data),
+  summary: (trainerName: string, deploymentId?: string) =>
+    client.get<FeedbackSummary>(`/feedback/${trainerName}/summary`, {
+      params: deploymentId ? { deployment_id: deploymentId } : {},
+    }).then(r => r.data),
+
+  ocrMetrics: (trainerName: string, deploymentId?: string) =>
+    client.get<OcrMetrics>(`/feedback/${trainerName}/ocr-metrics`, {
+      params: deploymentId ? { deployment_id: deploymentId } : {},
+    }).then(r => r.data),
+
+  derivedMetrics: (trainerName: string, deploymentIds: string[]) =>
+    client.get<DerivedMetricsResult>(`/feedback/${trainerName}/derived-metrics`, {
+      params: { deployment_ids: deploymentIds.join(',') },
+    }).then(r => r.data),
 }

@@ -21,4 +21,7 @@ export const usersApi = {
     client.patch<MLUser>(`/users/${id}`, data).then(r => r.data),
 
   deactivate: (id: string) => client.delete(`/users/${id}`),
+
+  generateInviteToken: () =>
+    client.post<{ token: string; expires_in_days: number }>('/users/invite-token').then(r => r.data),
 }

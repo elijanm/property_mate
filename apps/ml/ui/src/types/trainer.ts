@@ -1,3 +1,12 @@
+export interface TrainerDerivedMetricSpec {
+  key: string
+  label: string
+  description: string
+  unit: string
+  higher_is_better: boolean
+  category: string
+}
+
 export interface TrainerRegistration {
   id: string
   name: string
@@ -12,6 +21,7 @@ export interface TrainerRegistration {
   last_trained_at: string | null
   created_at: string
   updated_at?: string
+  derived_metrics?: TrainerDerivedMetricSpec[]
 }
 
 export interface ModelDeployment {

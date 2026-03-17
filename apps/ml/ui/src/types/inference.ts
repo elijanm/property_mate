@@ -1,3 +1,24 @@
+export interface OutputFieldSpec {
+  key: string
+  type: 'image' | 'reading' | 'label' | 'confidence' | 'ranked_list' | 'bbox_list' | 'text' | 'json'
+  label: string
+  primary: boolean
+  hint: string
+  span: number  // 1 = half-width, 2 = full-width
+}
+
+export interface InferenceLogSummary {
+  id: string
+  trainer_name: string
+  deployment_id: string | null
+  ab_test_variant: string | null   // "a" | "b" | null
+  model_version: string | null
+  outputs: Record<string, unknown> | null
+  predicted_label_hint: string | null
+  latency_ms: number | null
+  created_at: string
+}
+
 export interface InferenceResult {
   result: unknown
   prediction?: unknown

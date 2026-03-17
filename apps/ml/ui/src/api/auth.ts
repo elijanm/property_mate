@@ -43,4 +43,7 @@ export const authApi = {
 
   changePassword: (current_password: string, new_password: string) =>
     client.post<{ ok: boolean }>('/auth/change-password', { current_password, new_password }).then(r => r.data),
+
+  registerWithInvite: (email: string, password: string, fullName: string, inviteToken: string) =>
+    client.post('/auth/register-invite', { email, password, full_name: fullName, invite_token: inviteToken }).then(r => r.data),
 }

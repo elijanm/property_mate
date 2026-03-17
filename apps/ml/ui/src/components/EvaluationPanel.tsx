@@ -1,11 +1,16 @@
 import { useState } from 'react'
 import { evaluationApi } from '@/api/evaluation'
 import type { ModelDeployment } from '@/types/trainer'
+import VersionDropdown from './VersionDropdown'
 import { Play, Loader2, AlertCircle } from 'lucide-react'
 
-interface Props { deployment: ModelDeployment }
+interface Props {
+  deployment: ModelDeployment
+  allDeployments?: ModelDeployment[]
+}
 
-export default function EvaluationPanel({ deployment }: Props) {
+export default function EvaluationPanel({ deployment, allDeployments }: Props) {
+  const [selectedDeploy, setSelectedDeploy] = useState<ModelDeployment>(deployment)
   const [inputsJson, setInputsJson] = useState('[]')
   const [labelsJson, setLabelsJson] = useState('[]')
   const [loading, setLoading] = useState(false)
@@ -17,7 +22,7 @@ export default function EvaluationPanel({ deployment }: Props) {
     try {
       const inputs = JSON.parse(inputsJson)
       const labels = JSON.parse(labelsJson)
-      const res = await evaluationApi.evaluate(deployment.trainer_name, inputs, labels)
+      const res = await evaluationApi.evaluate(selectedDeploy.trainer_name, inputs, labels)
       setResult(res)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e))
@@ -26,6 +31,14 @@ export default function EvaluationPanel({ deployment }: Props) {
 
   return (
     <div className="space-y-5">
+      {allDeployments && (
+        <VersionDropdown
+          deployments={allDeployments}
+          selected={selectedDeploy}
+          onChange={d => { setSelectedDeploy(d); setResult(null) }}
+          label="Evaluate version:"
+        />
+      )}
       <p className="text-xs text-gray-500">Provide test inputs and ground-truth labels. The model runs predictions and computes metrics (accuracy, F1, confusion matrix).</p>
 
       <div className="grid grid-cols-2 gap-4">

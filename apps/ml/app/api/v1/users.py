@@ -1,4 +1,5 @@
 """Admin user management endpoints."""
+from datetime import timedelta
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -87,6 +88,20 @@ async def delete_user(user_id: str):
     # Soft-disable rather than hard delete
     user.is_active = False
     await user.save()
+
+
+@router.post("/invite-token")
+async def generate_invite_token(admin=Depends(require_roles("admin"))):
+    """Generate a short-lived invite token for this org."""
+    import jwt as pyjwt
+    from app.core.config import settings
+    payload = {
+        "type": "invite",
+        "org_id": admin.org_id,
+        "exp": (utc_now() + timedelta(days=7)).timestamp(),
+    }
+    token = pyjwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+    return {"token": token, "expires_in_days": 7}
 
 
 def _fmt(u: MLUser) -> dict:

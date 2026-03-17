@@ -93,7 +93,7 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig
+from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig, OutputFieldSpec
 from app.abstract.data_source import DatasetDataSource
 
 
@@ -118,6 +118,12 @@ class KenyanPlateDetector(BaseTrainer):
     )
     framework   = "pytorch"
     category    = {"key": "detection", "label": "Object Detection"}
+
+    output_display = [
+        OutputFieldSpec("count",  "reading",   "Plates Detected", primary=True,
+                        hint="Enter the correct number of plates"),
+        OutputFieldSpec("plates", "bbox_list", "Detected Plates"),
+    ]
 
     # ── Dataset: auto-created on first run ─────────────────────────────────────
     data_source = DatasetDataSource(

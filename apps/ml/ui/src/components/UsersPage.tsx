@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { usersApi, type MLUser } from '../api/users'
 import { useAuth } from '../context/AuthContext'
-import { Users, Plus, Shield, Wrench, Eye, Loader2, ToggleRight, ToggleLeft, Pencil, Check, X } from 'lucide-react'
+import { Users, Plus, Shield, Wrench, Eye, Loader2, ToggleRight, ToggleLeft, Pencil, Check, X, Link2, Copy } from 'lucide-react'
 import clsx from 'clsx'
 
 const ROLE_META = {
@@ -50,6 +50,9 @@ export default function UsersPage() {
   const [form, setForm] = useState({ email: '', password: '', full_name: '', role: 'viewer' })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [inviteToken, setInviteToken] = useState<string | null>(null)
+  const [copiedInvite, setCopiedInvite] = useState(false)
+  const [loadingInvite, setLoadingInvite] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -87,6 +90,20 @@ export default function UsersPage() {
     await load()
   }
 
+  const handleInvite = async () => {
+    setLoadingInvite(true)
+    try {
+      const { token } = await usersApi.generateInviteToken()
+      setInviteToken(token)
+    } catch {} finally { setLoadingInvite(false) }
+  }
+  const copyInvite = async () => {
+    const link = `${window.location.origin}?invite=${inviteToken}`
+    await navigator.clipboard.writeText(link)
+    setCopiedInvite(true)
+    setTimeout(() => setCopiedInvite(false), 2000)
+  }
+
   const roleCount = (r: string) => users.filter(u => u.role === r).length
 
   return (
@@ -109,12 +126,30 @@ export default function UsersPage() {
               </button>
             ))}
           </div>
+          <button onClick={handleInvite} disabled={loadingInvite}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-white text-xs rounded-lg transition-colors border border-gray-700 disabled:opacity-50">
+            {loadingInvite ? <Loader2 size={12} className="animate-spin" /> : <Link2 size={12} />} Invite link
+          </button>
           <button onClick={() => setShowCreate(!showCreate)}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg transition-colors">
             <Plus size={12} /> New user
           </button>
         </div>
       </div>
+
+      {inviteToken && (
+        <div className="bg-gray-900 border border-brand-800/40 rounded-xl p-4 flex items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-gray-400 mb-1">Share this link — valid for 7 days. Registrants join your org as Viewer.</p>
+            <code className="text-[11px] text-brand-400 font-mono break-all">{`${window.location.origin}?invite=${inviteToken}`}</code>
+          </div>
+          <button onClick={copyInvite}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded-lg text-gray-300 shrink-0">
+            {copiedInvite ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+            {copiedInvite ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+      )}
 
       {/* Role summary cards */}
       <div className="grid grid-cols-3 gap-3">

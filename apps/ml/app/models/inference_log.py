@@ -17,6 +17,9 @@ class InferenceLog(Document):
 
     org_id: str = ""
     trainer_name: str
+    deployment_id: Optional[str] = None   # which deployment served this request
+    ab_test_id: Optional[str] = None      # A/B test id if traffic was routed
+    ab_test_variant: Optional[str] = None # "a" or "b"
     model_version: Optional[str] = None
     run_id: Optional[str] = None
     inputs: Any = None

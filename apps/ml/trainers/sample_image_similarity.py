@@ -73,7 +73,7 @@ import torch
 import torch.nn.functional as F
 from transformers import CLIPProcessor, CLIPModel
 
-from app.abstract.base_trainer import BaseTrainer, TrainingConfig
+from app.abstract.base_trainer import BaseTrainer, TrainingConfig, OutputFieldSpec
 from app.abstract.data_source import DatasetDataSource, InMemoryDataSource
 
 
@@ -106,6 +106,11 @@ class SampleImageSimilarity(BaseTrainer):
     description = "Image similarity / search — CLIP embeddings with optional fine-tuning"
     framework   = "pytorch"
     category    = {"key": "similarity", "label": "Image Similarity"}
+
+    output_display = [
+        OutputFieldSpec("results", "ranked_list", "Similar Images", primary=True,
+                        hint=""),
+    ]
 
     # Replace InMemoryDataSource with DatasetDataSource for Mode C fine-tuning:
     #   data_source = DatasetDataSource(dataset_id=DATASET_ID)

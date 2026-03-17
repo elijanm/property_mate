@@ -63,9 +63,9 @@ def _log_bytes(
     inference_script: Optional[bytes] = None,
     extra_artifacts: Optional[Dict[str, str]] = None,
     zip_root: Optional[str] = None,
-) -> str:
+) -> tuple[str, Any]:
     """
-    Log model bytes to MLflow. Returns the artifact URI.
+    Log model bytes to MLflow. Returns (artifact_uri, pyfunc_cls_or_None).
 
     If ``inference_script`` is provided (a .py file implementing
     mlflow.pyfunc.PythonModel), it is always used as the pyfunc wrapper
@@ -95,7 +95,7 @@ def _log_bytes(
             try:
                 model_obj = joblib.load(local_path)
                 mlflow.sklearn.log_model(model_obj, artifact_path="model")
-                return f"runs:/{run.info.run_id}/model"
+                return f"runs:/{run.info.run_id}/model", None
             except Exception:
                 pass  # fall through to pyfunc
 
@@ -104,7 +104,7 @@ def _log_bytes(
                 import onnx as onnx_lib
                 model_obj = onnx_lib.load(local_path)
                 mlflow.onnx.log_model(model_obj, artifact_path="model")
-                return f"runs:/{run.info.run_id}/model"
+                return f"runs:/{run.info.run_id}/model", None
             except Exception:
                 pass
 
@@ -113,7 +113,7 @@ def _log_bytes(
                 import torch
                 model_obj = torch.load(local_path, map_location="cpu", weights_only=False)
                 mlflow.pytorch.log_model(model_obj, artifact_path="model")
-                return f"runs:/{run.info.run_id}/model"
+                return f"runs:/{run.info.run_id}/model", None
             except Exception:
                 pass
 
@@ -122,13 +122,13 @@ def _log_bytes(
                 import keras
                 model_obj = keras.models.load_model(local_path)
                 mlflow.keras.log_model(model_obj, artifact_path="model")
-                return f"runs:/{run.info.run_id}/model"
+                return f"runs:/{run.info.run_id}/model", None
             except Exception:
                 pass
 
         # Generic pyfunc fallback — store the raw file as an artifact
         mlflow.log_artifact(local_path, artifact_path="model_file")
-        return f"runs:/{run.info.run_id}/model_file"
+        return f"runs:/{run.info.run_id}/model_file", None
 
 
 def _log_with_inference_script(
@@ -207,7 +207,7 @@ def _log_with_inference_script(
         artifacts=artifacts,
         code_paths=code_paths,
     )
-    return f"runs:/{run.info.run_id}/model"
+    return f"runs:/{run.info.run_id}/model", python_model_cls
 
 
 async def _fetch_s3(key: str) -> tuple[bytes, str]:
@@ -270,6 +270,7 @@ async def deploy_pretrained(
     _tags = {"source": "pretrained", **(tags or {})}
     source_type = "pretrained_file"
     model_uri: str
+    _pyfunc_cls = None  # set when an inference_script is loaded
 
     # ── mlflow_uri shortcut ────────────────────────────────────────────────────
     if mlflow_uri:
@@ -326,7 +327,7 @@ async def deploy_pretrained(
             mlflow.log_param("version", version)
             if description:
                 mlflow.log_param("description", description)
-            artifact_uri = _log_bytes(file_bytes, file_name, run, inference_script=inference_script, extra_artifacts=extra_artifacts, zip_root=zip_root)
+            artifact_uri, _pyfunc_cls = _log_bytes(file_bytes, file_name, run, inference_script=inference_script, extra_artifacts=extra_artifacts, zip_root=zip_root)
             run_id = run.info.run_id
 
         model_uri = _register(name, artifact_uri)
@@ -359,6 +360,40 @@ async def deploy_pretrained(
         model_size_bytes=_size_bytes or None,
     )
     await dep.insert()
+
+    # ── upsert TrainerRegistration so output_display + derived_metrics are available
+    _output_display: list = []
+    _derived_metrics: list = []
+    if _pyfunc_cls is not None:
+        raw_od = getattr(_pyfunc_cls, "output_display", [])
+        _output_display = [(s.to_dict() if hasattr(s, "to_dict") else s) for s in raw_od]
+        raw_dm = getattr(_pyfunc_cls, "derived_metrics", [])
+        _derived_metrics = [(s.to_dict() if hasattr(s, "to_dict") else s) for s in raw_dm]
+    if _output_display or _derived_metrics or input_schema or output_schema:
+        from app.models.trainer_registration import TrainerRegistration
+        existing = await TrainerRegistration.find_one(TrainerRegistration.name == name)
+        if existing:
+            existing.output_display = _output_display or existing.output_display
+            existing.derived_metrics = _derived_metrics or existing.derived_metrics
+            if input_schema:
+                existing.input_schema = input_schema
+            if output_schema:
+                existing.output_schema = output_schema
+            await existing.save()
+        else:
+            reg = TrainerRegistration(
+                name=name,
+                version=version,
+                description=description,
+                framework="pyfunc",
+                source_type=source_type,
+                input_schema=input_schema or {},
+                output_schema=output_schema or {},
+                output_display=_output_display,
+                derived_metrics=_derived_metrics,
+                category=category or {},
+            )
+            await reg.insert()
 
     logger.info(
         "pretrained_model_deployed",

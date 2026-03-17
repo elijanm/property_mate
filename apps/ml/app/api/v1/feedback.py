@@ -1,5 +1,5 @@
 from typing import Any, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from app.dependencies.auth import require_roles
@@ -53,18 +53,39 @@ async def list_feedback(
 
 
 @router.get("/{trainer_name}/confusion-matrix", dependencies=[_any_role])
-async def confusion_matrix(trainer_name: str):
-    return await feedback_service.get_confusion_matrix(trainer_name)
+async def confusion_matrix(trainer_name: str, deployment_id: Optional[str] = Query(None)):
+    return await feedback_service.get_confusion_matrix(trainer_name, deployment_id=deployment_id)
+
+
+@router.get("/{trainer_name}/ocr-metrics", dependencies=[_any_role])
+async def ocr_metrics(trainer_name: str, deployment_id: Optional[str] = Query(None)):
+    """OCR/regression metrics for high-cardinality models (e.g. water meter readers)."""
+    return await feedback_service.get_ocr_metrics(trainer_name, deployment_id=deployment_id)
 
 
 @router.get("/{trainer_name}/accuracy-trend", dependencies=[_any_role])
 async def accuracy_trend(
     trainer_name: str,
     bucket: str = Query("day", pattern="^(day|hour)$"),
+    deployment_id: Optional[str] = Query(None),
 ):
-    return await feedback_service.get_accuracy_trend(trainer_name, bucket=bucket)
+    return await feedback_service.get_accuracy_trend(trainer_name, bucket=bucket, deployment_id=deployment_id)
 
 
 @router.get("/{trainer_name}/summary", dependencies=[_any_role])
-async def summary(trainer_name: str):
-    return await feedback_service.get_summary(trainer_name)
+async def summary(trainer_name: str, deployment_id: Optional[str] = Query(None)):
+    return await feedback_service.get_summary(trainer_name, deployment_id=deployment_id)
+
+
+@router.get("/{trainer_name}/derived-metrics", dependencies=[_any_role])
+async def derived_metrics(
+    trainer_name: str,
+    deployment_ids: str = Query(..., description="Comma-separated deployment IDs to compare"),
+):
+    """
+    Compute derived metrics (EMR, digit accuracy, edit distance, billing impact)
+    for each supplied deployment, based on collected InferenceFeedback records.
+    Only metrics declared in the trainer's derived_metrics spec are returned.
+    """
+    ids = [d.strip() for d in deployment_ids.split(",") if d.strip()]
+    return await feedback_service.compute_derived_metrics(trainer_name, ids)

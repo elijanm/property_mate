@@ -26,7 +26,7 @@ Run inference:
     }
 """
 import io
-from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig
+from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig, OutputFieldSpec
 from app.abstract.data_source import InMemoryDataSource
 
 
@@ -38,6 +38,13 @@ class RentPredictor(BaseTrainer):
     schedule = None
     data_source = InMemoryDataSource()
     category = {"key": "regression", "label": "Regression"}
+
+    output_display = [
+        OutputFieldSpec("predicted_rent_kes", "reading", "Predicted Rent (KES)", primary=True,
+                        hint="Enter the actual monthly rent in KES"),
+        OutputFieldSpec("rent_range_low",     "reading", "Range Low (KES)"),
+        OutputFieldSpec("rent_range_high",    "reading", "Range High (KES)"),
+    ]
 
     input_schema = {
         "bedrooms": {

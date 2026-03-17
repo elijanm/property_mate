@@ -1,5 +1,5 @@
 import client from './client'
-import type { InferenceResult, InferenceLog, CompareResponse } from '@/types/inference'
+import type { InferenceResult, InferenceLog, InferenceLogSummary, CompareResponse } from '@/types/inference'
 
 export const inferenceApi = {
   predict: (trainerName: string, inputs: Record<string, unknown>, version?: string, sessionId?: string) =>
@@ -19,9 +19,15 @@ export const inferenceApi = {
   getSchema: (trainerName: string) =>
     client.get(`/inference/${trainerName}/schema`).then(r => r.data),
 
-  getLogs: (trainerName: string, page = 1, pageSize = 50) =>
-    client.get<{ items: InferenceLog[]; total: number }>(`/inference/logs/${trainerName}`, { params: { page, page_size: pageSize } })
-      .then(r => r.data),
+  recentLogs: (trainerName: string, limit = 20, deploymentId?: string) =>
+    client.get<InferenceLogSummary[]>(`/inference/logs/${trainerName}/recent`, {
+      params: { limit, ...(deploymentId ? { deployment_id: deploymentId } : {}) },
+    }).then(r => r.data),
+
+  getLogs: (trainerName: string, page = 1, pageSize = 50, deploymentId?: string) =>
+    client.get<{ items: InferenceLog[]; total: number }>(`/inference/logs/${trainerName}`, {
+      params: { page, page_size: pageSize, ...(deploymentId ? { deployment_id: deploymentId } : {}) },
+    }).then(r => r.data),
 
   getAllLogs: (page = 1, pageSize = 50, trainerName?: string) =>
     client.get<{ items: InferenceLog[]; total: number }>('/inference/logs/all', {

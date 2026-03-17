@@ -3,15 +3,18 @@ import { inferenceApi } from '@/api/inference'
 import type { InferenceLog } from '@/types/inference'
 import type { ModelDeployment } from '@/types/trainer'
 import OutputRenderer from './OutputRenderer'
+import VersionDropdown from './VersionDropdown'
 import { Clock, Trash2, ChevronDown, ChevronRight, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react'
 import clsx from 'clsx'
 
 interface Props {
   deployment: ModelDeployment
+  allDeployments?: ModelDeployment[]
   refreshTrigger: number
 }
 
-export default function InferenceHistoryPanel({ deployment, refreshTrigger }: Props) {
+export default function InferenceHistoryPanel({ deployment, allDeployments, refreshTrigger }: Props) {
+  const [selectedDeploy, setSelectedDeploy] = useState<ModelDeployment>(deployment)
   const [logs, setLogs] = useState<InferenceLog[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -22,12 +25,12 @@ export default function InferenceHistoryPanel({ deployment, refreshTrigger }: Pr
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await inferenceApi.getLogs(deployment.trainer_name, page)
+      const res = await inferenceApi.getLogs(deployment.trainer_name, page, 50, selectedDeploy.id)
       setLogs(res.items)
       setTotal(res.total)
     } catch {}
     finally { setLoading(false) }
-  }, [deployment.trainer_name, page])
+  }, [deployment.trainer_name, page, selectedDeploy.id])
 
   useEffect(() => { load() }, [load, refreshTrigger])
 
@@ -51,6 +54,14 @@ export default function InferenceHistoryPanel({ deployment, refreshTrigger }: Pr
 
   return (
     <div className="space-y-3">
+      {allDeployments && (
+        <VersionDropdown
+          deployments={allDeployments}
+          selected={selectedDeploy}
+          onChange={d => { setSelectedDeploy(d); setPage(1) }}
+          label="Logs for version:"
+        />
+      )}
       <div className="flex items-center justify-between">
         <p className="text-xs text-gray-500">{total} inference{total !== 1 ? 's' : ''} recorded</p>
         <button onClick={load} disabled={loading}

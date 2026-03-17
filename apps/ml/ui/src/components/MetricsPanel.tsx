@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { feedbackApi } from '@/api/feedback'
 import type { ConfusionMatrix as CM, AccuracyTrend, FeedbackSummary } from '@/types/feedback'
+import type { ModelDeployment } from '@/types/trainer'
 import ConfusionMatrixView from './ConfusionMatrix'
+import VersionDropdown from './VersionDropdown'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { RefreshCw } from 'lucide-react'
 import clsx from 'clsx'
@@ -9,9 +11,14 @@ import clsx from 'clsx'
 interface Props {
   trainerName: string
   refreshTrigger: number
+  deployment?: ModelDeployment
+  allDeployments?: ModelDeployment[]
 }
 
-export default function MetricsPanel({ trainerName, refreshTrigger }: Props) {
+export default function MetricsPanel({ trainerName, refreshTrigger, deployment, allDeployments }: Props) {
+  const [selectedDeploy, setSelectedDeploy] = useState<ModelDeployment | undefined>(deployment)
+  const deploymentId = selectedDeploy?.id
+
   const [cm, setCm] = useState<CM | null>(null)
   const [trend, setTrend] = useState<AccuracyTrend[]>([])
   const [summary, setSummary] = useState<FeedbackSummary | null>(null)
@@ -22,9 +29,9 @@ export default function MetricsPanel({ trainerName, refreshTrigger }: Props) {
     setLoading(true)
     try {
       const [cmData, trendData, summaryData] = await Promise.all([
-        feedbackApi.confusionMatrix(trainerName),
-        feedbackApi.accuracyTrend(trainerName, bucket),
-        feedbackApi.summary(trainerName),
+        feedbackApi.confusionMatrix(trainerName, deploymentId),
+        feedbackApi.accuracyTrend(trainerName, bucket, deploymentId),
+        feedbackApi.summary(trainerName, deploymentId),
       ])
       setCm(cmData)
       setTrend(trendData)
@@ -33,10 +40,18 @@ export default function MetricsPanel({ trainerName, refreshTrigger }: Props) {
     finally { setLoading(false) }
   }
 
-  useEffect(() => { load() }, [trainerName, bucket, refreshTrigger])
+  useEffect(() => { load() }, [trainerName, bucket, refreshTrigger, deploymentId])
 
   return (
     <div className="space-y-8">
+      {allDeployments && selectedDeploy && (
+        <VersionDropdown
+          deployments={allDeployments}
+          selected={selectedDeploy}
+          onChange={d => setSelectedDeploy(d)}
+          label="Metrics for version:"
+        />
+      )}
       {/* Summary cards */}
       {summary && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

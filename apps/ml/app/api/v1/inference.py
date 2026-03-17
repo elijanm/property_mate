@@ -44,6 +44,54 @@ def _serialize_log(log) -> dict:
     return d
 
 
+def _extract_predicted_label_hint(outputs: Any, display_spec: list) -> Optional[str]:
+    """
+    Extract the single most-meaningful predicted value from outputs.
+
+    Priority:
+    1. First spec with primary=True that exists in outputs
+    2. Heuristic key-name scan (reading > label > class > prediction > ...)
+    3. top[0].label pattern
+    4. First short scalar value
+    """
+    if not outputs:
+        return None
+    if not isinstance(outputs, dict):
+        v = str(outputs)
+        return v[:100] if v else None
+
+    # 1. Trainer-declared primary field
+    for spec in display_spec:
+        if spec.get("primary") and spec.get("key") in outputs:
+            val = outputs[spec["key"]]
+            if val is not None:
+                return str(val)
+
+    # 2. Priority key scan
+    for key in ("reading", "label", "class", "prediction", "predicted_class",
+                "text", "number", "value", "result", "ocr_text", "detected_text"):
+        if key in outputs and outputs[key] is not None:
+            return str(outputs[key])
+
+    # 3. top[0].label pattern
+    top = outputs.get("top")
+    if isinstance(top, list) and top:
+        first = top[0]
+        if isinstance(first, dict):
+            lbl = first.get("label") or first.get("class")
+            if lbl:
+                return str(lbl)
+
+    # 4. First short scalar
+    for val in outputs.values():
+        if isinstance(val, (int, float)):
+            return str(val)
+        if isinstance(val, str) and len(val) <= 80:
+            return val
+
+    return None
+
+
 @router.post("/{trainer_name}")
 async def run_inference(trainer_name: str, body: PredictRequest, user=Depends(get_current_user)):
     """Run inference with a JSON body."""
@@ -110,8 +158,9 @@ async def run_inference_upload(
 
 @router.get("/{trainer_name}/schema", dependencies=[_any_role])
 async def get_schema(trainer_name: str):
-    """Returns the input + output schema for the active deployment."""
+    """Returns the input + output schema for the active deployment, including output_display spec."""
     from app.models.model_deployment import ModelDeployment
+    from app.models.trainer_registration import TrainerRegistration
     dep = await ModelDeployment.find_one(
         ModelDeployment.trainer_name == trainer_name,
         ModelDeployment.status == "active",
@@ -119,12 +168,14 @@ async def get_schema(trainer_name: str):
     )
     if not dep:
         raise HTTPException(status_code=404, detail=f"No active deployment for '{trainer_name}'")
+    reg = await TrainerRegistration.find_one(TrainerRegistration.name == trainer_name)
     return {
         "trainer_name": trainer_name,
         "version": dep.version,
         "model_uri": dep.model_uri,
         "input_schema": dep.input_schema or {},
         "output_schema": dep.output_schema if hasattr(dep, "output_schema") else {},
+        "output_display": reg.output_display if reg else [],
     }
 
 
@@ -206,19 +257,59 @@ async def get_all_inference_logs(
     return {"items": [_serialize_log(i) for i in items], "total": total, "page": page, "page_size": page_size}
 
 
+@router.get("/logs/{trainer_name}/recent", dependencies=[_any_role])
+async def get_recent_inference_logs(
+    trainer_name: str,
+    limit: int = Query(20, ge=1, le=50),
+    deployment_id: Optional[str] = Query(None),
+    user=Depends(get_current_user),
+):
+    """
+    Last N successful inference logs with predicted_label_hint extracted — used by the
+    feedback panel dropdown so users can pick an inference and report on it.
+    Optionally filter to a specific deployment_id.
+    """
+    from app.models.inference_log import InferenceLog
+    from app.models.trainer_registration import TrainerRegistration
+
+    reg = await TrainerRegistration.find_one(TrainerRegistration.name == trainer_name)
+    display_spec: list = reg.output_display if reg else []
+
+    filters = [
+        InferenceLog.trainer_name == trainer_name,
+        InferenceLog.org_id == user.org_id,
+        InferenceLog.error == None,  # noqa: E711
+    ]
+    if deployment_id:
+        filters.append(InferenceLog.deployment_id == deployment_id)
+
+    items = await InferenceLog.find(*filters).sort(-InferenceLog.created_at).limit(limit).to_list()
+
+    result = []
+    for log in items:
+        d = _serialize_log(log)
+        d["predicted_label_hint"] = _extract_predicted_label_hint(d.get("outputs"), display_spec)
+        result.append(d)
+    return result
+
+
 @router.get("/logs/{trainer_name}")
 async def get_inference_logs(
     trainer_name: str,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    deployment_id: Optional[str] = Query(None),
     user=Depends(get_current_user),
 ):
     from app.models.inference_log import InferenceLog
     skip = (page - 1) * page_size
-    query = InferenceLog.find(
+    filters = [
         InferenceLog.trainer_name == trainer_name,
         InferenceLog.org_id == user.org_id,
-    ).sort(-InferenceLog.created_at)
+    ]
+    if deployment_id:
+        filters.append(InferenceLog.deployment_id == deployment_id)
+    query = InferenceLog.find(*filters).sort(-InferenceLog.created_at)
     total = await query.count()
     items = await query.skip(skip).limit(page_size).to_list()
     return {"items": [_serialize_log(i) for i in items], "total": total}

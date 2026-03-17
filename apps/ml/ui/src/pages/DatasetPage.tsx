@@ -29,9 +29,9 @@ const STATUS_COLOR: Record<string, string> = {
 function FieldRow({
   field, idx, onChange, onRemove, deployments,
 }: {
-  field: Omit<DatasetField, 'id'>
+  field: DatasetField
   idx: number
-  onChange: (f: Omit<DatasetField, 'id'>) => void
+  onChange: (f: DatasetField) => void
   onRemove: () => void
   deployments: ModelDeployment[]
 }) {
@@ -295,7 +295,8 @@ function FieldRow({
 
 // ── Create / Edit slide-over ─────────────────────────────────────────────────
 
-const BLANK_FIELD = (): Omit<DatasetField, 'id'> => ({
+const BLANK_FIELD = (): DatasetField => ({
+  id: '',   // empty = new field, backend assigns UUID on create
   label: '', instruction: '', type: 'image', capture_mode: 'both',
   required: true, description_mode: 'none', description_presets: [],
   description_required: false, order: 0, repeatable: false, max_repeats: 0,
@@ -314,8 +315,8 @@ function DatasetSlideOver({
   const [slugEdited, setSlugEdited] = useState(!!(initial?.slug))
   const [desc, setDesc] = useState(initial?.description ?? '')
   const [category, setCategory] = useState(initial?.category ?? '')
-  const [fields, setFields] = useState<Omit<DatasetField, 'id'>[]>(
-    initial?.fields?.map(({ id: _id, ...rest }) => rest) ?? [BLANK_FIELD()]
+  const [fields, setFields] = useState<DatasetField[]>(
+    initial?.fields ?? [BLANK_FIELD()]
   )
   const [discoverable, setDiscoverable] = useState(initial?.discoverable ?? false)
   const [allowlistMode, setAllowlistMode] = useState((initial?.contributor_allowlist?.length ?? 0) > 0)

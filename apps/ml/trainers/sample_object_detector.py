@@ -71,7 +71,7 @@ import yaml
 from pathlib import Path
 from PIL import Image
 
-from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig
+from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig, OutputFieldSpec
 from app.abstract.data_source import DatasetDataSource, InMemoryDataSource
 
 
@@ -84,6 +84,12 @@ class SampleObjectDetector(BaseTrainer):
     description = "Custom object detector — YOLOv8 fine-tuned on your dataset"
     framework   = "pytorch"
     category    = {"key": "detection", "label": "Object Detection"}
+
+    output_display = [
+        OutputFieldSpec("count",      "reading",    "Objects Detected", primary=True,
+                        hint="Enter the correct object count"),
+        OutputFieldSpec("detections", "bbox_list",  "Detections"),
+    ]
 
     # Replace InMemoryDataSource with DatasetDataSource once you have a dataset:
     #   data_source = DatasetDataSource(dataset_id=DATASET_ID)

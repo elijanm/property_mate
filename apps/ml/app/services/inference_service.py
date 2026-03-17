@@ -174,6 +174,27 @@ async def predict(
     if not dep:
         raise ValueError(f"No active deployment for trainer '{trainer_name}'")
 
+    # A/B traffic routing — check if this trainer has an active test
+    ab_test = None
+    ab_variant = None
+    if not model_version:  # don't override explicit version requests
+        from app.services.ab_test_service import get_active_test_for_deployment, route_request
+        ab_test = await get_active_test_for_deployment(str(dep.id))
+        if ab_test is None:
+            # also check if the OTHER deployment in any test points to this trainer
+            from app.models.ab_test import ABTest
+            ab_test = await ABTest.find_one({
+                "trainer_name": trainer_name,
+                "status": "active",
+            })
+        if ab_test:
+            ab_variant = route_request(ab_test)
+            target_dep_id = ab_test.variant_a if ab_variant == "a" else ab_test.variant_b
+            if target_dep_id:
+                routed_dep = await ModelDeployment.get(target_dep_id)
+                if routed_dep and routed_dep.status == "active":
+                    dep = routed_dep
+
     # Trainer class is optional — ZIP/pyfunc models handle everything inside predict()
     trainer_cls = get_trainer_class(trainer_name)
     trainer = trainer_cls() if trainer_cls else None
@@ -257,6 +278,9 @@ async def predict(
 
         log = InferenceLog(
             trainer_name=trainer_name,
+            deployment_id=str(dep.id),
+            ab_test_id=str(ab_test.id) if ab_test else None,
+            ab_test_variant=ab_variant,
             model_version=dep.mlflow_model_version,
             run_id=dep.run_id,
             inputs=inputs,
@@ -270,6 +294,14 @@ async def predict(
             cost_usd=cost_usd,
         )
         await log.insert()
+
+        # Record A/B metrics asynchronously (don't block the response)
+        if ab_test and ab_variant:
+            try:
+                from app.services.ab_test_service import record_request
+                await record_request(ab_test, ab_variant, latency, error=error_msg is not None)
+            except Exception:
+                pass  # never block inference for metrics
 
     return clean_result, str(log.id)
 

@@ -1,5 +1,5 @@
 """A/B test traffic-splitting configuration."""
-from typing import Optional, Dict, Any
+from typing import Optional, List
 from datetime import datetime
 from beanie import Document
 from pydantic import BaseModel, Field
@@ -32,9 +32,15 @@ class ABTest(Document):
     org_id: str = ""
     name: str
     description: str = ""
-    model_a: str                   # trainer_name (control)
-    model_b: str                   # trainer_name (challenger)
-    traffic_pct_b: int = 10        # % of traffic going to model_b (0-100)
+    # Both variants must be deployments of the same trainer.
+    trainer_name: str = ""
+    variant_a: str = ""            # deployment id — the baseline
+    variant_b: str = ""            # deployment id — the challenger
+    traffic_pct_b: int = 10        # % of traffic going to variant_b (0-100)
+    # Which metric keys to display in the comparison table.
+    # Built-ins: 'accuracy', 'error_rate', 'latency', 'requests'
+    # Derived (trainer-declared): 'exact_match', 'digit_accuracy', 'edit_distance', 'numeric_delta', etc.
+    metrics_to_use: List[str] = Field(default_factory=lambda: ["requests", "error_rate", "latency", "accuracy"])
     status: str = "active"         # active | paused | concluded
     winner: Optional[str] = None   # "a" | "b" | None
     metrics_a: VariantMetrics = Field(default_factory=VariantMetrics)

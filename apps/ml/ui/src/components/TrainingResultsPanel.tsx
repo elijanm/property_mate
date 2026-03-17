@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import type { ModelDeployment } from '@/types/trainer'
 import { modelsApi } from '@/api/models'
+import VersionDropdown from './VersionDropdown'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend,
@@ -11,7 +12,10 @@ interface MetricPoint { step: number; value: number; timestamp: number }
 type MetricHistory = Record<string, MetricPoint[]>
 interface Artifact { path: string; url: string; label: string }
 
-interface Props { deployment: ModelDeployment }
+interface Props {
+  deployment: ModelDeployment
+  allDeployments?: ModelDeployment[]
+}
 
 // Metric display groups — order matters for chart colours
 const METRIC_GROUPS: { keys: string[]; label: string; color: string }[] = [
@@ -57,7 +61,8 @@ const CHART_COLORS = [
   '#06b6d4', '#84cc16', '#8b5cf6', '#f97316', '#14b8a6',
 ]
 
-export default function TrainingResultsPanel({ deployment }: Props) {
+export default function TrainingResultsPanel({ deployment, allDeployments }: Props) {
+  const [selectedDeploy, setSelectedDeploy] = useState<ModelDeployment>(deployment)
   const [metrics, setMetrics] = useState<MetricHistory>({})
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [loading, setLoading] = useState(true)
@@ -66,20 +71,20 @@ export default function TrainingResultsPanel({ deployment }: Props) {
   const [showAllGraphs, setShowAllGraphs] = useState(false)
 
   useEffect(() => {
-    if (!deployment.id) return
+    if (!selectedDeploy.id) return
     setLoading(true)
     setError('')
     Promise.all([
-      modelsApi.getMetricHistory(deployment.id).catch(() => ({ metrics: {} })),
-      modelsApi.getTrainingArtifacts(deployment.id).catch(() => ({ artifacts: [] })),
+      modelsApi.getMetricHistory(selectedDeploy.id).catch(() => ({ metrics: {} })),
+      modelsApi.getTrainingArtifacts(selectedDeploy.id).catch(() => ({ artifacts: [] })),
     ]).then(([mh, af]) => {
       setMetrics(mh.metrics)
       setArtifacts(af.artifacts)
     }).catch(e => setError(e?.message ?? 'Failed to load training results'))
       .finally(() => setLoading(false))
-  }, [deployment.id])
+  }, [selectedDeploy.id])
 
-  if (!deployment.run_id) {
+  if (!selectedDeploy.run_id) {
     return (
       <div className="text-center py-20 text-gray-600 text-sm">
         <TrendingUp size={28} className="mx-auto mb-3 opacity-30" />
@@ -145,6 +150,14 @@ export default function TrainingResultsPanel({ deployment }: Props) {
 
   return (
     <div className="space-y-8">
+      {allDeployments && (
+        <VersionDropdown
+          deployments={allDeployments}
+          selected={selectedDeploy}
+          onChange={d => { setSelectedDeploy(d); setMetrics({}); setArtifacts([]) }}
+          label="Training run:"
+        />
+      )}
       {/* Summary metric pills */}
       {summaryMetrics.length > 0 && (
         <div className="flex flex-wrap gap-4">

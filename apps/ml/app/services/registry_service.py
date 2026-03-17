@@ -191,6 +191,8 @@ async def _upsert_db_registration(
             "class_path": f"{cls.__module__}.{cls.__name__}",
             "plugin_file": plugin_file,
             "tags": info["tags"],
+            "output_display": info.get("output_display", []),
+            "derived_metrics": info.get("derived_metrics", []),
             "is_active": True,
             "updated_at": now,
         }
@@ -211,6 +213,8 @@ async def _upsert_db_registration(
             class_path=f"{cls.__module__}.{cls.__name__}",
             plugin_file=plugin_file,
             tags=info["tags"],
+            output_display=info.get("output_display", []),
+            derived_metrics=info.get("derived_metrics", []),
             owner_email=owner_email,
             org_id=org_id or "",
         )

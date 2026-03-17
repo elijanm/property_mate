@@ -1,6 +1,6 @@
 """A/B test traffic routing and metrics."""
 import random
-from typing import Optional
+from typing import Optional, List
 import structlog
 from fastapi import HTTPException
 
@@ -10,10 +10,30 @@ from app.utils.datetime import utc_now
 logger = structlog.get_logger(__name__)
 
 
-async def create_test(name: str, model_a: str, model_b: str, traffic_pct_b: int, description: str = "", created_by: str = "", org_id: str = "") -> ABTest:
+async def create_test(
+    name: str,
+    trainer_name: str,
+    variant_a: str,
+    variant_b: str,
+    traffic_pct_b: int,
+    metrics_to_use: Optional[List[str]] = None,
+    description: str = "",
+    created_by: str = "",
+    org_id: str = "",
+) -> ABTest:
     if await ABTest.find_one({"name": name, "status": "active", "org_id": org_id}):
         raise HTTPException(status_code=409, detail="Active A/B test with this name already exists")
-    test = ABTest(name=name, model_a=model_a, model_b=model_b, traffic_pct_b=traffic_pct_b, description=description, created_by=created_by, org_id=org_id)
+    test = ABTest(
+        name=name,
+        trainer_name=trainer_name,
+        variant_a=variant_a,
+        variant_b=variant_b,
+        traffic_pct_b=traffic_pct_b,
+        metrics_to_use=metrics_to_use or ["requests", "error_rate", "latency", "accuracy"],
+        description=description,
+        created_by=created_by,
+        org_id=org_id,
+    )
     await test.insert()
     return test
 
@@ -55,12 +75,12 @@ def route_request(test: ABTest) -> str:
     return "a"
 
 
-async def get_active_test_for_trainer(trainer_name: str) -> Optional[ABTest]:
-    """Return active A/B test where this trainer is model_a or model_b."""
+async def get_active_test_for_deployment(deployment_id: str) -> Optional[ABTest]:
+    """Return active A/B test where this deployment is variant_a or variant_b."""
     return await ABTest.find_one({
         "$and": [
             {"status": "active"},
-            {"$or": [{"model_a": trainer_name}, {"model_b": trainer_name}]},
+            {"$or": [{"variant_a": deployment_id}, {"variant_b": deployment_id}]},
         ]
     })
 

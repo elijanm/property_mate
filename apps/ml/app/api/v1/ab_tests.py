@@ -1,5 +1,5 @@
 """A/B test management endpoints."""
-from typing import Optional
+from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
@@ -15,9 +15,11 @@ _engineer = Depends(require_roles("engineer", "admin"))
 class CreateABTestRequest(BaseModel):
     name: str
     description: str = ""
-    model_a: str
-    model_b: str
+    trainer_name: str
+    variant_a: str
+    variant_b: str
     traffic_pct_b: int = 10
+    metrics_to_use: List[str] = ["requests", "error_rate", "latency", "accuracy"]
 
 
 class UpdateABTestRequest(BaseModel):
@@ -25,6 +27,7 @@ class UpdateABTestRequest(BaseModel):
     status: Optional[str] = None
     winner: Optional[str] = None
     description: Optional[str] = None
+    metrics_to_use: Optional[List[str]] = None
 
 
 @router.post("", dependencies=[_engineer])
@@ -32,7 +35,17 @@ async def create_test(
     body: CreateABTestRequest,
     user=Depends(get_current_user),
 ):
-    test = await ab_test_service.create_test(body.name, body.model_a, body.model_b, body.traffic_pct_b, body.description, user.email, user.org_id)
+    test = await ab_test_service.create_test(
+        name=body.name,
+        trainer_name=body.trainer_name,
+        variant_a=body.variant_a,
+        variant_b=body.variant_b,
+        traffic_pct_b=body.traffic_pct_b,
+        metrics_to_use=body.metrics_to_use,
+        description=body.description,
+        created_by=user.email,
+        org_id=user.org_id,
+    )
     return _fmt(test)
 
 
@@ -47,7 +60,6 @@ async def list_tests(
 
 @router.get("/{test_id}")
 async def get_test(test_id: str, user=Depends(get_current_user)):
-    from app.models.ab_test import ABTest
     t = await ab_test_service.get_test(test_id)
     if t.org_id != user.org_id:
         raise HTTPException(status_code=404, detail="A/B test not found")
@@ -56,7 +68,6 @@ async def get_test(test_id: str, user=Depends(get_current_user)):
 
 @router.patch("/{test_id}", dependencies=[_engineer])
 async def update_test(test_id: str, body: UpdateABTestRequest, user=Depends(get_current_user)):
-    from app.models.ab_test import ABTest
     t = await ab_test_service.get_test(test_id)
     if t.org_id != user.org_id:
         raise HTTPException(status_code=404, detail="A/B test not found")
@@ -66,7 +77,6 @@ async def update_test(test_id: str, body: UpdateABTestRequest, user=Depends(get_
 
 @router.delete("/{test_id}", status_code=204, dependencies=[_engineer])
 async def delete_test(test_id: str, user=Depends(get_current_user)):
-    from app.models.ab_test import ABTest
     t = await ab_test_service.get_test(test_id)
     if t.org_id != user.org_id:
         raise HTTPException(status_code=404, detail="A/B test not found")
@@ -75,10 +85,29 @@ async def delete_test(test_id: str, user=Depends(get_current_user)):
 
 def _fmt(t):
     return {
-        "id": str(t.id), "name": t.name, "description": t.description,
-        "model_a": t.model_a, "model_b": t.model_b, "traffic_pct_b": t.traffic_pct_b,
-        "status": t.status, "winner": t.winner,
-        "metrics_a": {"requests": t.metrics_a.requests, "error_rate": t.metrics_a.error_rate, "avg_latency_ms": t.metrics_a.avg_latency_ms, "accuracy": t.metrics_a.accuracy},
-        "metrics_b": {"requests": t.metrics_b.requests, "error_rate": t.metrics_b.error_rate, "avg_latency_ms": t.metrics_b.avg_latency_ms, "accuracy": t.metrics_b.accuracy},
-        "created_by": t.created_by, "created_at": t.created_at, "concluded_at": t.concluded_at,
+        "id": str(t.id),
+        "name": t.name,
+        "description": t.description,
+        "trainer_name": t.trainer_name,
+        "variant_a": t.variant_a,
+        "variant_b": t.variant_b,
+        "traffic_pct_b": t.traffic_pct_b,
+        "metrics_to_use": t.metrics_to_use,
+        "status": t.status,
+        "winner": t.winner,
+        "metrics_a": {
+            "requests": t.metrics_a.requests,
+            "error_rate": t.metrics_a.error_rate,
+            "avg_latency_ms": t.metrics_a.avg_latency_ms,
+            "accuracy": t.metrics_a.accuracy,
+        },
+        "metrics_b": {
+            "requests": t.metrics_b.requests,
+            "error_rate": t.metrics_b.error_rate,
+            "avg_latency_ms": t.metrics_b.avg_latency_ms,
+            "accuracy": t.metrics_b.accuracy,
+        },
+        "created_by": t.created_by,
+        "created_at": t.created_at,
+        "concluded_at": t.concluded_at,
     }

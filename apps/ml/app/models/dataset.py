@@ -128,7 +128,10 @@ class DatasetEntry(Document):
     location: Optional[EntryLocation] = None     # GPS or IP-based location metadata
     captured_at: datetime = Field(default_factory=utc_now)
     review_status: str = "pending"               # pending | approved | rejected
-    review_note: Optional[str] = None            # optional rejection reason
+    review_note: Optional[str] = None            # optional rejection reason / correct value for OCR
+    # Validation model output — stored at submission time for feedback logging on review
+    validation_prediction: Optional[str] = None  # model's top predicted label
+    validation_confidence: Optional[float] = None
 
     class Settings:
         name = "dataset_entries"

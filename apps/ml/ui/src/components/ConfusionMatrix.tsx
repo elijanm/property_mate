@@ -1,8 +1,23 @@
-import type { ConfusionMatrix as CM } from '@/types/feedback'
+import type { ConfusionMatrix as CM, OcrMetrics } from '@/types/feedback'
+import OcrMetricsPanel from './OcrMetricsPanel'
 
 interface Props { data: CM }
 
 export default function ConfusionMatrix({ data }: Props) {
+  // High-cardinality / OCR model — render specialised metrics panel
+  if (data.mode === 'ocr') {
+    const ocr: OcrMetrics = {
+      total: data.total,
+      exact_match: data.exact_match ?? 0,
+      exact_match_rate: data.exact_match_rate ?? 0,
+      char_error_rate: data.char_error_rate ?? 0,
+      digit_accuracy: data.digit_accuracy ?? 0,
+      off_by: data.off_by ?? { exact: 0, '1': 0, '2_to_10': 0, '11_to_100': 0, over_100: 0 },
+      common_errors: data.common_errors ?? [],
+    }
+    return <OcrMetricsPanel data={ocr} />
+  }
+
   if (!data.labels.length) {
     return (
       <div className="text-center py-12 text-gray-500 text-sm">

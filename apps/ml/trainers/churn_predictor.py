@@ -50,7 +50,7 @@ import io
 import os
 from typing import Any, Dict, List, Optional
 
-from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig
+from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig, OutputFieldSpec
 from app.abstract.data_source import DatasetDataSource
 
 # ── Dataset slug ──────────────────────────────────────────────────────────────
@@ -381,6 +381,16 @@ class ChurnPredictor(BaseTrainer):
     framework = "sklearn"
     schedule = None
     category = {"key": "classification", "label": "Classification"}
+
+    output_display = [
+        OutputFieldSpec("risk_level",        "label",      "Churn Risk Level",       primary=True,
+                        hint="low / medium / high / critical"),
+        OutputFieldSpec("churn_probability", "confidence", "Churn Probability"),
+        OutputFieldSpec("churn_risk_score",  "reading",    "Risk Score"),
+        OutputFieldSpec("engagement_score",  "reading",    "Engagement Score"),
+        OutputFieldSpec("top_risk_factors",  "json",       "Top Risk Factors"),
+        OutputFieldSpec("recommendation",    "text",       "Recommendation"),
+    ]
 
     # Data source: MLDock Dataset identified by slug.
     # auto_create_spec ensures the dataset is created automatically the first

@@ -9,11 +9,13 @@ import JobsPanel from './JobsPanel'
 import EvaluationPanel from './EvaluationPanel'
 import TrainingResultsPanel from './TrainingResultsPanel'
 import VersionComparePanel from './VersionComparePanel'
+import IntegrationPanel from './IntegrationPanel'
+import ApiDocsPanel from './ApiDocsPanel'
 import { trainersApi } from '@/api/trainers'
 import {
   Brain, FlaskConical, ThumbsUp, BarChart2, Clock, History,
   Cpu, ChevronRight, Target, TrendingUp, GitCompare, ChevronDown,
-  CheckCircle2,
+  CheckCircle2, Code2, BookOpen,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -39,7 +41,7 @@ interface Props {
   onClose: () => void
 }
 
-type Tab = 'inference' | 'results' | 'feedback' | 'metrics' | 'inferences' | 'jobs' | 'evaluation' | 'training' | 'compare'
+type Tab = 'inference' | 'results' | 'feedback' | 'metrics' | 'inferences' | 'jobs' | 'evaluation' | 'training' | 'compare' | 'integration' | 'api-docs'
 
 export default function ModelWorkspace({ deployment, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('inference')
@@ -48,6 +50,7 @@ export default function ModelWorkspace({ deployment, onClose }: Props) {
   const [results, setResults] = useState<Array<{ result: InferenceResult; ts: string }>>([])
   const [feedbackRefresh, setFeedbackRefresh] = useState(0)
   const [schema, setSchema] = useState<Record<string, unknown>>({})
+  const [outputSchema, setOutputSchema] = useState<Record<string, unknown>>({})
 
   // Version management
   const [versions, setVersions] = useState<ModelDeployment[]>([deployment])
@@ -56,7 +59,10 @@ export default function ModelWorkspace({ deployment, onClose }: Props) {
   const [loadingVersions, setLoadingVersions] = useState(false)
 
   useEffect(() => {
-    trainersApi.getSchema(deployment.trainer_name).then(s => setSchema(s.input_schema ?? s)).catch(() => {})
+    trainersApi.getSchema(deployment.trainer_name).then(s => {
+      setSchema(s.input_schema ?? s)
+      if (s.output_schema) setOutputSchema(s.output_schema)
+    }).catch(() => {})
     if (!sessionStorage.getItem('ml_session_id')) {
       sessionStorage.setItem('ml_session_id', Math.random().toString(36).slice(2))
     }
@@ -92,6 +98,8 @@ export default function ModelWorkspace({ deployment, onClose }: Props) {
     { id: 'evaluation', label: 'Evaluation', icon: <Target size={14} /> },
     { id: 'training', label: 'Training', icon: <TrendingUp size={14} /> },
     ...(versions.length > 1 ? [{ id: 'compare' as Tab, label: 'Compare', icon: <GitCompare size={14} /> }] : []),
+    { id: 'integration' as Tab, label: 'Integration', icon: <Code2 size={14} /> },
+    { id: 'api-docs' as Tab, label: 'API Docs', icon: <BookOpen size={14} /> },
   ]
 
   const sortedVersions = [...versions].sort((a, b) => {
@@ -222,7 +230,9 @@ export default function ModelWorkspace({ deployment, onClose }: Props) {
         {tab === 'inference' && (
           <InferencePanel
             deployment={{ ...current, input_schema: schema as typeof current.input_schema }}
+            allDeployments={versions}
             onResult={(result, inputs) => handleResult(result, inputs)}
+            onDeploymentChange={d => setCurrent(d)}
           />
         )}
 
@@ -269,17 +279,17 @@ export default function ModelWorkspace({ deployment, onClose }: Props) {
         {tab === 'feedback' && (
           <FeedbackPanel
             deployment={current}
-            lastResult={lastResult}
+            allDeployments={versions}
             onSubmitted={() => setFeedbackRefresh(n => n + 1)}
           />
         )}
 
         {tab === 'metrics' && (
-          <MetricsPanel trainerName={current.trainer_name} refreshTrigger={feedbackRefresh} />
+          <MetricsPanel trainerName={current.trainer_name} deployment={current} allDeployments={versions} refreshTrigger={feedbackRefresh} />
         )}
 
         {tab === 'inferences' && (
-          <InferenceHistoryPanel deployment={current} refreshTrigger={feedbackRefresh} />
+          <InferenceHistoryPanel deployment={current} allDeployments={versions} refreshTrigger={feedbackRefresh} />
         )}
 
         {tab === 'jobs' && (
@@ -287,11 +297,11 @@ export default function ModelWorkspace({ deployment, onClose }: Props) {
         )}
 
         {tab === 'evaluation' && (
-          <EvaluationPanel deployment={current} />
+          <EvaluationPanel deployment={current} allDeployments={versions} />
         )}
 
         {tab === 'training' && (
-          <TrainingResultsPanel deployment={current} />
+          <TrainingResultsPanel deployment={current} allDeployments={versions} />
         )}
 
         {tab === 'compare' && (
@@ -300,6 +310,18 @@ export default function ModelWorkspace({ deployment, onClose }: Props) {
             currentDeployment={current}
             lastInputs={lastInputs}
           />
+        )}
+
+        {tab === 'integration' && (
+          <IntegrationPanel
+            deployment={current}
+            inputSchema={schema}
+            outputSchema={outputSchema}
+          />
+        )}
+
+        {tab === 'api-docs' && (
+          <ApiDocsPanel deployment={current} />
         )}
       </div>
     </div>

@@ -56,6 +56,36 @@ async def register(body: RegisterRequest):
     }
 
 
+class InviteRegisterRequest(BaseModel):
+    email: str
+    password: str
+    full_name: str = ""
+    invite_token: str
+
+
+@router.post("/register-invite")
+async def register_with_invite(body: InviteRegisterRequest):
+    import jwt as pyjwt
+    from fastapi import HTTPException
+    from app.core.config import settings
+    try:
+        payload = pyjwt.decode(body.invite_token, settings.SECRET_KEY, algorithms=["HS256"])
+        if payload.get("type") != "invite":
+            raise ValueError("invalid type")
+        org_id = payload["org_id"]
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid or expired invite token")
+    user = await auth_service.register(
+        body.email, body.password, body.full_name,
+        role="viewer", org_id=org_id, skip_verification=True
+    )
+    token = auth_service.make_access_token(user)
+    return {
+        "token": token,
+        "user": {"email": user.email, "full_name": user.full_name, "role": user.role, "org_id": user.org_id},
+    }
+
+
 @router.post("/verify")
 async def verify_otp(body: VerifyOtpRequest):
     """Verify email with 6-digit OTP."""

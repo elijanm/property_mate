@@ -60,6 +60,11 @@ import clsx from 'clsx'
 const _params = new URLSearchParams(window.location.search)
 const _RESET_TOKEN_FROM_URL  = _params.get('reset_token')
 const _VERIFY_TOKEN_FROM_URL = _params.get('token') ?? _params.get('verify_token')
+const _INVITE_TOKEN_FROM_URL = _params.get('invite')
+// Store invite token for the register flow to pick up
+if (_INVITE_TOKEN_FROM_URL) {
+  sessionStorage.setItem('pending_invite_token', _INVITE_TOKEN_FROM_URL)
+}
 
 type Page = 'models' | 'trainers' | 'editor' | 'annotate' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing' | 'usage' | 'staff'
 
@@ -67,7 +72,7 @@ type NavGroup = {
   id: string
   label: string
   icon: React.ReactNode  // for rail mode
-  items: { id: Page; label: string; icon: React.ReactNode }[]
+  items: { id: Page; label: string; icon: React.ReactNode; roles?: string[] }[]
 }
 
 const NAV_GROUPS: NavGroup[] = [
@@ -78,9 +83,9 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: 'datasets',    label: 'Datasets',     icon: <Database size={14} /> },
       { id: 'annotate',    label: 'Annotate',     icon: <Pencil size={14} /> },
-      { id: 'editor',      label: 'Code Editor',  icon: <Code2 size={14} /> },
-      { id: 'trainers',    label: 'Trainers',     icon: <Brain size={14} /> },
-      { id: 'experiments', label: 'Experiments',  icon: <GitCompare size={14} /> },
+      { id: 'editor',      label: 'Code Editor',  icon: <Code2 size={14} />, roles: ['engineer', 'admin'] },
+      { id: 'trainers',    label: 'Trainers',     icon: <Brain size={14} />, roles: ['engineer', 'admin'] },
+      { id: 'experiments', label: 'Experiments',  icon: <GitCompare size={14} />, roles: ['engineer', 'admin'] },
     ],
   },
   {
@@ -89,8 +94,8 @@ const NAV_GROUPS: NavGroup[] = [
     icon: <Upload size={16} />,
     items: [
       { id: 'models',   label: 'Models',  icon: <LayoutGrid size={14} /> },
-      { id: 'deploy',   label: 'Deploy',  icon: <Upload size={14} /> },
-      { id: 'batch',    label: 'Batch',   icon: <Layers size={14} /> },
+      { id: 'deploy',   label: 'Deploy',  icon: <Upload size={14} />, roles: ['engineer', 'admin'] },
+      { id: 'batch',    label: 'Batch',   icon: <Layers size={14} />, roles: ['engineer', 'admin'] },
     ],
   },
   {
@@ -179,7 +184,7 @@ export default function App() {
   }
   const [resetToken, setResetToken] = useState<string | null>(_RESET_TOKEN_FROM_URL)
   const [authPage, setAuthPage] = useState<'login' | 'register' | 'landing' | 'getting-started' | 'api-docs' | 'privacy' | 'terms' | 'forgot-password' | 'reset-password'>(
-    _RESET_TOKEN_FROM_URL ? 'reset-password' : 'landing'
+    _RESET_TOKEN_FROM_URL ? 'reset-password' : _INVITE_TOKEN_FROM_URL ? 'register' : 'landing'
   )
   const [docsSection, setDocsSection] = useState<string | undefined>()
   const [linkVerifying, setLinkVerifying] = useState(false)
@@ -241,14 +246,16 @@ export default function App() {
   }
 
   const navigate = (p: Page) => {
-    setPage(p)
+    // Viewers cannot access editor page
+    const target = (p === 'editor' && user?.role === 'viewer') ? 'models' : p
+    setPage(target)
     setSelected(null)
     // sync rail active group to the group containing the page
-    const group = NAV_GROUPS.find(g => g.items.some(i => i.id === p))
+    const group = NAV_GROUPS.find(g => g.items.some(i => i.id === target))
     if (group) setRailActiveGroup(group.id)
-    if (p === 'wallet') refreshWallet()
-    if (p === 'models') load()
-    trackPageView(`/${p}`)
+    if (target === 'wallet') refreshWallet()
+    if (target === 'models') load()
+    trackPageView(`/${target}`)
   }
 
   const handleTrainingCompleted = async (trainerName: string) => {
@@ -423,7 +430,7 @@ export default function App() {
                   {group.label}
                 </div>
                 <div className="space-y-0.5">
-                  {group.items.map(item => (
+                  {group.items.filter(i => !i.roles || i.roles.includes(user?.role ?? '')).map(item => (
                     <button key={item.id} onClick={() => navigate(item.id)}
                       className={clsx('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors',
                         page === item.id && !selected ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200'
@@ -461,7 +468,7 @@ export default function App() {
                   </button>
                   {!isCollapsed && (
                     <div className="space-y-0.5 mt-0.5 mb-1">
-                      {group.items.map(item => (
+                      {group.items.filter(i => !i.roles || i.roles.includes(user?.role ?? '')).map(item => (
                         <button key={item.id} onClick={() => navigate(item.id)}
                           className={clsx('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors',
                             page === item.id && !selected ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200'
@@ -507,7 +514,7 @@ export default function App() {
             </div>
             {/* Flyout items */}
             <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
-              {(NAV_GROUPS.find(g => g.id === railActiveGroup)?.items ?? []).map(item => (
+              {(NAV_GROUPS.find(g => g.id === railActiveGroup)?.items ?? []).filter(i => !i.roles || i.roles.includes(user?.role ?? '')).map(item => (
                 <button key={item.id} onClick={() => navigate(item.id)}
                   className={clsx('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors',
                     page === item.id && !selected ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200'
@@ -658,7 +665,7 @@ export default function App() {
         <div className={clsx('flex-1 min-h-0', (page === 'editor' || page === 'annotate') && !selected ? 'overflow-hidden flex flex-col' : 'overflow-y-auto')}>
           {selected ? (
             <ModelWorkspace deployment={selected} onClose={() => setSelected(null)} />
-          ) : page === 'editor' ? (
+          ) : page === 'editor' && user?.role !== 'viewer' ? (
             <CodeEditorPage />
           ) : page === 'annotate' ? (
             <div className="flex-1 min-h-0 p-6 overflow-hidden flex flex-col">

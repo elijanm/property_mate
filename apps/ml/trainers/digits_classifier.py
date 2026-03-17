@@ -15,7 +15,7 @@ Inference:
 Or pass a flat list of 64 values:
     { "inputs": [[0, 5, 13, 9, 1, 0, 0, 0, ...]] }
 """
-from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig
+from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig, OutputFieldSpec
 from app.abstract.data_source import InMemoryDataSource
 
 _CLASS_NAMES = [str(i) for i in range(10)]   # "0" … "9"
@@ -44,6 +44,13 @@ class DigitsClassifier(BaseTrainer):
     schedule = None
     data_source = InMemoryDataSource()
     category = {"key": "classification", "label": "Classification"}
+
+    output_display = [
+        OutputFieldSpec("predicted_digit", "label",      "Predicted Digit", primary=True,
+                        hint="Enter the correct digit (0–9)"),
+        OutputFieldSpec("confidence",      "confidence", "Confidence"),
+        OutputFieldSpec("probabilities",   "json",       "Per-Digit Probabilities"),
+    ]
 
     input_schema = {
         name: _pixel_schema(name, r, c)

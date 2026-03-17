@@ -164,6 +164,13 @@
     <li><a href="#example-pytorch">Example: PyTorch</a></li>
     <li><a href="#train-api">Training API</a></li>
   </ul>
+  <div class="section-label">UI Display Schema</div>
+  <ul>
+    <li><a href="#output-display">output_display Overview</a></li>
+    <li><a href="#output-display-types">Field Types</a></li>
+    <li><a href="#output-display-examples">Examples</a></li>
+    <li><a href="#output-display-pyfunc">Pre-trained Models</a></li>
+  </ul>
   <div class="section-label">Reference</div>
   <ul>
     <li><a href="#env-vars">Environment Variables</a></li>
@@ -1079,6 +1086,223 @@ curl -X POST http://localhost:8030/api/v1/training/jobs/{job_id}/rerun</code></p
     <pre><code>curl -X POST http://localhost:8030/api/v1/inference/rent-predictor \
   -H <span class="st">'Content-Type: application/json'</span> \
   -d <span class="st">'{"inputs": {"bedrooms": 2, "bathrooms": 1, "sq_ft": 850, "floor": 3}}'</span></code></pre>
+  </section>
+
+  <hr>
+
+  <!-- ═══ OUTPUT DISPLAY SCHEMA ═══ -->
+
+  <section id="output-display">
+    <h2>output_display — UI Rendering Schema</h2>
+    <p>
+      Every trainer (self-training or pre-trained) can declare an <code class="inline">output_display</code>
+      list on its class. This schema tells the ML Studio UI exactly how to render the <code class="inline">predict()</code>
+      output — as images, numeric readings, classification labels, confidence bars, ranked lists, detection badges,
+      or raw JSON. It also drives:
+    </p>
+    <ul style="margin: 0 0 16px 24px; color: #c8d0df;">
+      <li style="margin-bottom:6px"><strong>Feedback panel</strong> — auto-fills <em>Predicted label</em> from the primary field; shows the correct-value input hint when a reviewer clicks Incorrect.</li>
+      <li style="margin-bottom:6px"><strong>Inference history</strong> — uses the primary field to generate the <em>predicted_label_hint</em> shown in dropdowns.</li>
+      <li style="margin-bottom:6px"><strong>Confusion matrix / OCR metrics</strong> — uses the primary field value as the label for accuracy calculations.</li>
+      <li style="margin-bottom:6px"><strong>Compare panel</strong> — renders side-by-side version outputs using the same spec.</li>
+    </ul>
+
+    <div class="callout tip">
+      <strong>Why bother?</strong>
+      Without <code class="inline">output_display</code>, the UI falls back to heuristic auto-detection (key names + value shapes). Declaring it explicitly gives you control over ordering, grouping, labels, and which field is the ground-truth label — and makes your plugin work perfectly for any output shape without guessing.
+    </div>
+
+    <h3>Declaration — BaseTrainer subclass</h3>
+    <pre><code><span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> <span class="cl">BaseTrainer</span>, <span class="cl">OutputFieldSpec</span>
+
+<span class="kw">class</span> <span class="cl">MyTrainer</span>(<span class="cl">BaseTrainer</span>):
+    name    = <span class="st">"my_model"</span>
+    version = <span class="st">"1.0.0"</span>
+
+    output_display = [
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"annotated_image"</span>, <span class="st">"image"</span>,     <span class="st">"Annotated Image"</span>, span=<span class="nu">2</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"reading"</span>,          <span class="st">"reading"</span>,   <span class="st">"Meter Reading"</span>,
+                        primary=<span class="kw">True</span>, hint=<span class="st">"Enter the correct reading"</span>),
+        <span class="cl">OutputFieldSpec</span>(<span class="st">"confidence"</span>,       <span class="st">"confidence"</span>, <span class="st">"Confidence"</span>),
+    ]</code></pre>
+
+    <h3>OutputFieldSpec constructor</h3>
+    <table>
+      <thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">key</code></td><td>str</td><td>—</td><td>Exact key returned by <code class="inline">predict()</code></td></tr>
+        <tr><td><code class="inline">type</code></td><td>str</td><td>—</td><td>One of the field types listed below</td></tr>
+        <tr><td><code class="inline">label</code></td><td>str</td><td>—</td><td>Human-readable display name in the UI</td></tr>
+        <tr><td><code class="inline">primary</code></td><td>bool</td><td>False</td><td>Mark exactly one field as the ground-truth value. Used for predicted_label_hint, feedback form, and confusion matrix.</td></tr>
+        <tr><td><code class="inline">hint</code></td><td>str</td><td>""</td><td>Placeholder text in the feedback "Correct value" input shown when a reviewer clicks <em>Incorrect</em>.</td></tr>
+        <tr><td><code class="inline">span</code></td><td>int</td><td>1</td><td>Grid columns: <code class="inline">1</code> = half-width, <code class="inline">2</code> = full-width. Only applies to image and reading fields.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="output-display-types">
+    <h2>Field Types</h2>
+    <table>
+      <thead><tr><th>Type</th><th>Value shape</th><th>UI rendering</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code class="inline">image</code></td>
+          <td>base64 data-URI <em>or</em> HTTP/S3 presigned URL string</td>
+          <td>Responsive <code class="inline">&lt;img&gt;</code> with a label caption beneath. Put images first — they appear above scalar fields.</td>
+        </tr>
+        <tr>
+          <td><code class="inline">reading</code></td>
+          <td>number or short string</td>
+          <td>Large monospace badge — ideal for OCR output, sensor readings, counts, predicted values. Use <code class="inline">primary=True</code> on your main reading.</td>
+        </tr>
+        <tr>
+          <td><code class="inline">label</code></td>
+          <td>string</td>
+          <td>Semi-bold classification label chip. Use for predicted class names, risk levels, categories.</td>
+        </tr>
+        <tr>
+          <td><code class="inline">confidence</code></td>
+          <td>float 0–1</td>
+          <td>Horizontal progress bar with percentage. Ideal for model confidence / probability scores.</td>
+        </tr>
+        <tr>
+          <td><code class="inline">ranked_list</code></td>
+          <td>list of <code class="inline">{"label": str, "confidence": float}</code> objects</td>
+          <td>Compact ranked table with relative bar chart. Shows top 8 entries. Also works with <code class="inline">score</code> or <code class="inline">probability</code> instead of <code class="inline">confidence</code>.</td>
+        </tr>
+        <tr>
+          <td><code class="inline">bbox_list</code></td>
+          <td>list of <code class="inline">{"label": str, "bbox": [...], "confidence": float}</code> objects</td>
+          <td>Compact detection chips showing label + confidence percentage. Shows up to 12 entries.</td>
+        </tr>
+        <tr>
+          <td><code class="inline">text</code></td>
+          <td>string longer than ~80 chars</td>
+          <td>Wrapped paragraph for recommendations, summaries, explanations.</td>
+        </tr>
+        <tr>
+          <td><code class="inline">json</code></td>
+          <td>any</td>
+          <td>Collapsible <code class="inline">&lt;pre&gt;</code> block with pretty-printed JSON. Use for complex nested data, full detection arrays, or probability dicts.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout info">
+      <strong>Layout order</strong>
+      Regardless of declaration order, the renderer always groups fields as: images (grid) → scalars (grid) → ranked/bbox lists → text → raw JSON. Within each group, the order matches your <code class="inline">output_display</code> list.
+    </div>
+  </section>
+
+  <section id="output-display-examples">
+    <h2>Real-world Examples</h2>
+
+    <h3>Water meter OCR</h3>
+    <pre><code>output_display = [
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"annotated_url"</span>,  <span class="st">"image"</span>,      <span class="st">"Annotated Image"</span>,  span=<span class="nu">1</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"original_url"</span>,   <span class="st">"image"</span>,      <span class="st">"Original Image"</span>,   span=<span class="nu">1</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"reading"</span>,         <span class="st">"reading"</span>,   <span class="st">"Meter Reading"</span>,
+                    primary=<span class="kw">True</span>, hint=<span class="st">"Enter the correct reading (digits only)"</span>, span=<span class="nu">2</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"confidence_avg"</span>,  <span class="st">"confidence"</span>, <span class="st">"Confidence"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"digit_count"</span>,     <span class="st">"reading"</span>,    <span class="st">"Digits Detected"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"detections"</span>,      <span class="st">"json"</span>,       <span class="st">"Detection Details"</span>, span=<span class="nu">2</span>),
+]</code></pre>
+
+    <h3>Image classifier</h3>
+    <pre><code>output_display = [
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"label"</span>,      <span class="st">"label"</span>,      <span class="st">"Predicted Class"</span>,
+                    primary=<span class="kw">True</span>, hint=<span class="st">"Enter the correct class label"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"confidence"</span>, <span class="st">"confidence"</span>, <span class="st">"Confidence"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"top3"</span>,       <span class="st">"ranked_list"</span>, <span class="st">"Top 3 Predictions"</span>),
+]</code></pre>
+
+    <h3>Object detector</h3>
+    <pre><code>output_display = [
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"count"</span>,      <span class="st">"reading"</span>,   <span class="st">"Objects Detected"</span>,
+                    primary=<span class="kw">True</span>, hint=<span class="st">"Enter the correct count"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"detections"</span>, <span class="st">"bbox_list"</span>, <span class="st">"Detections"</span>),
+]</code></pre>
+
+    <h3>Regression (rent prediction)</h3>
+    <pre><code>output_display = [
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"predicted_rent_kes"</span>, <span class="st">"reading"</span>, <span class="st">"Predicted Rent (KES)"</span>,
+                    primary=<span class="kw">True</span>, hint=<span class="st">"Enter the actual monthly rent in KES"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"rent_range_low"</span>,     <span class="st">"reading"</span>, <span class="st">"Range Low (KES)"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"rent_range_high"</span>,    <span class="st">"reading"</span>, <span class="st">"Range High (KES)"</span>),
+]</code></pre>
+
+    <h3>Text classifier</h3>
+    <pre><code>output_display = [
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"category"</span>,   <span class="st">"label"</span>,      <span class="st">"Category"</span>,
+                    primary=<span class="kw">True</span>, hint=<span class="st">"Enter the correct ticket category"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"confidence"</span>, <span class="st">"confidence"</span>, <span class="st">"Confidence"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"top3"</span>,       <span class="st">"ranked_list"</span>, <span class="st">"Top Predictions"</span>),
+]</code></pre>
+
+    <h3>Security / anomaly detector</h3>
+    <pre><code>output_display = [
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"risk_level"</span>,         <span class="st">"label"</span>,      <span class="st">"Risk Level"</span>,
+                    primary=<span class="kw">True</span>, hint=<span class="st">"safe / low / medium / high / critical"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"is_malicious"</span>,       <span class="st">"label"</span>,      <span class="st">"Malicious"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"threat_probability"</span>, <span class="st">"confidence"</span>, <span class="st">"Threat Probability"</span>),
+]</code></pre>
+
+    <h3>Complex multi-field (churn predictor)</h3>
+    <pre><code>output_display = [
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"risk_level"</span>,        <span class="st">"label"</span>,      <span class="st">"Churn Risk Level"</span>,
+                    primary=<span class="kw">True</span>, hint=<span class="st">"low / medium / high / critical"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"churn_probability"</span>, <span class="st">"confidence"</span>, <span class="st">"Churn Probability"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"churn_risk_score"</span>,  <span class="st">"reading"</span>,    <span class="st">"Risk Score"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"engagement_score"</span>,  <span class="st">"reading"</span>,    <span class="st">"Engagement Score"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"top_risk_factors"</span>,  <span class="st">"json"</span>,       <span class="st">"Top Risk Factors"</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"recommendation"</span>,    <span class="st">"text"</span>,       <span class="st">"Recommendation"</span>),
+]</code></pre>
+  </section>
+
+  <section id="output-display-pyfunc">
+    <h2>output_display for Pre-trained (pyfunc) Models</h2>
+    <p>
+      Pre-trained models uploaded as a ZIP with a custom <code class="inline">inference.py</code> script use
+      <code class="inline">mlflow.pyfunc.PythonModel</code> instead of <code class="inline">BaseTrainer</code>.
+      Declare <code class="inline">output_display</code> as a plain list of dicts directly on the class —
+      no import required, since <code class="inline">OutputFieldSpec</code> is not available in the sandboxed inference environment.
+    </p>
+
+    <pre><code><span class="kw">import</span> mlflow.pyfunc
+
+<span class="kw">class</span> <span class="cl">WaterMeterOCR</span>(mlflow.pyfunc.PythonModel):
+
+    <span class="cm"># Plain dicts — same keys as OutputFieldSpec fields</span>
+    output_display = [
+        {<span class="st">"key"</span>: <span class="st">"annotated_url"</span>,  <span class="st">"type"</span>: <span class="st">"image"</span>,      <span class="st">"label"</span>: <span class="st">"Annotated Image"</span>,  <span class="st">"primary"</span>: <span class="kw">False</span>, <span class="st">"hint"</span>: <span class="st">""</span>,  <span class="st">"span"</span>: <span class="nu">1</span>},
+        {<span class="st">"key"</span>: <span class="st">"original_url"</span>,   <span class="st">"type"</span>: <span class="st">"image"</span>,      <span class="st">"label"</span>: <span class="st">"Original Image"</span>,   <span class="st">"primary"</span>: <span class="kw">False</span>, <span class="st">"hint"</span>: <span class="st">""</span>,  <span class="st">"span"</span>: <span class="nu">1</span>},
+        {<span class="st">"key"</span>: <span class="st">"reading"</span>,         <span class="st">"type"</span>: <span class="st">"reading"</span>,   <span class="st">"label"</span>: <span class="st">"Meter Reading"</span>,    <span class="st">"primary"</span>: <span class="kw">True</span>,  <span class="st">"hint"</span>: <span class="st">"Enter the correct reading"</span>, <span class="st">"span"</span>: <span class="nu">2</span>},
+        {<span class="st">"key"</span>: <span class="st">"confidence_avg"</span>,  <span class="st">"type"</span>: <span class="st">"confidence"</span>, <span class="st">"label"</span>: <span class="st">"Confidence"</span>,       <span class="st">"primary"</span>: <span class="kw">False</span>, <span class="st">"hint"</span>: <span class="st">""</span>,  <span class="st">"span"</span>: <span class="nu">1</span>},
+        {<span class="st">"key"</span>: <span class="st">"digit_count"</span>,     <span class="st">"type"</span>: <span class="st">"reading"</span>,   <span class="st">"label"</span>: <span class="st">"Digits Detected"</span>, <span class="st">"primary"</span>: <span class="kw">False</span>, <span class="st">"hint"</span>: <span class="st">""</span>,  <span class="st">"span"</span>: <span class="nu">1</span>},
+        {<span class="st">"key"</span>: <span class="st">"detections"</span>,      <span class="st">"type"</span>: <span class="st">"json"</span>,       <span class="st">"label"</span>: <span class="st">"Detection Details"</span>, <span class="st">"primary"</span>: <span class="kw">False</span>, <span class="st">"hint"</span>: <span class="st">""</span>, <span class="st">"span"</span>: <span class="nu">2</span>},
+    ]
+
+    <span class="kw">def</span> <span class="fn">load_context</span>(<span class="dt">self</span>, context):
+        <span class="cm"># ... load your model ...</span>
+        <span class="kw">pass</span>
+
+    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, context, model_input):
+        <span class="cm"># ... run inference ...</span>
+        <span class="kw">return</span> {<span class="st">"reading"</span>: <span class="st">"04823"</span>, <span class="st">"confidence_avg"</span>: <span class="nu">0.94</span>, ...}</code></pre>
+
+    <div class="callout info">
+      <strong>Automatic registration</strong>
+      When the ZIP is deployed, the platform reads <code class="inline">output_display</code> from the pyfunc class and upserts a <code class="inline">TrainerRegistration</code> document so the schema endpoint (<code class="inline">GET /inference/{name}/schema</code>) returns the correct spec. This happens automatically — no manual registration step needed.
+    </div>
+
+    <h3>Rule of thumb</h3>
+    <ul style="margin: 0 0 16px 24px; color: #c8d0df;">
+      <li style="margin-bottom:6px">Use <strong>OutputFieldSpec objects</strong> for BaseTrainer subclasses (they are in scope).</li>
+      <li style="margin-bottom:6px">Use <strong>plain dicts</strong> for pyfunc PythonModel classes (no app imports available).</li>
+      <li style="margin-bottom:6px">Keys must <strong>exactly match</strong> the keys your <code class="inline">predict()</code> returns.</li>
+      <li style="margin-bottom:6px">Mark <strong>exactly one field</strong> as <code class="inline">primary=True</code> — this is the ground-truth label for feedback and the confusion matrix.</li>
+      <li style="margin-bottom:6px">If none is primary, the platform falls back to heuristic key scanning.</li>
+    </ul>
   </section>
 
   <hr>

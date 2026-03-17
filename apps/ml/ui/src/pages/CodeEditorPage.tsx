@@ -260,7 +260,7 @@ function TemplatesSection({
   activePath: string | null
   onFork: (node: FileNode) => void
 }) {
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(true)
   const samples = _flattenTree(tree).filter(n => n.name.startsWith('sample_') && n.name.endsWith('.py'))
   if (samples.length === 0) return null
 
@@ -543,6 +543,7 @@ function AiGenerateModal({ onClose, onInsert }: { onClose: () => void; onInsert:
 
 export default function CodeEditorPage() {
   const { user } = useAuth()
+  const isViewer = user?.role === 'viewer'
 
   // File tree
   const [tree, setTree] = useState<FileNode[]>([])
@@ -667,6 +668,11 @@ export default function CodeEditorPage() {
   // Open a sample/template file as a personal copy — never edit the original
   const forkSampleFile = async (node: FileNode) => {
     if (node.type === 'dir') return
+    if (isViewer) {
+      // Viewers: open the template read-only, don't try to save a copy
+      await openFile(node)
+      return
+    }
     const copyName = node.name.replace(/^sample_/, '')
     const copyPath = copyName
 
@@ -994,24 +1000,38 @@ export default function CodeEditorPage() {
       {/* Quota / wallet bar */}
       <QuotaBar wallet={wallet} />
 
+      {/* Read-only banner for viewers */}
+      {isViewer && (
+        <div className="flex items-center gap-2 px-4 py-2 bg-amber-950/40 border-b border-amber-800/30 flex-shrink-0">
+          <AlertCircle size={12} className="text-amber-400 flex-shrink-0" />
+          <p className="text-[11px] text-amber-200/70">
+            You have read-only access. Upgrade to Engineer to edit and train.
+          </p>
+        </div>
+      )}
+
       {/* Action toolbar */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-800 bg-gray-950 flex-shrink-0">
         {/* New file */}
-        <button
-          onClick={() => setShowNewFile(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700 hover:text-white rounded-lg transition-colors"
-        >
-          <Plus size={12} /> New File
-        </button>
+        {!isViewer && (
+          <button
+            onClick={() => setShowNewFile(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700 hover:text-white rounded-lg transition-colors"
+          >
+            <Plus size={12} /> New File
+          </button>
+        )}
 
         {/* AI Generate */}
-        <button
-          onClick={() => setShowAiGenerate(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-violet-900/50 border border-violet-700/60 text-violet-300 hover:bg-violet-800/60 hover:text-white rounded-lg transition-colors"
-          title="Generate a trainer using AI"
-        >
-          <Sparkles size={12} /> Generate
-        </button>
+        {!isViewer && (
+          <button
+            onClick={() => setShowAiGenerate(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-violet-900/50 border border-violet-700/60 text-violet-300 hover:bg-violet-800/60 hover:text-white rounded-lg transition-colors"
+            title="Generate a trainer using AI"
+          >
+            <Sparkles size={12} /> Generate
+          </button>
+        )}
 
         <div className="flex-1" />
 
@@ -1023,57 +1043,65 @@ export default function CodeEditorPage() {
         />
 
         {/* Save */}
-        <button
-          onClick={handleSave}
-          disabled={saving || !activeTabData}
-          className={clsx(
-            'flex items-center gap-1.5 px-3 py-1.5 text-xs border rounded-lg transition-colors disabled:opacity-40',
-            saveStatus === 'saved'
-              ? 'bg-green-900/40 border-green-700/60 text-green-400'
-              : saveStatus === 'error'
-              ? 'bg-red-900/40 border-red-700/60 text-red-400'
-              : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700 hover:text-white',
-          )}
-        >
-          {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-          {saveStatus === 'saved' ? 'Saved' : saveStatus === 'error' ? 'Error' : 'Save'}
-        </button>
+        {!isViewer && (
+          <button
+            onClick={handleSave}
+            disabled={saving || !activeTabData}
+            className={clsx(
+              'flex items-center gap-1.5 px-3 py-1.5 text-xs border rounded-lg transition-colors disabled:opacity-40',
+              saveStatus === 'saved'
+                ? 'bg-green-900/40 border-green-700/60 text-green-400'
+                : saveStatus === 'error'
+                ? 'bg-red-900/40 border-red-700/60 text-red-400'
+                : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700 hover:text-white',
+            )}
+          >
+            {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+            {saveStatus === 'saved' ? 'Saved' : saveStatus === 'error' ? 'Error' : 'Save'}
+          </button>
+        )}
 
         {/* Install */}
-        <button
-          onClick={handleInstall}
-          disabled={installing || !activeTabData}
-          title="Upload file as trainer plugin (same as TrainersPage → Upload Plugin)"
-          className={clsx(
-            'flex items-center gap-1.5 px-3 py-1.5 text-xs border rounded-lg transition-colors disabled:opacity-40 font-medium',
-            installStatus === 'ok'
-              ? 'bg-green-900/40 border-green-700/60 text-green-400'
-              : installStatus === 'error'
-              ? 'bg-red-900/40 border-red-700/60 text-red-400'
-              : 'bg-indigo-900/50 border-indigo-700/60 text-indigo-300 hover:bg-indigo-800/60 hover:text-white',
-          )}
-        >
-          {installing ? <Loader2 size={12} className="animate-spin" /> : <PackageCheck size={12} />}
-          {installStatus === 'ok' ? 'Installed!' : installStatus === 'error' ? 'Failed' : installing ? 'Installing…' : 'Install'}
-        </button>
+        {!isViewer && (
+          <button
+            onClick={handleInstall}
+            disabled={installing || !activeTabData}
+            title="Upload file as trainer plugin (same as TrainersPage → Upload Plugin)"
+            className={clsx(
+              'flex items-center gap-1.5 px-3 py-1.5 text-xs border rounded-lg transition-colors disabled:opacity-40 font-medium',
+              installStatus === 'ok'
+                ? 'bg-green-900/40 border-green-700/60 text-green-400'
+                : installStatus === 'error'
+                ? 'bg-red-900/40 border-red-700/60 text-red-400'
+                : 'bg-indigo-900/50 border-indigo-700/60 text-indigo-300 hover:bg-indigo-800/60 hover:text-white',
+            )}
+          >
+            {installing ? <Loader2 size={12} className="animate-spin" /> : <PackageCheck size={12} />}
+            {installStatus === 'ok' ? 'Installed!' : installStatus === 'error' ? 'Failed' : installing ? 'Installing…' : 'Install'}
+          </button>
+        )}
 
         {/* Run */}
-        <button
-          onClick={handleRun}
-          disabled={running || !activeTabData}
-          className="flex items-center gap-1.5 px-4 py-1.5 text-xs bg-green-700 hover:bg-green-600 text-white border border-green-600 rounded-lg transition-colors disabled:opacity-40 font-medium"
-        >
-          {running ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-          {running ? 'Running…' : 'Run'}
-        </button>
+        {!isViewer && (
+          <button
+            onClick={handleRun}
+            disabled={running || !activeTabData}
+            className="flex items-center gap-1.5 px-4 py-1.5 text-xs bg-green-700 hover:bg-green-600 text-white border border-green-600 rounded-lg transition-colors disabled:opacity-40 font-medium"
+          >
+            {running ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+            {running ? 'Running…' : 'Run'}
+          </button>
+        )}
 
         {/* Deploy */}
-        <button
-          onClick={handleDeploy}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-brand-700 hover:bg-brand-600 text-white border border-brand-600 rounded-lg transition-colors font-medium"
-        >
-          <Upload size={12} /> Deploy
-        </button>
+        {!isViewer && (
+          <button
+            onClick={handleDeploy}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-brand-700 hover:bg-brand-600 text-white border border-brand-600 rounded-lg transition-colors font-medium"
+          >
+            <Upload size={12} /> Deploy
+          </button>
+        )}
 
         {/* Refresh tree */}
         <button

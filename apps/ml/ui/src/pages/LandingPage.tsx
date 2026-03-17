@@ -758,6 +758,7 @@ export default function LandingPage({ onSignIn, onGetStarted, onApiDocs, onGetti
               <button onClick={onApiDocs} className="hover:text-gray-400 transition-colors">API</button>
               <button onClick={onPrivacy} className="hover:text-gray-400 transition-colors">Privacy</button>
               <button onClick={onTerms} className="hover:text-gray-400 transition-colors">Terms</button>
+              <button onClick={onGetStarted} className="hover:text-brand-400 transition-colors text-gray-500">Contribute a model</button>
             </div>
           </div>
           <div className="mt-8 pt-6 border-t border-white/5 text-[11px] text-gray-700">

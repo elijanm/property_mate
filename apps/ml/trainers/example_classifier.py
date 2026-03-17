@@ -11,7 +11,7 @@ Then test inference via:
     { "inputs": [[5.1, 3.5, 1.4, 0.2]] }
 """
 import io
-from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig
+from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig, OutputFieldSpec
 from app.abstract.data_source import InMemoryDataSource
 
 
@@ -27,6 +27,13 @@ class IrisClassifier(BaseTrainer):
     schedule = None   # manual only — set to e.g. "0 4 * * *" to run daily at 4am
     data_source = InMemoryDataSource()  # loads built-in dataset in preprocess()
     category = {"key": "classification", "label": "Classification"}
+
+    output_display = [
+        OutputFieldSpec("predicted_class", "label",      "Predicted Class",  primary=True,
+                        hint="Enter the correct species name"),
+        OutputFieldSpec("confidence",      "confidence", "Confidence"),
+        OutputFieldSpec("probabilities",   "json",       "Class Probabilities"),
+    ]
 
     # ── UI rendering schemas ───────────────────────────────────────────────────
     # input_schema drives the inference form in ML Studio.

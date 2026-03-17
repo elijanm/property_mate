@@ -246,7 +246,15 @@ async def update_dataset(org_id: str, dataset_id: str, data: dict, acting_email:
         await _check_rewards_balance(org_id, acting_email or profile.created_by)
     if "fields" in data:
         fields_raw = data.pop("fields")
-        data["fields"] = [DatasetField(**f) if isinstance(f, dict) else f for f in fields_raw]
+        processed = []
+        for f in fields_raw:
+            if isinstance(f, dict):
+                if not f.get("id"):
+                    f = {**f, "id": str(uuid.uuid4())}
+                processed.append(DatasetField(**f))
+            else:
+                processed.append(f)
+        data["fields"] = processed
     if "slug" in data and data["slug"]:
         data["slug"] = await _unique_slug(org_id, slugify(data["slug"]), exclude_id=dataset_id)
     for k, v in data.items():
@@ -459,8 +467,9 @@ async def submit_entry(
         mime = file.content_type or "application/octet-stream"
 
         # ── Model validation ──────────────────────────────────────────────────
+        validation_prediction: Optional[str] = None
         if field.validation_model and content:
-            await _validate_with_model(field, content, mime)
+            validation_prediction = await _validate_with_model(field, content, mime)
 
         ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "bin"
         s3_key = (
@@ -470,6 +479,8 @@ async def submit_entry(
         await _upload_to_s3(s3_key, content, mime)
         file_key = s3_key
         file_mime = mime
+    else:
+        validation_prediction = None
 
     # ── Location metadata ─────────────────────────────────────────────────────
     location: Optional[EntryLocation] = None
@@ -494,6 +505,7 @@ async def submit_entry(
         description=description,
         points_awarded=profile.points_per_entry if profile.points_enabled else 0,
         location=location,
+        validation_prediction=validation_prediction,
     )
     await entry.insert()
 
@@ -707,9 +719,14 @@ def _entry_to_dict(entry: DatasetEntry) -> dict:
     return d
 
 
-async def _validate_with_model(field, content: bytes, mime: str) -> None:
-    """Run the field's validation model on the uploaded file and reject if the
-    top predicted label is not in field.validation_labels."""
+async def _validate_with_model(field, content: bytes, mime: str) -> Optional[str]:
+    """Run the field's validation model on the uploaded file.
+
+    Returns the model's top predicted label (always, even on acceptance) so the
+    caller can store it on the entry for later feedback logging on human review.
+    Raises HTTP 422 if the label is not in field.validation_labels.
+    Returns None if the model errors or produces no label.
+    """
     import base64
     from app.services.inference_service import predict
 
@@ -730,9 +747,7 @@ async def _validate_with_model(field, content: bytes, mime: str) -> None:
             trainer=field.validation_model,
             error=str(exc),
         )
-        # If the model itself errors, let the submission through rather than
-        # blocking the collector — log and continue.
-        return
+        return None
 
     # Extract the top label from the prediction result.
     # Handles common output shapes: str, {"label": ...}, {"class": ...},
@@ -756,12 +771,12 @@ async def _validate_with_model(field, content: bytes, mime: str) -> None:
         label = str(first.get("label") or first.get("class") or first) if isinstance(first, dict) else str(first)
 
     if not field.validation_labels:
-        # No expected labels configured — model runs but always accepts
-        return
+        # No expected labels configured — model runs but always accepts; still return label
+        return label
 
     if label is None:
         logger.warning("dataset_validation_no_label", trainer=field.validation_model, result=result)
-        return
+        return None
 
     label_lower = label.lower().strip()
     accepted = [l.lower().strip() for l in field.validation_labels]
@@ -777,6 +792,8 @@ async def _validate_with_model(field, content: bytes, mime: str) -> None:
             expected=field.validation_labels,
         )
         raise HTTPException(status_code=422, detail=rejection)
+
+    return label
 
 
 async def initiate_multipart_upload(token: str, field_id: str, filename: str, content_type: str) -> dict:
@@ -1006,15 +1023,45 @@ def _invite_html(name: str, dataset_name: str, dataset_description: str,
 
 
 async def review_entry(org_id: str, dataset_id: str, entry_id: str, status: str, note: Optional[str]) -> dict:
+    from app.services import feedback_service as _fb
+
     if status not in ("approved", "rejected"):
         raise HTTPException(status_code=400, detail="status must be 'approved' or 'rejected'")
-    await get_dataset(org_id, dataset_id)  # permission check
+    profile = await get_dataset(org_id, dataset_id)  # permission check + profile for field lookup
     entry = await DatasetEntry.find_one(DatasetEntry.id == _oid(entry_id), DatasetEntry.dataset_id == dataset_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
     entry.review_status = status
     entry.review_note = note
     await entry.save()
+
+    # ── Log human review as model feedback ───────────────────────────────────
+    # This is what drives the confusion matrix / OCR metrics for the
+    # validation_model configured on the field.
+    # approved  → model prediction was correct  (actual == predicted)
+    # rejected  → model prediction was wrong
+    #             actual_label = review_note (reviewer should note the correct
+    #             value, especially for OCR) or text_value on the entry.
+    if entry.validation_prediction and entry.field_id:
+        field = next((f for f in profile.fields if f.id == entry.field_id), None)
+        if field and field.validation_model:
+            is_correct = status == "approved"
+            if is_correct:
+                # Confirm: model read it correctly
+                actual_label = entry.validation_prediction
+            else:
+                # Correction: reviewer note is the ground-truth label for OCR models.
+                # Fall back to the entry's own text_value (collector-submitted reading).
+                actual_label = note or entry.text_value or None
+
+            await _fb.submit_feedback(
+                trainer_name=field.validation_model,
+                predicted_label=entry.validation_prediction,
+                actual_label=actual_label,
+                is_correct=is_correct,
+                notes=note,
+            )
+
     return _entry_to_dict(entry)
 
 

@@ -227,6 +227,55 @@ async def list_deployments(
     return {"items": [doc_to_dict(d) for d in deps], "total": len(deps)}
 
 
+@router.get("/with-versions")
+async def list_deployments_with_versions(
+    trainer_name: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    """
+    Returns all trainers with ALL their deployed versions and metrics.
+    Each trainer object contains a `versions` array sorted by version number desc.
+    """
+    from collections import defaultdict
+    base_filters = [ModelDeployment.status == "active"]
+    if trainer_name:
+        base_filters.append(ModelDeployment.trainer_name == trainer_name)
+
+    all_deps = await ModelDeployment.find(*base_filters).sort(-ModelDeployment.deployed_at).to_list()
+
+    if user.role == "admin":
+        deps = [d for d in all_deps if not d.org_id or d.org_id == user.org_id]
+    else:
+        deps = [
+            d for d in all_deps
+            if (d.org_id == user.org_id and (d.visibility == "viewer" or d.owner_email == user.email))
+            or (not d.org_id and d.visibility == "viewer")
+        ]
+
+    # Group by trainer_name
+    grouped: dict = defaultdict(list)
+    for d in deps:
+        grouped[d.trainer_name].append(d)
+
+    result = []
+    for tname, versions in grouped.items():
+        versions_sorted = sorted(versions, key=lambda d: int(d.mlflow_model_version or "0"), reverse=True)
+        default = next((d for d in versions_sorted if d.is_default), versions_sorted[0])
+        result.append({
+            **doc_to_dict(default),
+            "versions": [
+                {
+                    **doc_to_dict(d),
+                    "metrics": d.metrics or {},
+                    "is_current_default": d.is_default,
+                }
+                for d in versions_sorted
+            ],
+        })
+
+    return {"items": result, "total": len(result)}
+
+
 @router.patch("/{deployment_id}/visibility")
 async def set_visibility(
     deployment_id: str,

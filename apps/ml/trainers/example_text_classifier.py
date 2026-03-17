@@ -17,7 +17,7 @@ Run inference:
     POST /api/v1/inference/ticket_classifier
     { "inputs": { "text": "Water leaking from ceiling in bathroom" } }
 """
-from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig
+from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig, OutputFieldSpec
 from app.abstract.data_source import InMemoryDataSource
 
 
@@ -53,6 +53,13 @@ class TicketClassifier(BaseTrainer):
     schedule = None
     data_source = InMemoryDataSource()
     category = {"key": "nlp", "label": "NLP"}
+
+    output_display = [
+        OutputFieldSpec("category",   "label",      "Category",    primary=True,
+                        hint="Enter the correct ticket category"),
+        OutputFieldSpec("confidence", "confidence", "Confidence"),
+        OutputFieldSpec("top3",       "ranked_list", "Top Predictions"),
+    ]
 
     input_schema = {
         "text": {

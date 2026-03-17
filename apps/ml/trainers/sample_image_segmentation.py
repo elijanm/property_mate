@@ -71,7 +71,7 @@ import yaml
 from pathlib import Path
 from PIL import Image
 
-from app.abstract.base_trainer import BaseTrainer, TrainingConfig
+from app.abstract.base_trainer import BaseTrainer, TrainingConfig, OutputFieldSpec
 from app.abstract.data_source import DatasetDataSource, InMemoryDataSource
 
 
@@ -84,6 +84,12 @@ class SampleImageSegmentation(BaseTrainer):
     description = "Instance segmentation — YOLOv8-seg fine-tuned on your dataset"
     framework   = "pytorch"
     category    = {"key": "segmentation", "label": "Segmentation"}
+
+    output_display = [
+        OutputFieldSpec("count",      "reading",   "Segments Found", primary=True,
+                        hint="Enter the correct segment count"),
+        OutputFieldSpec("detections", "bbox_list", "Detected Segments"),
+    ]
 
     # Replace InMemoryDataSource with DatasetDataSource once you have a dataset:
     #   data_source = DatasetDataSource(dataset_id=DATASET_ID)

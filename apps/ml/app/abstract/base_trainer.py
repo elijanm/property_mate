@@ -108,6 +108,85 @@ class TrainingConfig:
 
 
 @dataclass
+class OutputFieldSpec:
+    """
+    Declares how one field in predict() output should be displayed and used for feedback.
+
+    Example (water meter OCR)::
+
+        output_display = [
+            OutputFieldSpec("original_image", "image",      "Original Photo",   span=2),
+            OutputFieldSpec("masked_image",   "image",      "Detected Region",  span=2),
+            OutputFieldSpec("reading",        "reading",    "Meter Reading",
+                            primary=True, hint="Enter the correct meter reading"),
+            OutputFieldSpec("confidence",     "confidence", "Confidence"),
+        ]
+
+    Types
+    -----
+    image       base64 data-URI or URL — rendered as <img>
+    reading     numeric / short string result — large mono badge (use primary=True)
+    label       classification label — colour chip
+    confidence  float 0-1 — progress bar + percentage
+    ranked_list list of {label, confidence} dicts — compact ranked table
+    bbox_list   list of {label, bbox, confidence} dicts — detection cards
+    text        multi-word string — plain paragraph
+    json        anything else — collapsible <pre>
+    """
+    key: str                # matches key returned by predict()
+    type: str               # image | reading | label | confidence | ranked_list | bbox_list | text | json
+    label: str              # display name shown in the UI
+    primary: bool = False   # True → this value is used as predicted_label_hint + feedback label
+    hint: str = ""          # placeholder in the feedback "Actual value" input
+    span: int = 1           # grid columns: 1 = half-width, 2 = full-width
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "key": self.key, "type": self.type, "label": self.label,
+            "primary": self.primary, "hint": self.hint, "span": self.span,
+        }
+
+
+@dataclass
+class DerivedMetricSpec:
+    """
+    Declares an optional derived metric computed from InferenceFeedback records.
+
+    Built-in metric keys
+    --------------------
+    exact_match     % of predictions fully correct (EMR) — higher is better
+    digit_accuracy  per-character digit accuracy — higher is better
+    edit_distance   mean Levenshtein distance — lower is better
+    numeric_delta   mean abs(int(predicted) − int(actual)) — lower is better (billing impact)
+
+    Example (water meter OCR)::
+
+        derived_metrics = [
+            DerivedMetricSpec("exact_match",   "Exact Match Rate",  unit="%",   higher_is_better=True,  category="accuracy"),
+            DerivedMetricSpec("digit_accuracy","Digit Accuracy",     unit="%",   higher_is_better=True,  category="accuracy"),
+            DerivedMetricSpec("edit_distance", "Edit Distance",      unit="chars",higher_is_better=False, category="error"),
+            DerivedMetricSpec("numeric_delta", "Billing Impact",     unit="units",higher_is_better=False, category="financial"),
+        ]
+    """
+    key: str                    # exact_match | digit_accuracy | edit_distance | numeric_delta
+    label: str                  # display name in the UI
+    description: str = ""       # tooltip / explanation
+    unit: str = ""              # "%", "chars", "KES", ""
+    higher_is_better: bool = True
+    category: str = "accuracy"  # accuracy | error | financial
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "key": self.key,
+            "label": self.label,
+            "description": self.description,
+            "unit": self.unit,
+            "higher_is_better": self.higher_is_better,
+            "category": self.category,
+        }
+
+
+@dataclass
 class EvaluationResult:
     """Standard evaluation output. Trainers can populate whichever fields apply."""
     accuracy: Optional[float] = None
@@ -154,6 +233,15 @@ class BaseTrainer(ABC):
     input_schema: Dict[str, Any] = {}   # describes inputs: {field: {type, label, ...}}
     output_schema: Dict[str, Any] = {}  # describes outputs: {field: {type, label, editable, ...}}
     category: Dict[str, str] = {}       # e.g. {"key": "ocr", "label": "OCR & Vision"}
+    # Declare how predict() outputs are displayed + used for model feedback.
+    # Leave empty to use the generic heuristic renderer (key-name + value-shape detection).
+    output_display: List["OutputFieldSpec"] = []
+    # Optional derived metrics computed from InferenceFeedback records for A/B comparison.
+    derived_metrics: List["DerivedMetricSpec"] = []
+
+    @classmethod
+    def get_output_display(cls) -> List["OutputFieldSpec"]:
+        return cls.output_display
 
     # ── Abstract methods ──────────────────────────────────────────────────────
 
@@ -809,6 +897,8 @@ class BaseTrainer(ABC):
             "tags": getattr(cls, "tags", {}),
             "input_schema": getattr(cls, "input_schema", {}),
             "output_schema": getattr(cls, "output_schema", {}),
+            "output_display": [s.to_dict() for s in getattr(cls, "output_display", [])],
+            "derived_metrics": [m.to_dict() for m in getattr(cls, "derived_metrics", [])],
         }
 
 
