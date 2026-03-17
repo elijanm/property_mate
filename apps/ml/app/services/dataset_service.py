@@ -762,6 +762,136 @@ async def _validate_with_model(field, content: bytes, mime: str) -> None:
         raise HTTPException(status_code=422, detail=rejection)
 
 
+async def initiate_multipart_upload(token: str, field_id: str, filename: str, content_type: str) -> dict:
+    """Create an S3 multipart upload and return upload_id + key."""
+    import boto3
+    import uuid as _uuid
+    collector = await get_collector_by_token(token)
+    profile = await DatasetProfile.find_one(DatasetProfile.id == _oid(collector.dataset_id))
+    if not profile or profile.status == "closed":
+        raise HTTPException(status_code=410, detail="Dataset is closed")
+    field = next((f for f in profile.fields if f.id == field_id), None)
+    if not field:
+        raise HTTPException(status_code=400, detail=f"Field '{field_id}' not found")
+
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
+    key = (
+        f"{profile.org_id}/datasets/{str(profile.id)}"
+        f"/entries/{str(collector.id)}/{field_id}/{_uuid.uuid4()}.{ext}"
+    )
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=settings.S3_ENDPOINT_URL,
+        aws_access_key_id=settings.S3_ACCESS_KEY,
+        aws_secret_access_key=settings.S3_SECRET_KEY,
+        region_name=settings.S3_REGION,
+    )
+    resp = s3.create_multipart_upload(
+        Bucket=settings.S3_BUCKET, Key=key, ContentType=content_type
+    )
+    return {"upload_id": resp["UploadId"], "key": key}
+
+
+def get_part_presigned_url(key: str, upload_id: str, part_number: int) -> str:
+    """Return a presigned PUT URL for one multipart part. Browser uses this directly."""
+    import boto3
+    # Use the public endpoint so the presigned URL is reachable from browsers
+    endpoint = (settings.S3_PUBLIC_ENDPOINT_URL or settings.S3_ENDPOINT_URL).rstrip("/")
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=settings.S3_ACCESS_KEY,
+        aws_secret_access_key=settings.S3_SECRET_KEY,
+        region_name=settings.S3_REGION,
+    )
+    return s3.generate_presigned_url(
+        "upload_part",
+        Params={
+            "Bucket": settings.S3_BUCKET,
+            "Key": key,
+            "UploadId": upload_id,
+            "PartNumber": part_number,
+        },
+        ExpiresIn=3600,
+    )
+
+
+async def complete_multipart_upload(
+    token: str,
+    field_id: str,
+    key: str,
+    upload_id: str,
+    parts: list,           # [{"part_number": int, "etag": str}, ...]
+    file_mime: str,
+    description: Optional[str] = None,
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+    accuracy: Optional[float] = None,
+    client_ip: Optional[str] = None,
+) -> dict:
+    """Finalize the multipart upload and create a DatasetEntry."""
+    import boto3
+    collector = await get_collector_by_token(token)
+    profile = await DatasetProfile.find_one(DatasetProfile.id == _oid(collector.dataset_id))
+    if not profile or profile.status == "closed":
+        raise HTTPException(status_code=410, detail="Dataset is closed")
+
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=settings.S3_ENDPOINT_URL,
+        aws_access_key_id=settings.S3_ACCESS_KEY,
+        aws_secret_access_key=settings.S3_SECRET_KEY,
+        region_name=settings.S3_REGION,
+    )
+    s3.complete_multipart_upload(
+        Bucket=settings.S3_BUCKET,
+        Key=key,
+        UploadId=upload_id,
+        MultipartUpload={
+            "Parts": [
+                {"PartNumber": p["part_number"], "ETag": p["etag"]}
+                for p in sorted(parts, key=lambda x: x["part_number"])
+            ]
+        },
+    )
+
+    location: Optional[EntryLocation] = None
+    if lat is not None and lng is not None:
+        location = EntryLocation(lat=lat, lng=lng, accuracy=accuracy, source="gps", ip_address=client_ip)
+    elif client_ip:
+        geo = await _geolocate_ip(client_ip)
+        location = EntryLocation(source="ip", ip_address=client_ip, **geo)
+
+    entry = DatasetEntry(
+        org_id=profile.org_id,
+        dataset_id=str(profile.id),
+        collector_id=str(collector.id),
+        field_id=field_id,
+        file_key=key,
+        file_mime=file_mime,
+        description=description,
+        points_awarded=profile.points_per_entry if profile.points_enabled else 0,
+        location=location,
+    )
+    await entry.insert()
+
+    # Update collector stats
+    collector.entry_count += 1
+    if profile.points_enabled:
+        collector.points_earned += profile.points_per_entry
+    collector.last_active_at = utc_now()
+    await collector.save()
+
+    logger.info(
+        "dataset_entry_multipart_complete",
+        dataset_id=str(profile.id),
+        field_id=field_id,
+        key=key,
+        collector_id=str(collector.id),
+    )
+    return _entry_to_dict(entry)
+
+
 async def _upload_to_s3(key: str, content: bytes, content_type: str) -> None:
     import aioboto3
     session = aioboto3.Session()

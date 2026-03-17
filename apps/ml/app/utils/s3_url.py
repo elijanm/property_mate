@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 import structlog
+from botocore.exceptions import ClientError
 from app.core.config import settings
 
 logger = structlog.get_logger(__name__)
@@ -23,7 +24,6 @@ def ensure_bucket_exists() -> None:
     Uses the internal S3_ENDPOINT_URL (not the public one) for admin operations.
     """
     import boto3
-    from botocore.exceptions import ClientError
 
     s3 = boto3.client(
         "s3",
@@ -64,6 +64,22 @@ def ensure_bucket_exists() -> None:
             logger.info("s3_public_read_policy_applied", bucket=settings.S3_BUCKET)
         except ClientError as exc:
             logger.warning("s3_policy_failed", error=str(exc))
+
+    # Always set CORS — needed for browser multipart uploads (presigned part PUTs)
+    cors_config = {
+        "CORSRules": [{
+            "AllowedHeaders": ["*"],
+            "AllowedMethods": ["GET", "PUT", "POST", "DELETE", "HEAD"],
+            "AllowedOrigins": ["*"],
+            "ExposeHeaders": ["ETag", "x-amz-request-id"],
+            "MaxAgeSeconds": 3600,
+        }]
+    }
+    try:
+        s3.put_bucket_cors(Bucket=settings.S3_BUCKET, CORSConfiguration=cors_config)
+        logger.info("s3_cors_configured", bucket=settings.S3_BUCKET)
+    except ClientError as exc:
+        logger.warning("s3_cors_failed", error=str(exc))
 
 
 def generate_presigned_url(key: str, expiry: int = 3600) -> str:

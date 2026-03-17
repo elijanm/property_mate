@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import clsx from 'clsx'
 import { collectApi } from '@/api/datasets'
+import { useMultipartUpload } from '@/hooks/useMultipartUpload'
 import type { CollectFormDefinition, DatasetField, DatasetEntry } from '@/types/dataset'
 
 function getLoggedInAnnotator(): { email: string; name: string } | null {
@@ -308,12 +309,13 @@ interface FieldSession {
   description: string
   submitting: boolean
   error: string
+  uploadProgress: number
   // completed submissions for this field
   submissions: Submission[]
 }
 
 function blankSession(): FieldSession {
-  return { file: null, preview: null, textValue: '', description: '', submitting: false, error: '', submissions: [] }
+  return { file: null, preview: null, textValue: '', description: '', submitting: false, error: '', uploadProgress: 0, submissions: [] }
 }
 
 function canAddMore(field: DatasetField, session: FieldSession): boolean {
@@ -436,6 +438,10 @@ function FieldCard({
   const [local, setLocal] = useState<FieldSession>(session)
   const set = (patch: Partial<FieldSession>) => setLocal(s => ({ ...s, ...patch }))
 
+  const { upload: uploadMultipart } = useMultipartUpload({
+    onProgress: (pct) => set({ uploadProgress: pct }),
+  })
+
   // Reset active capture when a new repeat begins (submissions array grows)
   useEffect(() => {
     setLocal(s => ({ ...s, submissions: session.submissions }))
@@ -458,19 +464,36 @@ function FieldCard({
     if (field.description_required && !local.description.trim()) {
       set({ error: 'Description is required for this field.' }); return
     }
-    set({ submitting: true, error: '' })
+    set({ submitting: true, error: '', uploadProgress: 0 })
     try {
       const gps = locationState.status === 'granted' ? locationState : null
-      const entry = await collectApi.submit(
-        token, field.id,
-        local.file,
-        (field.type === 'text' || field.type === 'number') ? local.textValue : undefined,
-        local.description || undefined,
-        gps ? { lat: gps.lat, lng: gps.lng, accuracy: gps.accuracy } : null,
+      let entry: DatasetEntry
+
+      const useMultipart = local.file && (
+        local.file.size > 5 * 1024 * 1024 ||
+        local.file.type.startsWith('video/')
       )
+
+      if (useMultipart && local.file) {
+        entry = await uploadMultipart(token, field.id, local.file, {
+          description: local.description || undefined,
+          lat: gps?.lat,
+          lng: gps?.lng,
+          accuracy: gps?.accuracy,
+        })
+      } else {
+        entry = await collectApi.submit(
+          token, field.id,
+          local.file,
+          (field.type === 'text' || field.type === 'number') ? local.textValue : undefined,
+          local.description || undefined,
+          gps ? { lat: gps.lat, lng: gps.lng, accuracy: gps.accuracy } : null,
+        )
+      }
+
       const preview = local.preview
       // reset active capture for next repeat
-      set({ file: null, preview: null, textValue: '', description: '', submitting: false, error: '' })
+      set({ file: null, preview: null, textValue: '', description: '', submitting: false, error: '', uploadProgress: 0 })
       onSubmitted(entry, preview)
     } catch (e: any) {
       set({ submitting: false, error: e?.message || 'Submission failed. Try again.' })
@@ -693,7 +716,9 @@ function FieldCard({
               count > 0 ? 'bg-indigo-700 active:bg-indigo-600' : 'bg-indigo-600 active:bg-indigo-500',
             )}>
             {local.submitting
-              ? <><Loader2 size={16} className="animate-spin" /> Submitting…</>
+              ? local.uploadProgress > 0
+                ? <><Loader2 size={16} className="animate-spin" /> Uploading {local.uploadProgress}%</>
+                : <><Loader2 size={16} className="animate-spin" /> Submitting…</>
               : count > 0
               ? <><Plus size={15} /> Submit Another</>
               : 'Submit'}

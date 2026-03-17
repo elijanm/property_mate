@@ -98,4 +98,27 @@ export const collectApi = {
     publicClient.get<{ points_earned: number; entry_count: number; points_enabled: boolean; points_redemption_info: string }>(
       `/collect/${token}/points`
     ).then(r => r.data),
+
+  initiateMultipart: (token: string, fieldId: string, filename: string, contentType: string) =>
+    publicClient.post<{ upload_id: string; key: string }>(
+      `/collect/${token}/multipart/initiate`,
+      { field_id: fieldId, filename, content_type: contentType }
+    ).then(r => r.data),
+
+  getPartUrl: (token: string, key: string, uploadId: string, partNumber: number) =>
+    publicClient.get<{ url: string }>(
+      `/collect/${token}/multipart/part-url`,
+      { params: { key, upload_id: uploadId, part_number: partNumber } }
+    ).then(r => r.data),
+
+  completeMultipart: (
+    token: string,
+    payload: {
+      field_id: string; key: string; upload_id: string;
+      parts: { part_number: number; etag: string }[];
+      file_mime: string; description?: string;
+      lat?: number; lng?: number; accuracy?: number;
+    }
+  ) =>
+    publicClient.post<DatasetEntry>(`/collect/${token}/multipart/complete`, payload).then(r => r.data),
 }
