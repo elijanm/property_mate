@@ -22,8 +22,8 @@ class Settings(BaseSettings):
     MLFLOW_DEFAULT_EXPERIMENT: str = "pms-models"
 
     # S3
-    S3_ENDPOINT_URL: str = "http://minio:9000"
-    S3_PUBLIC_ENDPOINT_URL: str = ""
+    S3_ENDPOINT_URL: str = "http://minio:9000"           # internal Docker endpoint
+    S3_PUBLIC_ENDPOINT_URL: str = ""                     # public MinIO URL — used for presigned GET + upload part URLs
     S3_ACCESS_KEY: str = "minioadmin"
     S3_SECRET_KEY: str = "minioadmin"
     S3_BUCKET: str = "pms-ml"

@@ -796,8 +796,6 @@ def get_part_presigned_url(key: str, upload_id: str, part_number: int) -> str:
     """Return a presigned PUT URL for one multipart part. Browser uses this directly."""
     import boto3
     from botocore.config import Config
-    # Use the public endpoint so the presigned URL is reachable from browsers.
-    # Force path-style addressing — MinIO requires it (virtual-hosted style causes 404).
     endpoint = (settings.S3_PUBLIC_ENDPOINT_URL or settings.S3_ENDPOINT_URL).rstrip("/")
     s3 = boto3.client(
         "s3",
