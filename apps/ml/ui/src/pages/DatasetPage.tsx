@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, Globe, Lock, GitFork, Link2, BarChart2, MapPin, TrendingUp, Award, Video, Film } from 'lucide-react'
+import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, Globe, Lock, GitFork, Link2, BarChart2, MapPin, TrendingUp, Award, Video, Film, Share2, ExternalLink, UserMinus, RefreshCw } from 'lucide-react'
 import type { DatasetOverview } from '@/types/dataset'
 import clsx from 'clsx'
 import { datasetsApi } from '@/api/datasets'
@@ -715,10 +715,180 @@ function InviteModal({ dataset, onClose }: { dataset: DatasetProfile; onClose: (
   )
 }
 
+// ── Contributors panel ────────────────────────────────────────────────────────
+
+function CollectorsPanel({ dataset, onClose, onInvite }: {
+  dataset: DatasetProfile
+  onClose: () => void
+  onInvite: () => void
+}) {
+  const [collectors, setCollectors] = useState<DatasetCollector[]>([])
+  const [loading, setLoading] = useState(true)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [removingId, setRemovingId] = useState<string | null>(null)
+
+  const collectUrl = (token: string) => `${window.location.origin}/collect/${token}`
+
+  const load = () => {
+    setLoading(true)
+    datasetsApi.listCollectors(dataset.id).then(setCollectors).finally(() => setLoading(false))
+  }
+  useEffect(() => { load() }, [dataset.id])
+
+  const copy = async (token: string, id: string) => {
+    await navigator.clipboard.writeText(collectUrl(token))
+    setCopiedId(id)
+    setTimeout(() => setCopiedId(null), 2000)
+  }
+
+  const share = async (collector: DatasetCollector) => {
+    const url = collectUrl(collector.token)
+    if (navigator.share) {
+      await navigator.share({
+        title: `Contribute to ${dataset.name}`,
+        text: `Hi ${collector.name || collector.email}, here's your link to contribute data to "${dataset.name}":`,
+        url,
+      }).catch(() => {})
+    } else {
+      await navigator.clipboard.writeText(url)
+      setCopiedId(collector.id + '_share')
+      setTimeout(() => setCopiedId(null), 2000)
+    }
+  }
+
+  const remove = async (collector: DatasetCollector) => {
+    if (!confirm(`Remove ${collector.name || collector.email} from this dataset?`)) return
+    setRemovingId(collector.id)
+    try {
+      await datasetsApi.removeCollector(dataset.id, collector.id)
+      setCollectors(cs => cs.filter(c => c.id !== collector.id))
+    } finally { setRemovingId(null) }
+  }
+
+  const STATUS_BADGE: Record<string, string> = {
+    pending:   'bg-amber-900/40 text-amber-400 border-amber-800/40',
+    active:    'bg-emerald-900/40 text-emerald-400 border-emerald-800/40',
+    completed: 'bg-gray-700/40 text-gray-400 border-gray-600/40',
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex">
+      <div className="flex-1 bg-black/50" onClick={onClose} />
+      <div className="w-full max-w-lg bg-gray-900 border-l border-gray-800 flex flex-col overflow-hidden shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800 shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold text-white">Contributors</h2>
+            <p className="text-xs text-gray-500 mt-0.5 truncate max-w-[280px]">{dataset.name}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={load} title="Refresh" className="text-gray-500 hover:text-gray-300 p-1.5 rounded-lg hover:bg-gray-800 transition-colors">
+              <RefreshCw size={14} />
+            </button>
+            <button onClick={onInvite}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition-colors">
+              <Mail size={12} /> Invite
+            </button>
+            <button onClick={onClose} className="text-gray-500 hover:text-white p-1 rounded transition-colors">
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto">
+          {loading ? (
+            <div className="text-center text-xs text-gray-500 py-16">Loading…</div>
+          ) : collectors.length === 0 ? (
+            <div className="text-center py-16 px-6">
+              <Users size={36} className="text-gray-700 mx-auto mb-3" />
+              <p className="text-sm text-gray-400 font-semibold">No contributors yet</p>
+              <p className="text-xs text-gray-600 mt-1">Invite someone to start collecting data.</p>
+              <button onClick={onInvite}
+                className="mt-4 flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg mx-auto transition-colors">
+                <Mail size={13} /> Send Invite
+              </button>
+            </div>
+          ) : (
+            <ul className="divide-y divide-gray-800">
+              {collectors.map(c => {
+                const url = collectUrl(c.token)
+                const isCopied = copiedId === c.id
+                const isShareCopied = copiedId === c.id + '_share'
+                return (
+                  <li key={c.id} className="px-5 py-4 hover:bg-gray-800/30 transition-colors">
+                    {/* Name + status */}
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-semibold text-white truncate">
+                          {c.name || c.email}
+                        </p>
+                        {c.name && <p className="text-xs text-gray-500 truncate">{c.email}</p>}
+                      </div>
+                      <span className={clsx('text-[10px] px-2 py-0.5 rounded-full border font-semibold uppercase tracking-wide ml-3 shrink-0', STATUS_BADGE[c.status] ?? STATUS_BADGE.pending)}>
+                        {c.status}
+                      </span>
+                    </div>
+
+                    {/* Stats */}
+                    <div className="flex items-center gap-3 text-[11px] text-gray-500 mb-3">
+                      <span>{c.entry_count} entr{c.entry_count === 1 ? 'y' : 'ies'}</span>
+                      {c.points_earned > 0 && <span className="text-amber-400">🎁 {c.points_earned} pts</span>}
+                      {c.last_active_at && (
+                        <span>Active {new Date(c.last_active_at).toLocaleDateString()}</span>
+                      )}
+                    </div>
+
+                    {/* Collect URL */}
+                    <div className="flex items-center gap-1.5 bg-gray-800/60 border border-gray-700/50 rounded-lg px-3 py-2 mb-3">
+                      <ExternalLink size={11} className="text-gray-500 shrink-0" />
+                      <span className="text-[11px] text-gray-400 font-mono truncate flex-1 min-w-0">{url}</span>
+                    </div>
+
+                    {/* Action buttons */}
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => copy(c.token, c.id)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-700/60 hover:bg-gray-700 text-gray-300 text-xs rounded-lg transition-colors flex-1 justify-center">
+                        {isCopied ? <><Check size={12} className="text-emerald-400" /> Copied!</> : <><Copy size={12} /> Copy URL</>}
+                      </button>
+                      <button
+                        onClick={() => share(c)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-900/30 hover:bg-indigo-900/50 border border-indigo-800/40 text-indigo-400 text-xs rounded-lg transition-colors flex-1 justify-center">
+                        {isShareCopied ? <><Check size={12} className="text-emerald-400" /> Copied!</> : <><Share2 size={12} /> Share</>}
+                      </button>
+                      <button
+                        onClick={() => remove(c)}
+                        disabled={removingId === c.id}
+                        title="Remove contributor"
+                        className="p-1.5 text-gray-600 hover:text-red-400 hover:bg-red-900/20 rounded-lg transition-colors disabled:opacity-40">
+                        <UserMinus size={14} />
+                      </button>
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </div>
+
+        {/* Footer summary */}
+        {collectors.length > 0 && (
+          <div className="shrink-0 px-5 py-3 border-t border-gray-800 flex items-center gap-4 text-xs text-gray-500">
+            <span>{collectors.length} contributor{collectors.length !== 1 ? 's' : ''}</span>
+            <span>{collectors.filter(c => c.status === 'active').length} active</span>
+            <span>{collectors.reduce((s, c) => s + c.entry_count, 0)} total entries</span>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Dataset card ─────────────────────────────────────────────────────────────
 
 function DatasetCard({
-  dataset, onEdit, onDelete, onInvite, onView, onOverview, onVisibilityToggle,
+  dataset, onEdit, onDelete, onInvite, onView, onOverview, onVisibilityToggle, onContributors,
 }: {
   dataset: DatasetProfile
   onEdit: () => void
@@ -727,6 +897,7 @@ function DatasetCard({
   onView: () => void
   onOverview: () => void
   onVisibilityToggle: (v: 'private' | 'public') => void
+  onContributors: () => void
 }) {
   const isRef   = dataset.reference_type === 'reference'
   const isClone = dataset.reference_type === 'clone'
@@ -820,6 +991,10 @@ function DatasetCard({
             <Mail size={11} /> Invite
           </button>
         )}
+        <button onClick={onContributors}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-700/50 hover:bg-gray-700 text-gray-300 text-xs rounded-lg transition-colors">
+          <Users size={11} /> {dataset.collectors?.length ?? 0}
+        </button>
         <button onClick={onView}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-700/50 hover:bg-gray-700 text-gray-300 text-xs rounded-lg transition-colors">
           <Eye size={11} /> Entries
@@ -1274,6 +1449,7 @@ export default function DatasetPage() {
   const [inviteTarget, setInviteTarget] = useState<DatasetProfile | null>(null)
   const [viewTarget, setViewTarget] = useState<DatasetProfile | null>(null)
   const [overviewTarget, setOverviewTarget] = useState<DatasetProfile | null>(null)
+  const [contributorsTarget, setContributorsTarget] = useState<DatasetProfile | null>(null)
   const [busyId, setBusyId]         = useState<string | null>(null)
 
   const load = () => {
@@ -1378,6 +1554,7 @@ export default function DatasetPage() {
                 onView={() => setViewTarget(d)}
                 onOverview={() => setOverviewTarget(d)}
                 onVisibilityToggle={v => handleVisibilityToggle(d.id, v)}
+                onContributors={() => setContributorsTarget(d)}
               />
             ))}
           </div>
@@ -1428,6 +1605,13 @@ export default function DatasetPage() {
       {inviteTarget && <InviteModal dataset={inviteTarget} onClose={() => setInviteTarget(null)} />}
       {viewTarget && <EntriesPanel dataset={viewTarget} onClose={() => setViewTarget(null)} />}
       {overviewTarget && <OverviewPanel dataset={overviewTarget} onClose={() => setOverviewTarget(null)} />}
+      {contributorsTarget && (
+        <CollectorsPanel
+          dataset={contributorsTarget}
+          onClose={() => setContributorsTarget(null)}
+          onInvite={() => { setInviteTarget(contributorsTarget); setContributorsTarget(null) }}
+        />
+      )}
     </div>
   )
 }
