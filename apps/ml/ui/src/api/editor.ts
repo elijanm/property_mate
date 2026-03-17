@@ -60,4 +60,21 @@ export const editorApi = {
     extra_notes?: string
   }) =>
     client.post<{ code: string; model: string }>('/editor/ai-generate', payload).then(r => r.data),
+
+  aiChat: (payload: {
+    messages: { role: string; content: string }[]
+    data_source_type?: string
+    framework?: string
+    class_name?: string
+    csv_schema?: { columns: string[]; sample_rows: string[][] } | null
+    available_datasets?: { id: string; name: string; fields: { label: string; type: string }[] }[]
+    generate_now?: boolean
+  }) =>
+    client.post<{
+      message: string
+      code: string | null
+      filename: string | null
+      suggestions: string[]
+      has_code: boolean
+    }>('/editor/ai-chat', payload).then(r => r.data),
 }

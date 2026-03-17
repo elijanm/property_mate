@@ -119,8 +119,8 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Team',
     icon: <Users size={16} />,
     items: [
-      { id: 'staff', label: 'Staff',  icon: <UserCheck size={14} /> },
-      { id: 'users', label: 'Users',  icon: <Users size={14} /> },
+      { id: 'staff', label: 'Staff',  icon: <UserCheck size={14} />, roles: ['engineer', 'admin'] },
+      { id: 'users', label: 'Users',  icon: <Users size={14} />, roles: ['admin'] },
     ],
   },
   {

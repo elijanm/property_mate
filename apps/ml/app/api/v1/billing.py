@@ -27,10 +27,11 @@ async def get_my_plan(authorization: Optional[str] = Header(None)):
     wallet = await Wallet.find_one({"org_id": user.org_id})
     wallet_data = None
     if wallet:
+        general_balance = float(wallet.balance) - float(wallet.standard_balance)
         wallet_data = {
             "balance": float(wallet.balance),
             "standard_balance": float(wallet.standard_balance),
-            "general_balance": float(wallet.general_balance),
+            "general_balance": max(general_balance, 0.0),
             "reserved": float(wallet.reserved),
             "currency": getattr(wallet, "currency", "USD"),
         }

@@ -517,6 +517,216 @@ async def ai_generate_trainer(
         raise HTTPException(status_code=502, detail=f"LLM request failed: {exc}")
 
 
+# ── AI Chat (multi-turn interactive trainer design) ───────────────────────────
+
+_CHAT_SYSTEM_PROMPT = """\
+You are an expert ML engineer assistant helping a user design and build a trainer plugin for MLDock.
+Engage in focused, practical conversation to understand requirements, then generate production-ready code.
+
+CONVERSATION RULES:
+1. First response: Acknowledge the idea, then ask exactly ONE key question about the most critical
+   unknown — usually: what columns are in the data, what the prediction target is, or what the
+   merge key is when combining multiple data sources.
+2. Subsequent responses: Give a concise helpful answer and ask at most ONE follow-up question.
+3. CSV/dataset schema provided: analyze it, suggest which columns are features vs target,
+   highlight the unique identifier (customer_id, transaction_id, etc.) for dataset merging.
+4. Multi-dataset merging: explain how preprocess() will join them on the shared key.
+5. Suggest output_schema with derived metrics: segment labels, scores, feature importances,
+   cluster counts, silhouette score, probabilities, etc.
+6. When confident OR generate_now=True: generate the FULL trainer code.
+
+CODE GENERATION FORMAT:
+Wrap code in exactly this tag:
+<CODE_START filename="descriptive_snake_case.py">
+...python code here...
+</CODE_START>
+
+After the code block, optionally add suggestions:
+SUGGESTIONS: Refine the algorithm | Add more features | Explain output fields | Test with sample data
+
+STYLE:
+- Be concise: max 2 short paragraphs of text (outside code)
+- No verbose explanations unless asked
+- Practical, actionable guidance
+"""
+
+_CHAT_CODE_INSTRUCTIONS = """
+When generating the trainer, follow these rules precisely:
+
+OUTPUT SCHEMA — always include derived metrics relevant to the task:
+  - classification: {"label": {"type": "str"}, "confidence": {"type": "float"}, "probabilities": {"type": "dict"}}
+  - clustering: {"segment": {"type": "int"}, "segment_label": {"type": "str"}, "distance_to_center": {"type": "float"}}
+  - regression: {"prediction": {"type": "float"}, "confidence_interval": {"type": "dict"}}
+  - anomaly: {"is_anomaly": {"type": "bool"}, "anomaly_score": {"type": "float"}, "reason": {"type": "str"}}
+
+DATASET MERGING — when multiple sources must be merged on a unique key:
+  preprocess() should: load all sources → merge on unique_id → feature engineer → return DataFrame
+
+TEMPLATE CONTRACT:
+""" + _TRAINER_SYSTEM_PROMPT
+
+
+class AiChatMessage(BaseModel):
+    role: str    # "user" | "assistant"
+    content: str
+
+
+class AiChatRequest(BaseModel):
+    messages: List[AiChatMessage]
+    data_source_type: str = "dataset"
+    framework: str = "auto"
+    class_name: Optional[str] = None
+    csv_schema: Optional[dict] = None          # {"columns": [...], "sample_rows": [[...]]}
+    available_datasets: Optional[List[dict]] = None
+    generate_now: bool = False
+
+
+def _pascal_to_snake(name: str) -> str:
+    import re as _re
+    s1 = _re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+    return _re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+
+
+@router.post("/ai-chat")
+async def ai_chat_trainer(
+    body: AiChatRequest,
+    user=Depends(require_roles("engineer", "admin")),
+):
+    """
+    Multi-turn conversational trainer design.
+    Returns a chat response (text) + optionally extracted Python code.
+    """
+    import os as _os
+    import re as _re
+
+    base_url   = _os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    api_key    = _os.environ.get("OPENAI_API_KEY", "")
+    model_name = _os.environ.get("OPENAI_MODEL", "gpt-4o")
+
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="LLM not configured. Set OPENAI_BASE_URL, OPENAI_API_KEY, and OPENAI_MODEL.",
+        )
+
+    # ── Build context section ────────────────────────────────────────────────
+    ctx_parts: list[str] = []
+
+    if body.csv_schema:
+        cols = body.csv_schema.get("columns", [])
+        rows = body.csv_schema.get("sample_rows", [])[:3]
+        ctx_parts.append(
+            "UPLOADED CSV SCHEMA:\n"
+            f"Columns ({len(cols)}): {', '.join(cols)}\n"
+            "Sample rows:\n" + "\n".join("  " + str(r) for r in rows)
+        )
+
+    if body.available_datasets:
+        lines = []
+        for d in body.available_datasets[:6]:
+            flds = [f["label"] for f in d.get("fields", [])[:6]]
+            lines.append(f"  - {d['name']} (id={d['id']}, fields: {', '.join(flds)})")
+        ctx_parts.append("AVAILABLE MLDOCK DATASETS:\n" + "\n".join(lines))
+
+    ds_hints: dict[str, str] = {
+        "dataset":     "DatasetDataSource with auto_create_spec (user uploads files via platform UI)",
+        "upload":      "UploadedFileDataSource — user provides a file each training run",
+        "s3":          "S3DataSource(bucket=..., key=...) — pull from a bucket path",
+        "url":         "URLDataSource(url=...) — download from HTTP endpoint",
+        "mongodb":     "MongoDBDataSource(database=..., collection=..., query={}) — live query",
+        "huggingface": "HuggingFaceDataSource(dataset_name=..., split='train') — HF Hub",
+        "memory":      "InMemoryDataSource — generate / fetch data inside preprocess()",
+    }
+    ctx_parts.append(f"DATA SOURCE: {ds_hints.get(body.data_source_type, body.data_source_type)}")
+
+    if body.framework not in ("auto",):
+        ctx_parts.append(f"FRAMEWORK: {body.framework}")
+    if body.class_name:
+        ctx_parts.append(f"CLASS NAME: {body.class_name}")
+
+    sys_prompt = _CHAT_SYSTEM_PROMPT
+    if ctx_parts:
+        sys_prompt += "\n\n---\nCONTEXT:\n" + "\n\n".join(ctx_parts)
+    if body.generate_now:
+        sys_prompt += (
+            "\n\n⚡ GENERATE NOW: The user clicked 'Generate Now'. "
+            "Produce the complete trainer code immediately based on all context gathered so far."
+        )
+    sys_prompt += "\n\n---\n" + _CHAT_CODE_INSTRUCTIONS
+
+    llm_messages = [{"role": "system", "content": sys_prompt}]
+    for m in body.messages:
+        llm_messages.append({"role": m.role, "content": m.content})
+
+    # ── Call LLM ─────────────────────────────────────────────────────────────
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=180) as http:
+            resp = await http.post(
+                f"{base_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model_name,
+                    "messages": llm_messages,
+                    "temperature": 0.35,
+                    "max_tokens": 6000,
+                },
+            )
+        resp.raise_for_status()
+        raw: str = resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception as exc:
+        logger.error("ai_chat_failed", error=str(exc))
+        raise HTTPException(status_code=502, detail=f"LLM request failed: {exc}")
+
+    # ── Extract code block ────────────────────────────────────────────────────
+    code: Optional[str] = None
+    filename: Optional[str] = None
+
+    code_match = _re.search(
+        r'<CODE_START\s+filename=["\']([^"\']+)["\']>(.*?)</CODE_START>',
+        raw, _re.DOTALL,
+    )
+    if code_match:
+        filename = code_match.group(1).strip()
+        code = code_match.group(2).strip()
+        raw = (raw[:code_match.start()] + raw[code_match.end():]).strip()
+    else:
+        # Fallback: fenced python block that contains a BaseTrainer class
+        fence = _re.search(r'```(?:python)?\n(.*?)```', raw, _re.DOTALL)
+        if fence and "BaseTrainer" in fence.group(1):
+            code = fence.group(1).strip()
+            cls_m = _re.search(r'class\s+(\w+)\s*\(BaseTrainer\)', code)
+            filename = (_pascal_to_snake(cls_m.group(1)) + ".py") if cls_m else "generated_trainer.py"
+            raw = (raw[:fence.start()] + raw[fence.end():]).strip()
+
+    # Strip any remaining markdown fences
+    if code and code.startswith("```"):
+        code = "\n".join(l for l in code.splitlines() if not l.strip().startswith("```")).strip()
+
+    # ── Extract SUGGESTIONS: line ─────────────────────────────────────────────
+    suggestions: list[str] = []
+    message_lines: list[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("SUGGESTIONS:"):
+            parts = stripped[len("SUGGESTIONS:"):].split("|")
+            suggestions = [p.strip() for p in parts if 2 < len(p.strip()) < 80]
+        else:
+            message_lines.append(line)
+
+    message_text = "\n".join(message_lines).strip()
+    # Remove any residual markdown code fences from message text
+    message_text = _re.sub(r'```.*?```', '', message_text, flags=_re.DOTALL).strip()
+
+    return {
+        "message": message_text,
+        "code": code,
+        "filename": filename,
+        "suggestions": suggestions[:4],
+        "has_code": code is not None,
+    }
+
+
 # ── Direct run (no Celery) ────────────────────────────────────────────────────
 
 class RunRequest(BaseModel):

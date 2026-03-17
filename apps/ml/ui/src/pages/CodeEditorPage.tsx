@@ -6,6 +6,8 @@ import {
   FolderOpen, Folder, FileCode, RefreshCw, Database,
   Trash2, Save, AlertCircle, Loader2, PackageCheck,
   Terminal, Cpu, Wallet, Clock, Sparkles,
+  ArrowLeft, Send, Paperclip, Wand2, CheckCircle2, BarChart2,
+  MessageSquare,
 } from 'lucide-react'
 import { editorApi, type FileNode, type EditorDataset } from '@/api/editor'
 import { walletApi } from '@/api/wallet'
@@ -362,176 +364,623 @@ function QuotaBar({ wallet }: { wallet: WalletData | null }) {
   )
 }
 
-// ── AI Generate Modal ─────────────────────────────────────────────────────────
+// ── AI Workshop ───────────────────────────────────────────────────────────────
 
 const DS_TYPES = [
-  { value: 'dataset',    label: 'MLDock Dataset',        hint: 'Auto-creates a dataset with upload fields' },
-  { value: 'upload',     label: 'File Upload (per run)', hint: 'User uploads a file each time they run' },
-  { value: 's3',         label: 'S3 / MinIO',            hint: 'Read from a bucket path' },
-  { value: 'url',        label: 'HTTP URL',              hint: 'Download from a public URL' },
-  { value: 'mongodb',    label: 'MongoDB',               hint: 'Query a collection' },
-  { value: 'huggingface','label': 'Hugging Face Hub',    hint: 'HF Hub dataset' },
-  { value: 'memory',     label: 'In-Memory / Built-in',  hint: 'Fetch or generate data inside preprocess()' },
+  { value: 'dataset',     label: 'MLDock Dataset',        hint: 'Auto-creates a dataset with upload fields' },
+  { value: 'upload',      label: 'File Upload (per run)', hint: 'User uploads a file each time they run' },
+  { value: 's3',          label: 'S3 / MinIO',            hint: 'Read from a bucket path' },
+  { value: 'url',         label: 'HTTP URL',              hint: 'Download from a public URL' },
+  { value: 'mongodb',     label: 'MongoDB',               hint: 'Query a collection' },
+  { value: 'huggingface', label: 'Hugging Face Hub',      hint: 'HF Hub dataset' },
+  { value: 'memory',      label: 'In-Memory / Built-in',  hint: 'Fetch or generate data inside preprocess()' },
 ]
 const FW_TYPES = [
-  { value: 'auto',        label: 'Auto (LLM decides)' },
-  { value: 'sklearn',     label: 'scikit-learn' },
-  { value: 'pytorch',     label: 'PyTorch' },
-  { value: 'tensorflow',  label: 'TensorFlow / Keras' },
-  { value: 'custom',      label: 'Custom / Other' },
+  { value: 'auto',       label: 'Auto (AI decides)' },
+  { value: 'sklearn',    label: 'scikit-learn' },
+  { value: 'pytorch',    label: 'PyTorch' },
+  { value: 'tensorflow', label: 'TensorFlow / Keras' },
+  { value: 'custom',     label: 'Custom / Other' },
 ]
 
-function AiGenerateModal({ onClose, onInsert }: { onClose: () => void; onInsert: (code: string) => void }) {
-  const [description, setDescription]       = useState('')
-  const [dsType, setDsType]                 = useState('dataset')
-  const [framework, setFramework]           = useState('auto')
-  const [className, setClassName]           = useState('')
-  const [extraNotes, setExtraNotes]         = useState('')
-  const [generating, setGenerating]         = useState(false)
-  const [error, setError]                   = useState('')
-  const [preview, setPreview]               = useState('')
+interface AiChatMsg {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  code?: string | null
+  filename?: string | null
+  suggestions?: string[]
+  csvPreview?: { columns: string[]; rows: string[][] }
+}
 
-  const generate = async () => {
-    if (!description.trim()) { setError('Describe what the trainer should do'); return }
-    setGenerating(true); setError(''); setPreview('')
+interface AiSession {
+  prompt: string
+  dsType: string
+  framework: string
+  className: string
+  csvSchema: { columns: string[]; sample_rows: string[][] } | null
+}
+
+// ── Chat bubble ───────────────────────────────────────────────────────────────
+
+function ChatBubble({
+  msg, onSuggestion,
+}: {
+  msg: AiChatMsg
+  onSuggestion: (text: string) => void
+}) {
+  const isUser = msg.role === 'user'
+  return (
+    <div className={clsx('flex items-start gap-2.5', isUser ? 'flex-row-reverse' : 'flex-row')}>
+      {/* Avatar */}
+      {!isUser && (
+        <div className="w-6 h-6 rounded-full bg-violet-900/60 border border-violet-700/40 flex items-center justify-center flex-shrink-0 mt-0.5">
+          <Sparkles size={10} className="text-violet-400" />
+        </div>
+      )}
+
+      <div className={clsx('flex flex-col gap-2', isUser ? 'items-end' : 'items-start', 'max-w-[88%]')}>
+        {/* CSV preview card */}
+        {msg.csvPreview && (
+          <div className="bg-gray-800/80 border border-gray-700 rounded-xl p-3 text-xs w-full max-w-sm">
+            <div className="flex items-center gap-1.5 mb-2 text-emerald-400">
+              <Database size={10} />
+              <span className="font-medium text-[10px] uppercase tracking-wide">CSV Preview</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="text-[10px] border-collapse">
+                <thead>
+                  <tr>
+                    {msg.csvPreview.columns.slice(0, 6).map(col => (
+                      <th key={col} className="px-2 py-1 text-left text-gray-400 border border-gray-700 bg-gray-900 font-medium whitespace-nowrap">{col}</th>
+                    ))}
+                    {msg.csvPreview.columns.length > 6 && (
+                      <th className="px-2 py-1 text-gray-600 border border-gray-700 bg-gray-900">+{msg.csvPreview.columns.length - 6}</th>
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {msg.csvPreview.rows.slice(0, 3).map((row, i) => (
+                    <tr key={i}>
+                      {row.slice(0, 6).map((cell, j) => (
+                        <td key={j} className="px-2 py-1 text-gray-300 border border-gray-700 max-w-[80px] truncate">{cell}</td>
+                      ))}
+                      {row.length > 6 && <td className="px-2 py-1 text-gray-600 border border-gray-700">…</td>}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-[10px] text-gray-500 mt-1.5">{msg.csvPreview.columns.length} columns · {msg.csvPreview.rows.length}+ rows detected</p>
+          </div>
+        )}
+
+        {/* Message bubble */}
+        {msg.content && (
+          <div className={clsx(
+            'rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words',
+            isUser
+              ? 'bg-violet-800/50 text-violet-100 rounded-tr-sm border border-violet-700/30'
+              : 'bg-gray-800/80 text-gray-200 rounded-tl-sm border border-gray-700/50',
+          )}>
+            {msg.content}
+          </div>
+        )}
+
+        {/* Code generated badge */}
+        {msg.code && (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-900/30 border border-emerald-700/40 rounded-lg text-[11px] text-emerald-400">
+            <CheckCircle2 size={11} />
+            Code ready — <span className="font-mono">{msg.filename}</span>
+          </div>
+        )}
+
+        {/* Suggestion chips */}
+        {msg.suggestions && msg.suggestions.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mt-0.5">
+            {msg.suggestions.map(s => (
+              <button
+                key={s}
+                onClick={() => onSuggestion(s)}
+                className="px-2.5 py-1 text-[11px] bg-gray-800 hover:bg-gray-700 border border-gray-700 hover:border-violet-500/60 text-gray-400 hover:text-violet-300 rounded-full transition-colors"
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Trainer overview (right panel "Plan" tab) ─────────────────────────────────
+
+function TrainerOverview({ code, session }: { code: string; session: AiSession }) {
+  if (!code) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-center gap-3 text-gray-600 p-8">
+        <BarChart2 size={28} className="opacity-20" />
+        <div>
+          <p className="text-sm text-gray-500">No code yet</p>
+          <p className="text-xs mt-1">Generate the trainer to see a structured overview</p>
+        </div>
+      </div>
+    )
+  }
+
+  const nameMatch      = code.match(/name\s*=\s*["']([^"']+)["']/)
+  const versionMatch   = code.match(/version\s*=\s*["']([^"']+)["']/)
+  const descMatch      = code.match(/description\s*=\s*["']([^"']+)["']/)
+  const frameworkMatch = code.match(/framework\s*=\s*["']([^"']+)["']/)
+  const categoryMatch  = code.match(/category\s*=\s*\{[^}]*"key"\s*:\s*["']([^"']+)["']/)
+  const inputMatch     = code.match(/input_schema\s*=\s*(\{[\s\S]*?\n\s*\})/)
+  const outputMatch    = code.match(/output_schema\s*=\s*(\{[\s\S]*?\n\s*\})/)
+
+  return (
+    <div className="space-y-3 p-4">
+      {/* Identity */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {nameMatch && (
+            <code className="text-violet-300 text-xs font-mono bg-violet-900/20 px-2 py-0.5 rounded">{nameMatch[1]}</code>
+          )}
+          {versionMatch && <span className="text-[10px] text-gray-600">v{versionMatch[1]}</span>}
+          {frameworkMatch && (
+            <span className="px-2 py-0.5 text-[10px] bg-sky-900/30 text-sky-400 border border-sky-800/30 rounded-full">{frameworkMatch[1]}</span>
+          )}
+          {categoryMatch && (
+            <span className="px-2 py-0.5 text-[10px] bg-gray-800 text-gray-500 rounded-full">{categoryMatch[1]}</span>
+          )}
+        </div>
+        {descMatch && <p className="text-xs text-gray-400 leading-relaxed">{descMatch[1]}</p>}
+      </div>
+
+      {/* Data source */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-2">
+        <div className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Data Source</div>
+        <div className="text-xs text-gray-300">{DS_TYPES.find(t => t.value === session.dsType)?.label ?? session.dsType}</div>
+        {session.csvSchema && (
+          <div>
+            <p className="text-[10px] text-gray-500 mb-1.5">CSV columns ({session.csvSchema.columns.length}):</p>
+            <div className="flex flex-wrap gap-1">
+              {session.csvSchema.columns.slice(0, 16).map(col => (
+                <span key={col} className="px-1.5 py-0.5 text-[10px] bg-gray-800 text-gray-400 rounded font-mono">{col}</span>
+              ))}
+              {session.csvSchema.columns.length > 16 && (
+                <span className="text-[10px] text-gray-600">+{session.csvSchema.columns.length - 16} more</span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Schemas */}
+      {inputMatch && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-1.5">
+          <div className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Input Schema</div>
+          <pre className="text-[10px] text-gray-400 overflow-x-auto leading-relaxed">{inputMatch[1]}</pre>
+        </div>
+      )}
+      {outputMatch && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-1.5">
+          <div className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Output Schema + Derived Metrics</div>
+          <pre className="text-[10px] text-gray-400 overflow-x-auto leading-relaxed">{outputMatch[1]}</pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── AI Workshop (full-page mode) ──────────────────────────────────────────────
+
+function AiWorkshop({
+  session: initialSession,
+  datasets,
+  onBack,
+  onUseCode,
+}: {
+  session: AiSession
+  datasets: EditorDataset[]
+  onBack: () => void
+  onUseCode: (code: string, filename: string) => void
+}) {
+  const [session, setSession] = useState<AiSession>(initialSession)
+  const [messages, setMessages] = useState<AiChatMsg[]>([])
+  const [input, setInput] = useState('')
+  const [sending, setSending] = useState(false)
+  const [activePanel, setActivePanel] = useState<'code' | 'plan'>('code')
+  const [generatedCode, setGeneratedCode] = useState('')
+  const [generatedFilename, setGeneratedFilename] = useState('ai_trainer.py')
+  const [setupDone, setSetupDone] = useState(false)
+
+  const chatBottomRef = useRef<HTMLDivElement>(null)
+  const csvInputRef = useRef<HTMLInputElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, sending])
+
+  const sendMessage = async (text: string, sessionOverride?: AiSession, generateNow = false) => {
+    const activeSession = sessionOverride ?? session
+    if (!text.trim() && !generateNow) return
+    if (sending) return
+
+    const userMsg: AiChatMsg = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: text.trim(),
+    }
+    const newMessages = text.trim() ? [...messages, userMsg] : messages
+    if (text.trim()) setMessages(newMessages)
+    setInput('')
+    setSending(true)
+
     try {
-      const result = await editorApi.generateTrainer({
-        description: description.trim(),
-        data_source_type: dsType,
-        framework,
-        class_name: className.trim() || undefined,
-        extra_notes: extraNotes.trim() || undefined,
+      const history = newMessages.map(m => ({ role: m.role, content: m.content }))
+      const result = await editorApi.aiChat({
+        messages: history,
+        data_source_type: activeSession.dsType,
+        framework: activeSession.framework,
+        class_name: activeSession.className || undefined,
+        csv_schema: activeSession.csvSchema,
+        available_datasets: datasets.map(d => ({ id: d.id, name: d.name, fields: d.fields })),
+        generate_now: generateNow,
       })
-      setPreview(result.code)
+
+      const aiMsg: AiChatMsg = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: result.message,
+        code: result.code,
+        filename: result.filename,
+        suggestions: result.suggestions,
+      }
+      setMessages(prev => [...prev, aiMsg])
+
+      if (result.code) {
+        setGeneratedCode(result.code)
+        setGeneratedFilename(result.filename ?? 'ai_trainer.py')
+        setActivePanel('code')
+      }
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? 'Generation failed. Check that the LLM is configured.')
+      const errMsg: AiChatMsg = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: `⚠ ${e?.response?.data?.detail ?? 'Failed to reach AI. Check LLM configuration.'}`,
+      }
+      setMessages(prev => [...prev, errMsg])
     } finally {
-      setGenerating(false)
+      setSending(false)
     }
   }
 
-  return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.7)' }}>
-      <div className="bg-gray-900 border border-violet-800/40 rounded-2xl shadow-2xl w-full max-w-2xl mx-4 max-h-[90vh] flex flex-col overflow-hidden">
+  const handleStartWorkshop = () => {
+    if (!session.prompt.trim()) return
+    setSetupDone(true)
+    sendMessage(session.prompt, session)
+  }
+
+  const handleCsvUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = ev => {
+      const text = ev.target?.result as string
+      const lines = text.split(/\r?\n/).filter(Boolean)
+      if (lines.length === 0) return
+      const columns = lines[0].split(',').map(c => c.trim().replace(/^"(.*)"$/, '$1'))
+      const rows = lines.slice(1, 6).map(l =>
+        l.split(',').map(c => c.trim().replace(/^"(.*)"$/, '$1'))
+      )
+      const csvSchema = { columns, sample_rows: rows }
+      const updatedSession = { ...session, csvSchema }
+      setSession(updatedSession)
+
+      // Add a user message with the CSV preview
+      const csvMsg: AiChatMsg = {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: `Uploaded CSV: ${file.name} (${columns.length} columns)`,
+        csvPreview: { columns, rows },
+      }
+      setMessages(prev => [...prev, csvMsg])
+
+      // Auto-send an analysis request
+      const analysisPrompt =
+        `I've uploaded "${file.name}". Columns: ${columns.join(', ')}. ` +
+        `Sample data: ${JSON.stringify(rows.slice(0, 2))}. ` +
+        `Please analyze the schema — which columns should be features vs target? ` +
+        `Is there a unique customer/record identifier for dataset merging?`
+
+      setTimeout(() => sendMessage(analysisPrompt, updatedSession), 100)
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }
+
+  const dsLabel = DS_TYPES.find(t => t.value === session.dsType)?.label ?? session.dsType
+
+  // ── Setup screen ────────────────────────────────────────────────────────────
+  if (!setupDone) {
+    return (
+      <div className="flex flex-col h-full bg-gray-950">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-          <div className="flex items-center gap-2">
-            <Sparkles size={16} className="text-violet-400" />
-            <h2 className="text-sm font-semibold text-white">Generate Trainer with AI</h2>
-          </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-gray-800 text-gray-500 hover:text-white">
-            <X size={15} />
+        <div className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-800 flex-shrink-0">
+          <button onClick={onBack} className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-white transition-colors">
+            <ArrowLeft size={13} /> Back
           </button>
+          <div className="w-px h-4 bg-gray-700" />
+          <Sparkles size={13} className="text-violet-400" />
+          <span className="text-sm font-semibold text-white">AI Trainer Workshop</span>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {/* Description */}
-          <div>
-            <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">
-              What should the trainer do? *
-            </label>
+        {/* Setup form */}
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="w-full max-w-xl space-y-5">
+            <div className="text-center space-y-1">
+              <div className="w-12 h-12 rounded-2xl bg-violet-900/40 border border-violet-700/40 flex items-center justify-center mx-auto mb-4">
+                <Sparkles size={22} className="text-violet-400" />
+              </div>
+              <h2 className="text-lg font-semibold text-white">What do you want to build?</h2>
+              <p className="text-sm text-gray-500">Describe your idea — the AI will guide you through the rest</p>
+            </div>
+
             <textarea
-              rows={4}
               autoFocus
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-violet-500 resize-none"
-              placeholder="e.g. Classify cattle body condition scores (1–5) from photos. Use a pre-trained ResNet50 with transfer learning. Dataset: labeled images uploaded as a ZIP."
-              value={description}
-              onChange={e => setDescription(e.target.value)}
+              rows={4}
+              value={session.prompt}
+              onChange={e => setSession(s => ({ ...s, prompt: e.target.value }))}
+              onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleStartWorkshop() }}
+              placeholder="e.g. Generate a customer segmentation model based on transaction history. Allow CSV upload. Merge on customer_id. Suggest which fields to group by."
+              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-violet-500 resize-none leading-relaxed"
             />
-          </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            {/* Data source */}
-            <div>
-              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Data Source</label>
-              <select
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-500"
-                value={dsType}
-                onChange={e => setDsType(e.target.value)}
-              >
-                {DS_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-              </select>
-              <p className="text-[10px] text-gray-600 mt-0.5">
-                {DS_TYPES.find(t => t.value === dsType)?.hint}
-              </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] text-gray-500 uppercase tracking-wider font-medium block mb-1.5">Data Source</label>
+                <select
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-500"
+                  value={session.dsType}
+                  onChange={e => setSession(s => ({ ...s, dsType: e.target.value }))}
+                >
+                  {DS_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+                <p className="text-[10px] text-gray-600 mt-1">{DS_TYPES.find(t => t.value === session.dsType)?.hint}</p>
+              </div>
+              <div>
+                <label className="text-[10px] text-gray-500 uppercase tracking-wider font-medium block mb-1.5">Framework</label>
+                <select
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-500"
+                  value={session.framework}
+                  onChange={e => setSession(s => ({ ...s, framework: e.target.value }))}
+                >
+                  {FW_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
             </div>
 
-            {/* Framework */}
             <div>
-              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Framework</label>
-              <select
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-500"
-                value={framework}
-                onChange={e => setFramework(e.target.value)}
-              >
-                {FW_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-              </select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            {/* Class name */}
-            <div>
-              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">
+              <label className="text-[10px] text-gray-500 uppercase tracking-wider font-medium block mb-1.5">
                 Class Name <span className="text-gray-600 normal-case font-normal">(optional)</span>
               </label>
               <input
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-violet-500"
-                placeholder="CattleBCSClassifier"
-                value={className}
-                onChange={e => setClassName(e.target.value)}
+                placeholder="CustomerSegmentationTrainer"
+                value={session.className}
+                onChange={e => setSession(s => ({ ...s, className: e.target.value }))}
               />
             </div>
 
-            {/* Extra notes */}
-            <div>
-              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">
-                Extra Notes <span className="text-gray-600 normal-case font-normal">(optional)</span>
-              </label>
-              <input
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-violet-500"
-                placeholder="Use float16, output class + confidence"
-                value={extraNotes}
-                onChange={e => setExtraNotes(e.target.value)}
-              />
-            </div>
+            <button
+              onClick={handleStartWorkshop}
+              disabled={!session.prompt.trim()}
+              className="w-full py-3 text-sm font-semibold bg-violet-700 hover:bg-violet-600 text-white rounded-xl transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
+            >
+              <MessageSquare size={14} /> Start AI Workshop →
+            </button>
+            <p className="text-center text-[11px] text-gray-600">Ctrl+Enter to start · You can upload a CSV in the chat for schema analysis</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Chat screen ─────────────────────────────────────────────────────────────
+  return (
+    <div className="flex flex-col h-full bg-gray-950">
+      {/* Header */}
+      <div className="flex items-center gap-3 px-4 py-2 border-b border-gray-800 flex-shrink-0">
+        <button onClick={onBack} className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-white transition-colors flex-shrink-0">
+          <ArrowLeft size={13} /> Back to Files
+        </button>
+        <div className="w-px h-4 bg-gray-700 flex-shrink-0" />
+        <Sparkles size={12} className="text-violet-400 flex-shrink-0" />
+        <span className="text-sm font-semibold text-white flex-shrink-0">AI Trainer Workshop</span>
+        <div className="flex items-center gap-1.5 ml-1 min-w-0">
+          <span className="px-2 py-0.5 text-[10px] bg-gray-800 text-gray-400 rounded-full flex-shrink-0">{dsLabel}</span>
+          {session.framework !== 'auto' && (
+            <span className="px-2 py-0.5 text-[10px] bg-gray-800 text-gray-400 rounded-full flex-shrink-0">{session.framework}</span>
+          )}
+          <span className="text-[10px] text-gray-600 truncate min-w-0 ml-1 hidden md:block">
+            {session.prompt.slice(0, 60)}{session.prompt.length > 60 ? '…' : ''}
+          </span>
+        </div>
+        {generatedCode && (
+          <button
+            onClick={() => onUseCode(generatedCode, generatedFilename)}
+            className="ml-auto flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-violet-700 hover:bg-violet-600 text-white rounded-lg transition-colors"
+          >
+            <Wand2 size={11} /> Open in Editor
+          </button>
+        )}
+      </div>
+
+      {/* Body: chat + code panel */}
+      <div className="flex flex-1 min-h-0">
+
+        {/* ── Chat panel ────────────────────────────────────────────────────── */}
+        <div className="flex flex-col w-[52%] min-w-0 border-r border-gray-800">
+          {/* Messages */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {messages.map(msg => (
+              <ChatBubble key={msg.id} msg={msg} onSuggestion={t => sendMessage(t)} />
+            ))}
+
+            {/* Typing indicator */}
+            {sending && (
+              <div className="flex items-start gap-2.5">
+                <div className="w-6 h-6 rounded-full bg-violet-900/60 border border-violet-700/40 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <Sparkles size={10} className="text-violet-400" />
+                </div>
+                <div className="bg-gray-800/80 border border-gray-700/50 rounded-2xl rounded-tl-sm px-4 py-3">
+                  <div className="flex items-center gap-1">
+                    {[0, 150, 300].map(delay => (
+                      <div key={delay} className="w-1.5 h-1.5 rounded-full bg-gray-500 animate-bounce" style={{ animationDelay: `${delay}ms` }} />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={chatBottomRef} />
           </div>
 
-          {error && <p className="text-xs text-red-400">{error}</p>}
-
-          {/* Preview */}
-          {preview && (
-            <div>
-              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Generated Code — review before inserting</label>
-              <pre className="bg-gray-950 border border-gray-700 rounded-lg p-4 text-[11px] text-gray-300 overflow-x-auto max-h-56 leading-5">
-                {preview}
-              </pre>
+          {/* Input bar */}
+          <div className="border-t border-gray-800 p-3 space-y-2 flex-shrink-0 bg-gray-950">
+            <textarea
+              ref={textareaRef}
+              rows={2}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  sendMessage(input)
+                }
+              }}
+              placeholder="Ask a question, provide more details, or describe a change… (Shift+Enter for new line)"
+              className="w-full bg-gray-800/80 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-violet-600/70 resize-none"
+              disabled={sending}
+            />
+            <div className="flex items-center gap-2">
+              <input ref={csvInputRef} type="file" accept=".csv" className="hidden" onChange={handleCsvUpload} />
+              <button
+                onClick={() => csvInputRef.current?.click()}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-gray-500 hover:text-white bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors flex-shrink-0"
+                title="Upload a CSV to analyze its schema"
+              >
+                <Paperclip size={11} /> Upload CSV
+              </button>
+              <button
+                onClick={() => sendMessage(input || 'Generate the trainer now based on everything we discussed.', undefined, true)}
+                disabled={sending}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-violet-400 hover:text-violet-200 bg-violet-900/30 hover:bg-violet-800/40 border border-violet-700/40 rounded-lg transition-colors disabled:opacity-40 flex-shrink-0"
+                title="Generate trainer code now"
+              >
+                <Wand2 size={11} /> Generate Now
+              </button>
+              <div className="flex-1" />
+              <button
+                onClick={() => sendMessage(input)}
+                disabled={sending || !input.trim()}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium bg-violet-700 hover:bg-violet-600 text-white rounded-lg transition-colors disabled:opacity-40 flex-shrink-0"
+              >
+                {sending ? <Loader2 size={11} className="animate-spin" /> : <Send size={11} />}
+                Send
+              </button>
             </div>
-          )}
+          </div>
         </div>
 
-        {/* Footer */}
-        <div className="border-t border-gray-800 px-6 py-4 flex gap-2">
-          <button onClick={onClose} className="px-4 py-2 text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors">
-            Cancel
-          </button>
-          {preview ? (
-            <>
-              <button onClick={generate} disabled={generating}
-                className="px-4 py-2 text-xs text-violet-300 bg-violet-900/40 hover:bg-violet-800/50 border border-violet-700/40 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-1.5">
-                {generating ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
-                Regenerate
-              </button>
-              <button onClick={() => onInsert(preview)}
-                className="flex-1 py-2 text-xs text-white bg-violet-700 hover:bg-violet-600 rounded-lg transition-colors font-semibold">
-                Insert into Editor →
-              </button>
-            </>
-          ) : (
-            <button onClick={generate} disabled={generating || !description.trim()}
-              className="flex-1 py-2 text-xs text-white bg-violet-700 hover:bg-violet-600 rounded-lg transition-colors font-semibold disabled:opacity-50 flex items-center justify-center gap-2">
-              {generating ? <><Loader2 size={12} className="animate-spin" /> Generating…</> : <><Sparkles size={12} /> Generate Trainer</>}
+        {/* ── Code / plan panel ─────────────────────────────────────────────── */}
+        <div className="flex-1 flex flex-col min-w-0 min-h-0">
+          {/* Panel tabs */}
+          <div className="flex items-center border-b border-gray-800 px-1 flex-shrink-0" style={{ minHeight: '36px' }}>
+            <button
+              onClick={() => setActivePanel('code')}
+              className={clsx(
+                'flex items-center gap-1.5 px-4 py-2 text-xs border-b-2 transition-colors',
+                activePanel === 'code' ? 'border-violet-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300',
+              )}
+            >
+              <FileCode size={11} /> Code
             </button>
+            <button
+              onClick={() => setActivePanel('plan')}
+              className={clsx(
+                'flex items-center gap-1.5 px-4 py-2 text-xs border-b-2 transition-colors',
+                activePanel === 'plan' ? 'border-violet-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300',
+              )}
+            >
+              <BarChart2 size={11} /> Overview
+            </button>
+            {generatedCode && (
+              <div className="ml-auto pr-3 flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 flex-shrink-0" />
+                <span className="text-[10px] text-emerald-400">{generatedFilename}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Panel body */}
+          {activePanel === 'code' ? (
+            <div className="flex-1 min-h-0">
+              {generatedCode ? (
+                <Editor
+                  language="python"
+                  theme="vs-dark"
+                  value={generatedCode}
+                  onChange={val => setGeneratedCode(val ?? '')}
+                  options={{
+                    fontSize: 12,
+                    minimap: { enabled: false },
+                    lineNumbers: 'on',
+                    scrollBeyondLastLine: false,
+                    wordWrap: 'off',
+                    tabSize: 4,
+                    automaticLayout: true,
+                    padding: { top: 8 },
+                    bracketPairColorization: { enabled: true },
+                  }}
+                />
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full text-center gap-4 text-gray-600 p-8">
+                  <Wand2 size={32} className="opacity-20" />
+                  <div>
+                    <p className="text-sm text-gray-500">Code will appear here</p>
+                    <p className="text-xs mt-1 text-gray-600">
+                      Chat to refine your requirements, then click{' '}
+                      <span className="text-violet-500 font-medium">Generate Now</span>
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex-1 overflow-y-auto">
+              <TrainerOverview code={generatedCode} session={session} />
+            </div>
+          )}
+
+          {/* Open in editor footer */}
+          {generatedCode && (
+            <div className="border-t border-gray-800 px-4 py-2.5 flex items-center gap-3 flex-shrink-0 bg-gray-950">
+              <span className="text-[11px] text-gray-500 flex-1 truncate font-mono">{generatedFilename}</span>
+              <button
+                onClick={() => setGeneratedCode(generatedCode)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
+                title="Keep editing code here"
+              >
+                <Save size={11} /> Keep editing
+              </button>
+              <button
+                onClick={() => onUseCode(generatedCode, generatedFilename)}
+                className="flex items-center gap-1.5 px-4 py-1.5 text-[11px] font-semibold bg-violet-700 hover:bg-violet-600 text-white rounded-lg transition-colors"
+              >
+                <Wand2 size={11} /> Open in Editor →
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -560,8 +1009,11 @@ export default function CodeEditorPage() {
   const [newFileTemplate, setNewFileTemplate] = useState<'blank' | 'trainer'>('trainer')
   const [newFileError, setNewFileError] = useState('')
 
-  // AI Generate
-  const [showAiGenerate, setShowAiGenerate] = useState(false)
+  // AI Workshop
+  const [aiMode, setAiMode] = useState(false)
+  const [aiSession, setAiSession] = useState<AiSession>({
+    prompt: '', dsType: 'dataset', framework: 'auto', className: '', csvSchema: null,
+  })
 
   // Datasets
   const [datasets, setDatasets] = useState<EditorDataset[]>([])
@@ -1022,10 +1474,13 @@ export default function CodeEditorPage() {
           </button>
         )}
 
-        {/* AI Generate */}
+        {/* AI Workshop */}
         {!isViewer && (
           <button
-            onClick={() => setShowAiGenerate(true)}
+            onClick={() => {
+              setAiSession({ prompt: '', dsType: 'dataset', framework: 'auto', className: '', csvSchema: null })
+              setAiMode(true)
+            }}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-violet-900/50 border border-violet-700/60 text-violet-300 hover:bg-violet-800/60 hover:text-white rounded-lg transition-colors"
             title="Generate a trainer using AI"
           >
@@ -1114,8 +1569,31 @@ export default function CodeEditorPage() {
         </button>
       </div>
 
+      {/* AI Workshop mode — replaces the entire body */}
+      {aiMode && (
+        <div className="flex-1 min-h-0">
+          <AiWorkshop
+            session={aiSession}
+            datasets={datasets}
+            onBack={() => setAiMode(false)}
+            onUseCode={(code, filename) => {
+              const path = filename.endsWith('.py') ? filename : `${filename}.py`
+              const tab: OpenTab = { path, name: path.split('/').pop()!, content: code, dirty: true }
+              setTabs(prev => {
+                const exists = prev.find(t => t.path === path)
+                return exists
+                  ? prev.map(t => t.path === path ? { ...t, content: code, dirty: true } : t)
+                  : [...prev, tab]
+              })
+              setActiveTab(path)
+              setAiMode(false)
+            }}
+          />
+        </div>
+      )}
+
       {/* Body: sidebar + editor */}
-      <div className="flex flex-1 min-h-0">
+      <div className={clsx('flex flex-1 min-h-0', aiMode && 'hidden')}>
 
         {/* File explorer sidebar */}
         <aside className="w-52 flex-shrink-0 border-r border-gray-800 flex flex-col bg-gray-950 overflow-hidden">
@@ -1385,24 +1863,6 @@ export default function CodeEditorPage() {
             setShowUploadModal(false)
             // Offer to re-run after upload
             setTimeout(() => handleRun(), 300)
-          }}
-        />
-      )}
-
-      {/* AI Generate modal */}
-      {showAiGenerate && (
-        <AiGenerateModal
-          onClose={() => setShowAiGenerate(false)}
-          onInsert={code => {
-            // Open in a new tab named ai_generated.py
-            const path = 'ai_generated.py'
-            const tab: OpenTab = { path, name: path, content: code, dirty: true }
-            setTabs(prev => {
-              const exists = prev.find(t => t.path === path)
-              return exists ? prev.map(t => t.path === path ? { ...t, content: code, dirty: true } : t) : [...prev, tab]
-            })
-            setActiveTab(path)
-            setShowAiGenerate(false)
           }}
         />
       )}
