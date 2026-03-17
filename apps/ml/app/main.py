@@ -1,4 +1,5 @@
 """PMS ML Service — FastAPI entry point."""
+import asyncio
 import structlog
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -22,7 +23,10 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("ml_service_starting", app=settings.APP_NAME, port=settings.PORT)
     await init_db()
-    ensure_bucket_exists()
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, ensure_bucket_exists)
+    except Exception as exc:
+        logger.warning("bucket_init_failed", error=str(exc))
     await scan_and_register_plugins()
     await start_scheduler()
     await ensure_admin_exists()
