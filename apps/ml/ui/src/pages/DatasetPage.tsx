@@ -311,6 +311,7 @@ function DatasetSlideOver({
 }) {
   const [name, setName] = useState(initial?.name ?? '')
   const [slug, setSlug] = useState(initial?.slug ?? '')
+  const [slugEdited, setSlugEdited] = useState(!!(initial?.slug))
   const [desc, setDesc] = useState(initial?.description ?? '')
   const [category, setCategory] = useState(initial?.category ?? '')
   const [fields, setFields] = useState<Omit<DatasetField, 'id'>[]>(
@@ -357,7 +358,7 @@ function DatasetSlideOver({
         : await datasetsApi.create(payload)
       onSaved(result)
     } catch (e: any) {
-      setErr(e?.response?.data?.detail ?? 'Failed to save')
+      setErr(e?.message || e?.response?.data?.detail || 'Failed to save')
     } finally { setSaving(false) }
   }
 
@@ -378,17 +379,40 @@ function DatasetSlideOver({
             <div>
               <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Dataset Name *</label>
               <input className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
-                placeholder="e.g. Cattle Physique Dataset" value={name} onChange={e => setName(e.target.value)} />
+                placeholder="e.g. Cattle Physique Dataset" value={name} onChange={e => {
+                  const val = e.target.value
+                  setName(val)
+                  if (!slugEdited) {
+                    setSlug(val.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''))
+                  }
+                }} />
             </div>
             <div>
-              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">
-                Slug <span className="normal-case text-gray-600 font-normal">(optional — auto-generated from name)</span>
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Slug</label>
+                {slugEdited ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSlugEdited(false)
+                      setSlug(name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''))
+                    }}
+                    className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors"
+                  >
+                    ↺ auto
+                  </button>
+                ) : (
+                  <span className="text-[10px] text-gray-600">auto-generated</span>
+                )}
+              </div>
               <div className="flex items-center gap-1">
                 <span className="text-gray-500 text-sm pl-2">#</span>
                 <input className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 font-mono"
-                  placeholder="e.g. cattle-physique-v1" value={slug}
-                  onChange={e => setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-'))} />
+                  placeholder="auto" value={slug}
+                  onChange={e => {
+                    setSlugEdited(true)
+                    setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-'))
+                  }} />
               </div>
               <p className="text-[10px] text-gray-600 mt-1">Used in trainer plugins: <code className="text-gray-500">DatasetDataSource(slug="…")</code></p>
             </div>
@@ -635,7 +659,7 @@ function InviteModal({ dataset, onClose }: { dataset: DatasetProfile; onClose: (
       await datasetsApi.invite(dataset.id, email.trim(), name.trim(), message.trim())
       setDone(true)
     } catch (e: any) {
-      setErr(e?.response?.data?.detail ?? 'Failed to send invite')
+      setErr(e?.message || 'Failed to send invite')
     } finally { setSending(false) }
   }
 

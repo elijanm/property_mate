@@ -100,7 +100,7 @@ function PasswordTab({
       const result = await claimApi.setPassword(token, password, fullName)
       onSuccess(result)
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? 'Something went wrong. Please try again.')
+      setError(e?.message || 'Something went wrong. Please try again.')
     } finally {
       setLoading(false)
     }
@@ -195,7 +195,7 @@ function OtpTab({
       setMaskedEmail(res.masked_email)
       setStep('verify')
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? 'Failed to send code. Try again.')
+      setError(e?.message || 'Failed to send code. Try again.')
     } finally {
       setLoading(false)
     }
@@ -209,7 +209,7 @@ function OtpTab({
       const result = await claimApi.verifyOtp(token, otp)
       onSuccess(result)
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? 'Invalid or expired code. Try again.')
+      setError(e?.message || 'Invalid or expired code. Try again.')
     } finally {
       setLoading(false)
     }
@@ -304,7 +304,7 @@ export default function ClaimAccountPage({ token }: { token: string }) {
         // Default to OTP tab — lower friction for mobile
         setTab('otp')
       })
-      .catch(e => setLoadError(e?.response?.data?.detail ?? 'Invalid or expired link.'))
+      .catch(e => setLoadError(e?.message || 'Invalid or expired link.'))
       .finally(() => setLoading(false))
   }, [token])
 

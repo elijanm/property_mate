@@ -85,8 +85,7 @@ function KycUploadForm({ profileEmail: _, onSubmitted }: { profileEmail: string;
       const updated = await annotatorApi.getProfile()
       onSubmitted(updated)
     } catch (e: unknown) {
-      const anyErr = e as { response?: { data?: { detail?: string } } }
-      setErr(anyErr?.response?.data?.detail ?? 'Upload failed. Try again.')
+      setErr((e as Error)?.message || 'Upload failed. Try again.')
     } finally {
       setSubmitting(false)
     }
@@ -344,8 +343,7 @@ function TasksTab({ onCollect }: { onCollect: (token: string) => void }) {
       // Auto-navigate to collect if there's a token
       if (res.token) onCollect(res.token)
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      showToast(msg ?? 'Failed to join task')
+      showToast((err as Error)?.message || 'Failed to join task')
     } finally {
       setJoiningId(null)
     }
@@ -450,8 +448,7 @@ function RewardsTab({ profile, onNavigateProfile }: { profile: AnnotatorProfile;
       setRewards(r)
       setRedemptions(hist.items)
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      setRedeemMsg({ text: msg ?? 'Redemption failed', ok: false })
+      setRedeemMsg({ text: (err as Error)?.message || 'Redemption failed', ok: false })
     } finally {
       setRedeeming(false)
     }

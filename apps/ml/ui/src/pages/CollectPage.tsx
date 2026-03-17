@@ -326,7 +326,7 @@ function FieldCard({
       set({ file: null, preview: null, textValue: '', description: '', submitting: false, error: '' })
       onSubmitted(entry, preview)
     } catch (e: any) {
-      set({ submitting: false, error: e?.response?.data?.detail ?? 'Submission failed. Try again.' })
+      set({ submitting: false, error: e?.message || 'Submission failed. Try again.' })
     }
   }
 
@@ -613,7 +613,7 @@ export default function CollectPage({ token }: { token: string }) {
           }
         }
       })
-      .catch(e => setError(e?.response?.data?.detail ?? 'Failed to load collection form.'))
+      .catch(e => setError(e?.message || 'Failed to load collection form.'))
       .finally(() => setLoading(false))
   }, [token])
 
