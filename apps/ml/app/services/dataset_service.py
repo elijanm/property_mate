@@ -281,6 +281,21 @@ async def delete_dataset(org_id: str, dataset_id: str) -> None:
 
 # ── Collectors ─────────────────────────────────────────────────────────────────
 
+async def add_collector(org_id: str, dataset_id: str, name: str, email: str = "", phone: str = "") -> DatasetCollector:
+    """Add a contributor manually without sending an invite email."""
+    await get_dataset(org_id, dataset_id)
+    collector = DatasetCollector(
+        org_id=org_id,
+        dataset_id=dataset_id,
+        email=email,
+        phone=phone or None,
+        name=name or email.split("@")[0] if email else "Contributor",
+    )
+    await collector.insert()
+    logger.info("collector_added", collector_id=str(collector.id), dataset_id=dataset_id)
+    return collector
+
+
 async def invite_collector(org_id: str, dataset_id: str, email: str, name: str = "", message: str = "") -> DatasetCollector:
     await get_dataset(org_id, dataset_id)
 
@@ -290,17 +305,19 @@ async def invite_collector(org_id: str, dataset_id: str, email: str, name: str =
         DatasetCollector.deleted_at == None,
     )
     if existing:
-        await _send_invite_email(existing, message=message)
+        if email:
+            await _send_invite_email(existing, message=message)
         return existing
 
     collector = DatasetCollector(
         org_id=org_id,
         dataset_id=dataset_id,
         email=email,
-        name=name or email.split("@")[0],
+        name=name or (email.split("@")[0] if email else "Contributor"),
     )
     await collector.insert()
-    await _send_invite_email(collector, message=message)
+    if email:
+        await _send_invite_email(collector, message=message)
     logger.info("collector_invited", collector_id=str(collector.id), email=email, dataset_id=dataset_id)
     return collector
 
@@ -650,7 +667,7 @@ async def get_dataset_overview(org_id: str, dataset_id: str) -> dict:
         field_counts[e.field_id] += 1
     field_label_map = {f.id: f.label for f in profile.fields}
     field_breakdown = [
-        {"field_id": fid, "label": field_label_map.get(fid, fid), "count": cnt}
+        {"field_id": fid, "label": field_label_map.get(fid, f"Deleted field ({fid[:8]}…)"), "count": cnt}
         for fid, cnt in sorted(field_counts.items(), key=lambda x: x[1], reverse=True)
     ]
 
@@ -986,3 +1003,39 @@ def _invite_html(name: str, dataset_name: str, dataset_description: str,
   </div></div>
 </body>
 </html>"""
+
+
+async def review_entry(org_id: str, dataset_id: str, entry_id: str, status: str, note: Optional[str]) -> dict:
+    if status not in ("approved", "rejected"):
+        raise HTTPException(status_code=400, detail="status must be 'approved' or 'rejected'")
+    await get_dataset(org_id, dataset_id)  # permission check
+    entry = await DatasetEntry.find_one(DatasetEntry.id == _oid(entry_id), DatasetEntry.dataset_id == dataset_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    entry.review_status = status
+    entry.review_note = note
+    await entry.save()
+    return _entry_to_dict(entry)
+
+
+async def delete_entry(org_id: str, dataset_id: str, entry_id: str) -> None:
+    await get_dataset(org_id, dataset_id)  # permission check
+    entry = await DatasetEntry.find_one(DatasetEntry.id == _oid(entry_id), DatasetEntry.dataset_id == dataset_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    # Delete S3 file if present
+    if entry.file_key:
+        try:
+            import aioboto3
+            session = aioboto3.Session()
+            async with session.client(
+                "s3",
+                endpoint_url=settings.S3_ENDPOINT_URL,
+                aws_access_key_id=settings.S3_ACCESS_KEY,
+                aws_secret_access_key=settings.S3_SECRET_KEY,
+                region_name=settings.S3_REGION,
+            ) as s3:
+                await s3.delete_object(Bucket=settings.S3_BUCKET, Key=entry.file_key)
+        except Exception:
+            pass
+    await entry.delete()

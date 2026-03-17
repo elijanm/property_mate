@@ -71,6 +71,11 @@ class InviteRequest(BaseModel):
     name: str = ""
     message: str = ""
 
+class AddCollectorRequest(BaseModel):
+    name: str
+    email: str = ""
+    phone: str = ""
+
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
@@ -142,6 +147,13 @@ async def reference_dataset(dataset_id: str, user: MLUser = RequireEngineer):
 @router.post("/{dataset_id}/invite", status_code=201)
 async def invite_collector(dataset_id: str, body: InviteRequest, user: MLUser = RequireEngineer):
     collector = await svc.invite_collector(user.org_id, dataset_id, body.email, body.name, body.message)
+    return _collector_dict(collector)
+
+
+@router.post("/{dataset_id}/collectors", status_code=201)
+async def add_collector(dataset_id: str, body: AddCollectorRequest, user: MLUser = RequireEngineer):
+    """Add a contributor by name/phone/email without sending an invite email."""
+    collector = await svc.add_collector(user.org_id, dataset_id, body.name, body.email, body.phone)
     return _collector_dict(collector)
 
 
@@ -217,3 +229,20 @@ def _collector_dict(c) -> dict:
     d = c.model_dump()
     d["id"] = str(c.id)
     return d
+
+
+class EntryReviewRequest(BaseModel):
+    status: str          # approved | rejected
+    note: Optional[str] = None
+
+
+@router.patch("/{dataset_id}/entries/{entry_id}/review")
+async def review_entry(dataset_id: str, entry_id: str, body: EntryReviewRequest, user: MLUser = RequireEngineer):
+    """Approve or reject a dataset entry."""
+    return await svc.review_entry(user.org_id, dataset_id, entry_id, body.status, body.note)
+
+
+@router.delete("/{dataset_id}/entries/{entry_id}", status_code=204)
+async def delete_entry(dataset_id: str, entry_id: str, user: MLUser = RequireEngineer):
+    """Permanently delete a dataset entry and its S3 file."""
+    await svc.delete_entry(user.org_id, dataset_id, entry_id)

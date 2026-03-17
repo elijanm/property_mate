@@ -57,6 +57,7 @@ export interface DatasetCollector {
   id: string
   dataset_id: string
   email: string
+  phone: string | null
   name: string
   token: string
   status: 'pending' | 'active' | 'completed'
@@ -78,6 +79,8 @@ export interface DatasetEntry {
   description: string | null
   points_awarded: number
   captured_at: string
+  review_status: 'pending' | 'approved' | 'rejected'
+  review_note: string | null
 }
 
 // Collect page types (public)

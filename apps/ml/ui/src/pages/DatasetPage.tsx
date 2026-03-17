@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, Globe, Lock, GitFork, Link2, BarChart2, MapPin, TrendingUp, Award, Video, Film, Share2, ExternalLink, UserMinus, RefreshCw } from 'lucide-react'
+import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, Globe, Lock, GitFork, Link2, BarChart2, MapPin, TrendingUp, Award, Video, Film, Share2, ExternalLink, UserMinus, RefreshCw, ThumbsUp, ThumbsDown, Phone, Loader2 } from 'lucide-react'
 import type { DatasetOverview } from '@/types/dataset'
 import clsx from 'clsx'
 import { datasetsApi } from '@/api/datasets'
@@ -7,7 +7,7 @@ import { modelsApi } from '@/api/models'
 import { annotatorApi } from '@/api/annotator'
 import { walletApi } from '@/api/wallet'
 import type { ModelDeployment } from '@/types/trainer'
-import type { DatasetProfile, DatasetCollector, DatasetField, DatasetCreatePayload, FieldType, CaptureMode, DescriptionMode } from '@/types/dataset'
+import type { DatasetProfile, DatasetCollector, DatasetField, DatasetEntry, DatasetCreatePayload, FieldType, CaptureMode, DescriptionMode } from '@/types/dataset'
 
 const FIELD_TYPE_ICONS: Record<FieldType, typeof ImageIcon> = {
   image: ImageIcon,
@@ -645,70 +645,127 @@ function buildDefaultMessage(dataset: DatasetProfile): string {
 }
 
 function InviteModal({ dataset, onClose }: { dataset: DatasetProfile; onClose: () => void }) {
+  const [tab, setTab] = useState<'manual' | 'email'>('manual')
+  // Manual add
+  const [mName, setMName] = useState('')
+  const [mEmail, setMEmail] = useState('')
+  const [mPhone, setMPhone] = useState('')
+  // Email invite
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
   const [message, setMessage] = useState(() => buildDefaultMessage(dataset))
-  const [sending, setSending] = useState(false)
-  const [done, setDone] = useState(false)
+
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState<string>('')
   const [err, setErr] = useState('')
 
-  const send = async () => {
+  const addManual = async () => {
+    if (!mName.trim() && !mEmail.trim() && !mPhone.trim()) { setErr('Enter at least a name, email, or phone'); return }
+    setBusy(true); setErr('')
+    try {
+      await datasetsApi.addCollector(dataset.id, mName.trim(), mEmail.trim() || undefined, mPhone.trim() || undefined)
+      setDone(mName.trim() || mEmail.trim() || mPhone.trim())
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to add contributor')
+    } finally { setBusy(false) }
+  }
+
+  const sendInvite = async () => {
     if (!email.trim()) { setErr('Email required'); return }
-    setSending(true); setErr('')
+    setBusy(true); setErr('')
     try {
       await datasetsApi.invite(dataset.id, email.trim(), name.trim(), message.trim())
-      setDone(true)
+      setDone(email.trim())
     } catch (e: any) {
       setErr(e?.message || 'Failed to send invite')
-    } finally { setSending(false) }
+    } finally { setBusy(false) }
   }
+
+  const inputCls = "w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div className="relative bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-md mx-4 shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-semibold text-white">Invite Collector</h3>
+          <h3 className="text-sm font-semibold text-white">Add Contributor</h3>
           <button onClick={onClose} className="text-gray-500 hover:text-white"><X size={16} /></button>
         </div>
+
         {done ? (
           <div className="text-center py-4">
             <Check size={32} className="text-emerald-400 mx-auto mb-2" />
-            <p className="text-sm text-white font-semibold">Invite sent!</p>
-            <p className="text-xs text-gray-400 mt-1">A unique collection link has been emailed to {email}</p>
-            <button onClick={onClose} className="mt-4 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-xs rounded-lg">Close</button>
+            <p className="text-sm text-white font-semibold">
+              {tab === 'email' ? 'Invite sent!' : 'Contributor added!'}
+            </p>
+            <p className="text-xs text-gray-400 mt-1">
+              {tab === 'email' ? `Collection link emailed to ${done}` : `${done} can now access their collection link.`}
+            </p>
+            <div className="flex gap-2 mt-4 justify-center">
+              <button onClick={() => { setDone(''); setMName(''); setMEmail(''); setMPhone(''); setEmail(''); setName('') }}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg">Add another</button>
+              <button onClick={onClose} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-xs rounded-lg">Done</button>
+            </div>
           </div>
         ) : (
-          <div className="space-y-3">
-            <div>
-              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Email *</label>
-              <input className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
-                placeholder="collector@example.com" type="email" value={email} onChange={e => setEmail(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && send()} />
+          <>
+            {/* Tab switcher */}
+            <div className="flex gap-1 bg-gray-800/60 p-1 rounded-xl mb-4">
+              <button onClick={() => { setTab('manual'); setErr('') }}
+                className={clsx('flex-1 py-2 text-xs font-semibold rounded-lg transition-colors', tab === 'manual' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200')}>
+                Add Manually
+              </button>
+              <button onClick={() => { setTab('email'); setErr('') }}
+                className={clsx('flex-1 py-2 text-xs font-semibold rounded-lg transition-colors', tab === 'email' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200')}>
+                <Mail size={11} className="inline mr-1 -mt-0.5" /> Invite via Email
+              </button>
             </div>
-            <div>
-              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Name (optional)</label>
-              <input className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
-                placeholder="John Doe" value={name} onChange={e => setName(e.target.value)} />
-            </div>
-            <div>
-              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">
-                Message (pre-filled — edit as needed)
-              </label>
-              <textarea
-                rows={7}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none"
-                value={message}
-                onChange={e => setMessage(e.target.value)}
-              />
-              <p className="text-[10px] text-gray-600 mt-0.5">This message appears in the invite email above the contribution link.</p>
-            </div>
-            {err && <p className="text-xs text-red-400">{err}</p>}
-            <button onClick={send} disabled={sending}
-              className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-semibold py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2">
-              <Mail size={14} /> {sending ? 'Sending…' : 'Send Invite'}
-            </button>
-          </div>
+
+            {tab === 'manual' ? (
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Name</label>
+                  <input className={inputCls} placeholder="John Doe" value={mName} onChange={e => setMName(e.target.value)} />
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Email <span className="text-gray-600 normal-case font-normal">(optional)</span></label>
+                  <input className={inputCls} type="email" placeholder="john@example.com" value={mEmail} onChange={e => setMEmail(e.target.value)} />
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block flex items-center gap-1"><Phone size={10} /> Phone <span className="text-gray-600 normal-case font-normal">(optional)</span></label>
+                  <input className={inputCls} type="tel" placeholder="+254 700 000 000" value={mPhone} onChange={e => setMPhone(e.target.value)} />
+                </div>
+                <p className="text-[10px] text-gray-600">A unique collection link is generated — share it from the Contributors panel.</p>
+                {err && <p className="text-xs text-red-400">{err}</p>}
+                <button onClick={addManual} disabled={busy}
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2">
+                  {busy ? <><Loader2 size={14} className="animate-spin" /> Adding…</> : <><Users size={14} /> Add Contributor</>}
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Email *</label>
+                  <input className={inputCls} placeholder="collector@example.com" type="email" value={email}
+                    onChange={e => setEmail(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendInvite()} />
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Name <span className="text-gray-600 normal-case font-normal">(optional)</span></label>
+                  <input className={inputCls} placeholder="John Doe" value={name} onChange={e => setName(e.target.value)} />
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Message</label>
+                  <textarea rows={6} className={inputCls + ' resize-none'} value={message} onChange={e => setMessage(e.target.value)} />
+                  <p className="text-[10px] text-gray-600 mt-0.5">Appears in the email above the contribution link.</p>
+                </div>
+                {err && <p className="text-xs text-red-400">{err}</p>}
+                <button onClick={sendInvite} disabled={busy}
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2">
+                  {busy ? <><Loader2 size={14} className="animate-spin" /> Sending…</> : <><Mail size={14} /> Send Invite</>}
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
@@ -1286,9 +1343,11 @@ function OverviewPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose:
 // ── Entries panel ─────────────────────────────────────────────────────────────
 
 function EntriesPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: () => void }) {
-  const [entries, setEntries] = useState<any[]>([])
+  const [entries, setEntries] = useState<DatasetEntry[]>([])
   const [collectors, setCollectors] = useState<DatasetCollector[]>([])
   const [loading, setLoading] = useState(true)
+  const [lightbox, setLightbox] = useState<DatasetEntry | null>(null)
+  const [actingId, setActingId] = useState<string | null>(null)
 
   const [showFilters, setShowFilters] = useState(false)
   const [filterField, setFilterField] = useState('')
@@ -1313,8 +1372,12 @@ function EntriesPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: 
     datasetsApi.listCollectors(dataset.id).then(setCollectors).catch(() => {})
   }, [dataset.id])
 
-  const fieldName = (id: string) => dataset.fields.find(f => f.id === id)?.label ?? id
-  const collectorName = (id: string) => collectors.find(c => c.id === id)?.name || collectors.find(c => c.id === id)?.email || id
+  const fieldName = (id: string) => dataset.fields.find(f => f.id === id)?.label ?? `Deleted field (${id.slice(0, 8)}…)`
+  const collectorName = (id: string) => {
+    if (id === '__admin__') return 'Admin'
+    const c = collectors.find(c => c.id === id)
+    return c?.name || c?.email || `Contributor (${id.slice(0, 8)}…)`
+  }
 
   const hasFilter = filterField || filterCollector || filterDateFrom || filterDateTo
   const clearFilters = () => { setFilterField(''); setFilterCollector(''); setFilterDateFrom(''); setFilterDateTo('') }
@@ -1405,33 +1468,171 @@ function EntriesPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: 
             <p className="text-center text-xs text-gray-500 py-10">No entries{hasFilter ? ' matching filters' : ' yet'}.</p>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              {entries.map(e => (
-                <div key={e.id} className="bg-gray-800/60 border border-gray-700/50 rounded-xl overflow-hidden">
-                  {e.file_url && e.file_mime?.startsWith('image/') ? (
-                    <img src={e.file_url} alt="" className="w-full h-32 object-cover" />
-                  ) : e.file_url ? (
-                    <a href={e.file_url} target="_blank" rel="noreferrer"
-                      className="flex items-center justify-center h-32 bg-gray-700/50 text-gray-400 hover:text-white text-xs gap-1">
-                      <FileText size={20} /> View file
-                    </a>
-                  ) : (
-                    <div className="flex items-center justify-center h-20 bg-gray-700/30 text-gray-500 text-xs px-2 text-center">
-                      {e.text_value ?? '—'}
+              {entries.map(e => {
+                const isVideo = e.file_mime?.startsWith('video/')
+                const isImage = e.file_mime?.startsWith('image/')
+                const busy = actingId === e.id
+                const reviewColor = e.review_status === 'approved'
+                  ? 'border-emerald-600/60 bg-emerald-900/10'
+                  : e.review_status === 'rejected'
+                  ? 'border-red-600/60 bg-red-900/10'
+                  : 'border-gray-700/50'
+
+                const doReview = async (status: 'approved' | 'rejected') => {
+                  setActingId(e.id)
+                  try {
+                    const updated = await datasetsApi.reviewEntry(dataset.id, e.id, status)
+                    setEntries(es => es.map(x => x.id === e.id ? updated : x))
+                  } finally { setActingId(null) }
+                }
+                const doDelete = async () => {
+                  if (!confirm('Delete this entry? This cannot be undone.')) return
+                  setActingId(e.id)
+                  try {
+                    await datasetsApi.deleteEntry(dataset.id, e.id)
+                    setEntries(es => es.filter(x => x.id !== e.id))
+                  } finally { setActingId(null) }
+                }
+
+                return (
+                  <div key={e.id} className={clsx('border rounded-xl overflow-hidden group relative', reviewColor)}>
+                    {/* Media area */}
+                    {e.file_url && isImage ? (
+                      <button onClick={() => setLightbox(e)} className="w-full">
+                        <img src={e.file_url} alt="" className="w-full h-32 object-cover hover:opacity-90 transition-opacity" />
+                      </button>
+                    ) : e.file_url && isVideo ? (
+                      <button onClick={() => setLightbox(e)} className="relative w-full h-32 bg-black block">
+                        <video src={e.file_url} className="w-full h-full object-contain" preload="metadata" muted playsInline />
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/20 transition-colors">
+                          <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur flex items-center justify-center">
+                            <svg viewBox="0 0 24 24" fill="white" className="w-5 h-5 translate-x-0.5"><path d="M8 5v14l11-7z"/></svg>
+                          </div>
+                        </div>
+                      </button>
+                    ) : e.file_url ? (
+                      <a href={e.file_url} target="_blank" rel="noreferrer"
+                        className="flex items-center justify-center h-32 bg-gray-700/50 text-gray-400 hover:text-white text-xs gap-1">
+                        <FileText size={20} /> View file
+                      </a>
+                    ) : (
+                      <div className="flex items-center justify-center h-20 bg-gray-700/30 text-gray-500 text-xs px-2 text-center">
+                        {e.text_value ?? '—'}
+                      </div>
+                    )}
+
+                    {/* Action overlay — appears on hover */}
+                    <div className="absolute top-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => doReview('approved')}
+                        disabled={busy || e.review_status === 'approved'}
+                        title="Approve"
+                        className="w-7 h-7 rounded-lg bg-emerald-600/90 hover:bg-emerald-500 disabled:opacity-40 flex items-center justify-center shadow-lg"
+                      >
+                        <ThumbsUp size={12} className="text-white" />
+                      </button>
+                      <button
+                        onClick={() => doReview('rejected')}
+                        disabled={busy || e.review_status === 'rejected'}
+                        title="Reject"
+                        className="w-7 h-7 rounded-lg bg-red-600/90 hover:bg-red-500 disabled:opacity-40 flex items-center justify-center shadow-lg"
+                      >
+                        <ThumbsDown size={12} className="text-white" />
+                      </button>
+                      <button
+                        onClick={doDelete}
+                        disabled={busy}
+                        title="Delete entry"
+                        className="w-7 h-7 rounded-lg bg-gray-800/90 hover:bg-gray-700 disabled:opacity-40 flex items-center justify-center shadow-lg"
+                      >
+                        <Trash2 size={12} className="text-red-400" />
+                      </button>
                     </div>
-                  )}
-                  <div className="p-2 space-y-1">
-                    <p className="text-[10px] text-indigo-400 font-semibold truncate">{fieldName(e.field_id)}</p>
-                    <p className="text-[10px] text-gray-500 truncate">{collectorName(e.collector_id)}</p>
-                    {e.description && <p className="text-[10px] text-gray-400 truncate">{e.description}</p>}
-                    <p className="text-[10px] text-gray-600">{new Date(e.captured_at).toLocaleDateString()}</p>
-                    {e.points_awarded > 0 && <p className="text-[10px] text-amber-500">+{e.points_awarded} pts</p>}
+
+                    {/* Review status badge */}
+                    {e.review_status !== 'pending' && (
+                      <div className={clsx(
+                        'absolute top-1.5 left-1.5 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shadow-lg',
+                        e.review_status === 'approved' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'
+                      )}>
+                        {e.review_status}
+                      </div>
+                    )}
+
+                    <div className="p-2 space-y-1">
+                      <p className="text-[10px] text-indigo-400 font-semibold truncate">{fieldName(e.field_id)}</p>
+                      <p className="text-[10px] text-gray-500 truncate">{collectorName(e.collector_id)}</p>
+                      {e.description && <p className="text-[10px] text-gray-400 truncate">{e.description}</p>}
+                      <p className="text-[10px] text-gray-600">{new Date(e.captured_at).toLocaleDateString()}</p>
+                      {e.points_awarded > 0 && <p className="text-[10px] text-amber-500">+{e.points_awarded} pts</p>}
+                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>
       </div>
+
+      {/* Media lightbox */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-[80] flex flex-col bg-black/95"
+          onClick={() => setLightbox(null)}
+        >
+          {/* Header */}
+          <div className="shrink-0 flex items-center justify-between px-5 py-3 border-b border-white/10" onClick={e => e.stopPropagation()}>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-white truncate">{fieldName(lightbox.field_id)}</p>
+              <p className="text-xs text-gray-400 truncate">{collectorName(lightbox.collector_id)} · {new Date(lightbox.captured_at).toLocaleString()}</p>
+            </div>
+            <div className="flex items-center gap-3 ml-4 shrink-0">
+              <a
+                href={lightbox.file_url!}
+                target="_blank"
+                rel="noreferrer"
+                onClick={e => e.stopPropagation()}
+                className="text-gray-400 hover:text-white transition-colors"
+                title="Open in new tab"
+              >
+                <ExternalLink size={16} />
+              </a>
+              <button onClick={() => setLightbox(null)} className="text-gray-400 hover:text-white transition-colors">
+                <X size={18} />
+              </button>
+            </div>
+          </div>
+
+          {/* Media */}
+          <div className="flex-1 flex items-center justify-center p-4 min-h-0" onClick={e => e.stopPropagation()}>
+            {lightbox.file_mime?.startsWith('video/') ? (
+              <video
+                src={lightbox.file_url!}
+                controls
+                autoPlay
+                playsInline
+                className="max-w-full max-h-full rounded-lg"
+                style={{ maxHeight: 'calc(100vh - 140px)' }}
+              />
+            ) : (
+              <img
+                src={lightbox.file_url!}
+                alt={lightbox.description ?? ''}
+                className="max-w-full max-h-full rounded-lg object-contain"
+                style={{ maxHeight: 'calc(100vh - 140px)' }}
+              />
+            )}
+          </div>
+
+          {/* Footer metadata */}
+          {(lightbox.description || lightbox.points_awarded > 0) && (
+            <div className="shrink-0 px-5 py-3 border-t border-white/10 flex items-center gap-4" onClick={e => e.stopPropagation()}>
+              {lightbox.description && <p className="text-sm text-gray-300 flex-1">{lightbox.description}</p>}
+              {lightbox.points_awarded > 0 && <p className="text-xs text-amber-400 shrink-0">+{lightbox.points_awarded} pts</p>}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

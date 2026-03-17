@@ -85,7 +85,8 @@ class DatasetProfile(Document):
 class DatasetCollector(Document):
     org_id: str = ""
     dataset_id: str
-    email: str
+    email: str = ""
+    phone: Optional[str] = None
     name: str = ""
     token: str = Field(default_factory=lambda: secrets.token_urlsafe(32))
     status: str = "pending"                       # pending | active | completed
@@ -126,6 +127,8 @@ class DatasetEntry(Document):
     points_awarded: int = 0
     location: Optional[EntryLocation] = None     # GPS or IP-based location metadata
     captured_at: datetime = Field(default_factory=utc_now)
+    review_status: str = "pending"               # pending | approved | rejected
+    review_note: Optional[str] = None            # optional rejection reason
 
     class Settings:
         name = "dataset_entries"

@@ -20,6 +20,9 @@ export const datasetsApi = {
   invite: (id: string, email: string, name?: string, message?: string) =>
     client.post<DatasetCollector>(`/datasets/${id}/invite`, { email, name: name ?? '', message: message ?? '' }).then(r => r.data),
 
+  addCollector: (id: string, name: string, email?: string, phone?: string) =>
+    client.post<DatasetCollector>(`/datasets/${id}/collectors`, { name, email: email ?? '', phone: phone ?? '' }).then(r => r.data),
+
   listCollectors: (id: string) =>
     client.get<DatasetCollector[]>(`/datasets/${id}/collectors`).then(r => r.data),
 
@@ -28,6 +31,12 @@ export const datasetsApi = {
 
   getEntries: (id: string, params?: { field_id?: string; collector_id?: string; date_from?: string; date_to?: string }) =>
     client.get<DatasetEntry[]>(`/datasets/${id}/entries`, { params }).then(r => r.data),
+
+  reviewEntry: (datasetId: string, entryId: string, status: 'approved' | 'rejected', note?: string) =>
+    client.patch<DatasetEntry>(`/datasets/${datasetId}/entries/${entryId}/review`, { status, note }).then(r => r.data),
+
+  deleteEntry: (datasetId: string, entryId: string) =>
+    client.delete(`/datasets/${datasetId}/entries/${entryId}`),
 
   getEntryCount: (id: string) =>
     client.get<{ dataset_id: string; count: number }>(`/datasets/${id}/entry-count`).then(r => r.data),
