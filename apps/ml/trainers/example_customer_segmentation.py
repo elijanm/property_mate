@@ -33,7 +33,7 @@ class CustomerSegmentationTrainer(BaseTrainer):
     )
 
     input_schema = {
-        "transaction_data": {"type": "file", "label": "Transaction Data CSV", "required": True},
+        "transaction_data": {"type": "file", "label": "Transaction Data CSV", "required": True,"description":"csv with column x,y"},
     }
 
     # output_schema: "groups" is a list of per-customer dicts; "summary" is an aggregate dict.
