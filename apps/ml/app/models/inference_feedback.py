@@ -1,12 +1,13 @@
 from datetime import datetime
 from typing import Any, Dict, Optional
 from beanie import Document, PydanticObjectId
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from app.utils.datetime import utc_now
 
 
 class InferenceFeedback(Document):
+    model_config = ConfigDict(protected_namespaces=())
     """User-reported feedback on a model prediction — powers confusion matrix + accuracy tracking."""
 
     trainer_name: str

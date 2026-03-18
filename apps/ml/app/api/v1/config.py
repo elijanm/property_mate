@@ -22,6 +22,7 @@ class UpdateConfigRequest(BaseModel):
     early_stopping_patience: Optional[int] = None
     extra: Optional[Dict[str, Any]] = None
     nav_layout: Optional[int] = None
+    show_cost_debug: Optional[bool] = None
 
 
 @router.get("", dependencies=[_admin])
@@ -66,8 +67,9 @@ async def update_config(body: UpdateConfigRequest):
         if val is not None:
             updates[field] = val
     if body.nav_layout is not None:
-        cfg.nav_layout = body.nav_layout
         updates["nav_layout"] = body.nav_layout
+    if body.show_cost_debug is not None:
+        updates["show_cost_debug"] = body.show_cost_debug
     await cfg.set(updates)
     return cfg.model_dump()
 
@@ -75,8 +77,10 @@ async def update_config(body: UpdateConfigRequest):
 @router.get("/ui", dependencies=[Depends(get_current_user)])
 async def get_ui_config():
     cfg = await TrainingConfigDoc.find_one(TrainingConfigDoc.key == "global")
-    nav_layout = cfg.nav_layout if cfg else 3
-    return {"nav_layout": nav_layout}
+    return {
+        "nav_layout": cfg.nav_layout if cfg else 3,
+        "show_cost_debug": cfg.show_cost_debug if cfg else False,
+    }
 
 
 @router.get("/device", dependencies=[_admin])

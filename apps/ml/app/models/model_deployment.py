@@ -30,6 +30,7 @@ class ModelDeployment(Document):
     # Describes the inputs this model expects — populated from manifest.json `input_schema`
     input_schema: Dict[str, Any] = {}
     output_schema: Dict[str, Any] = {}     # Describes what the model returns — used to render output UI
+    data_source_info: Dict[str, Any] = {}  # mirrors TrainerRegistration.data_source_info — used by UI for dataset slug
     category: Dict[str, str] = {}          # {key: "ocr", label: "OCR & Vision"} for grid filtering
     # "viewer"   = visible to all roles (sample/demo models)
     # "engineer" = visible only to engineer and admin (production models, default)

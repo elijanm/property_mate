@@ -50,7 +50,7 @@ import io
 import os
 from typing import Any, Dict, List, Optional
 
-from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig, OutputFieldSpec
+from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig, OutputFieldSpec,TrainerBundle
 from app.abstract.data_source import DatasetDataSource
 
 # ── Dataset slug ──────────────────────────────────────────────────────────────
@@ -279,31 +279,40 @@ def _load_dataframe_from_entries(entries: List[Dict]) -> "pd.DataFrame":
     Convert DatasetDataSource entries into a DataFrame.
 
     The dataset is expected to have a single file field (CSV or Excel).
-    The most recent file entry is used.
+    The most recent file entry is used.  Reads directly from S3 via
+    BaseTrainer._fetch_bytes (preferred over presigned URL which embeds
+    the internal minio hostname).
     """
     import pandas as pd
-    import httpx
+    from app.abstract.base_trainer import BaseTrainer as _BT
 
-    file_entries = [e for e in entries if e.get("field_type") in ("file", "image") and e.get("file_url")]
+    file_entries = [
+        e for e in entries
+        if e.get("field_type") in ("file", "image")
+        and (e.get("file_key") or e.get("file_url"))
+    ]
     if not file_entries:
         raise ValueError(
             "Dataset 'churn-training-data' has no file entries. "
             "Upload a CSV or Excel file via the Datasets page."
         )
 
-    # Use the last uploaded file entry
     entry = file_entries[-1]
-    url = entry["file_url"]
+    content = _BT._fetch_bytes(entry.get("file_key"), entry.get("file_url"))
+    if content is None:
+        raise ValueError(
+            "Could not download the training file from storage. "
+            "Ensure the file is uploaded and accessible."
+        )
 
-    resp = httpx.get(url, follow_redirects=True, timeout=60)
-    resp.raise_for_status()
-    content = resp.content
-    fname = (url.split("?")[0].split("/")[-1]).lower()
-
+    fname = (entry.get("file_key") or entry.get("file_url") or "").split("?")[0].split("/")[-1].lower()
     if fname.endswith((".xlsx", ".xls")):
         df = pd.read_excel(io.BytesIO(content))
     else:
-        df = pd.read_csv(io.BytesIO(content))
+        try:
+            df = pd.read_csv(io.BytesIO(content))
+        except Exception:
+            df = pd.read_csv(io.BytesIO(content), on_bad_lines="skip", engine="python")
 
     return df
 

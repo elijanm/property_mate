@@ -715,7 +715,14 @@ def _entry_to_dict(entry: DatasetEntry) -> dict:
     d = entry.model_dump()
     d["id"] = str(entry.id)
     if entry.file_key:
-        d["file_url"] = generate_presigned_url(entry.file_key)
+        if settings.MEDIA_BASE_URL:
+            # Public bucket: construct a plain URL
+            base = settings.MEDIA_BASE_URL.rstrip("/")
+            d["file_url"] = f"{base}/{settings.S3_BUCKET}/{entry.file_key}"
+        else:
+            # Fall back to the authenticated proxy endpoint so internal MinIO
+            # URLs don't leak to the browser.  The UI appends ?token=<jwt>.
+            d["file_url"] = f"/api/v1/datasets/{entry.dataset_id}/entries/{str(entry.id)}/file"
     return d
 
 
@@ -1086,3 +1093,44 @@ async def delete_entry(org_id: str, dataset_id: str, entry_id: str) -> None:
         except Exception:
             pass
     await entry.delete()
+
+
+async def proxy_entry_file(org_id: str, dataset_id: str, entry_id: str):
+    """Stream the S3 file for a dataset entry through the backend (bypasses internal URLs)."""
+    from fastapi.responses import StreamingResponse as _SR
+    await get_dataset(org_id, dataset_id)  # permission check
+    entry = await DatasetEntry.find_one(DatasetEntry.id == _oid(entry_id), DatasetEntry.dataset_id == dataset_id)
+    if not entry or not entry.file_key:
+        raise HTTPException(status_code=404, detail="Entry file not found")
+
+    import aioboto3
+    session = aioboto3.Session()
+    async with session.client(
+        "s3",
+        endpoint_url=settings.S3_ENDPOINT_URL,
+        aws_access_key_id=settings.S3_ACCESS_KEY,
+        aws_secret_access_key=settings.S3_SECRET_KEY,
+        region_name=settings.S3_REGION,
+    ) as s3:
+        resp = await s3.get_object(Bucket=settings.S3_BUCKET, Key=entry.file_key)
+        body = resp["Body"]
+        mime = entry.file_mime or "application/octet-stream"
+        filename = entry.file_key.split("/")[-1]
+
+        async def _iter():
+            async with body as stream:
+                # aioboto3 StreamingBody wraps aiohttp.ClientResponse which
+                # exposes iter_any() not iter_chunks().  Try iter_chunks first
+                # for forward-compatibility, fall back to iter_any.
+                if hasattr(stream, "iter_chunks"):
+                    async for chunk in stream.iter_chunks(65536):
+                        yield chunk
+                else:
+                    async for chunk in stream.iter_any(65536):
+                        yield chunk
+
+        return _SR(
+            _iter(),
+            media_type=mime,
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        )

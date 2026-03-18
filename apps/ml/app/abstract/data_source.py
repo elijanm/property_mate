@@ -946,17 +946,23 @@ class DatasetDataSource(DataSource):
             ).to_list(length=None)
             collectors = {str(c.get("id") or c.get("_id", "")): c.get("name", "") for c in collectors_raw}
 
+            from app.utils.s3_url import generate_presigned_url as _presign
+
             results: List[Dict] = []
             for e in entries:
                 field_meta = field_map.get(e.get("field_id", ""), {})
+                # file_url is never persisted in MongoDB — generate it from file_key.
+                # Trainers run server-side so the internal MinIO endpoint is reachable.
+                file_key = e.get("file_key") or ""
+                file_url = _presign(file_key) if file_key else None
                 results.append({
                     "entry_id": str(e.get("_id", "")),
                     "field_id": e.get("field_id", ""),
                     "field_label": field_meta.get("label", ""),
                     "field_type": field_meta.get("type", "text"),
                     "text_value": e.get("text_value"),
-                    "file_url": e.get("file_url"),
-                    "file_key": e.get("file_key"),
+                    "file_url": file_url,
+                    "file_key": file_key,
                     "file_mime": e.get("file_mime"),
                     "description": e.get("description"),
                     "captured_at": str(e.get("captured_at", "")),

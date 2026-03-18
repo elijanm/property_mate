@@ -238,6 +238,22 @@ export default function ConfigPage() {
         </div>
       </Section>
 
+      {/* Debug / visibility */}
+      <Section title="Developer Debug">
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={!!(form.show_cost_debug ?? config?.show_cost_debug ?? false)}
+            onChange={e => set('show_cost_debug', e.target.checked)}
+            className="w-4 h-4 rounded accent-brand-500"
+          />
+          <div>
+            <p className="text-sm text-gray-200">Show token cost in AI Workshop</p>
+            <p className="text-xs text-gray-500">Displays input/output token count and USD cost on each AI chat message and run output</p>
+          </div>
+        </label>
+      </Section>
+
       {/* Save button */}
       <div className="flex items-center gap-3">
         <button onClick={save} disabled={saving}

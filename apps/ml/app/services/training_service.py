@@ -245,6 +245,7 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
                 tags=trainer.tags,
                 input_schema=getattr(trainer_cls, "input_schema", {}),
                 output_schema=getattr(trainer_cls, "output_schema", {}),
+                data_source_info=trainer_cls.data_source.describe() if hasattr(trainer_cls, "data_source") and trainer_cls.data_source else {},
                 category=getattr(trainer_cls, "category", {}),
                 is_default=True,
                 visibility=_visibility,
@@ -321,9 +322,21 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
 def _log_model_to_mlflow(trainer: BaseTrainer, model: Any) -> str:
     """Save model using appropriate MLflow flavor."""
     import tempfile, os
+    from app.abstract.base_trainer import TrainerBundle
     artifact_path = "model"
     example = trainer.get_input_example()
     framework = getattr(trainer, "framework", "custom")
+
+    # TrainerBundle always serialised via sklearn (joblib) regardless of framework
+    if isinstance(model, TrainerBundle):
+        try:
+            import mlflow.sklearn
+            mlflow.sklearn.log_model(model, artifact_path, input_example=example)
+            run_id = mlflow.active_run().info.run_id
+            return f"runs:/{run_id}/{artifact_path}"
+        except Exception as exc:
+            logger.warning("trainer_bundle_log_failed", error=str(exc))
+            # fall through to generic pickle path below
 
     try:
         if framework == "sklearn":

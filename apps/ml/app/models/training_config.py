@@ -54,4 +54,7 @@ class TrainingConfig(Document):
     # ── UI preferences ────────────────────────────────────────────────────────────
     nav_layout: int = 3   # 1 = grouped flat, 2 = collapsible groups, 3 = icon rail + flyout
 
+    # ── Debug / cost visibility ────────────────────────────────────────────────
+    show_cost_debug: bool = False   # show token count + cost in AI chat + run output
+
     updated_at: datetime = Field(default_factory=utc_now)

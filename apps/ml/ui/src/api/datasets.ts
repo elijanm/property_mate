@@ -44,6 +44,16 @@ export const datasetsApi = {
   getOverview: (id: string) =>
     client.get<DatasetOverview>(`/datasets/${id}/overview`).then(r => r.data),
 
+  exportCsv: async (id: string, filename: string) => {
+    const resp = await client.get(`/datasets/${id}/export`, { responseType: 'blob' })
+    const url = URL.createObjectURL(resp.data as Blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename.endsWith('.csv') ? filename : `${filename}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  },
+
   uploadEntryDirect: (datasetId: string, fieldId: string, file: File | null, textValue?: string) => {
     const fd = new FormData()
     fd.append('field_id', fieldId)

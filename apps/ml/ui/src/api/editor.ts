@@ -52,6 +52,52 @@ export const editorApi = {
   logStreamUrl: (jobId: string, token: string) =>
     `/api/v1/editor/run/${jobId}/stream?token=${encodeURIComponent(token)}`,
 
+  createDatasetFromCsv: (payload: {
+    name: string
+    description?: string
+    filename: string
+    csv_b64: string
+    content_type?: string
+    session_id?: string
+  }) =>
+    client.post<{
+      dataset_id: string
+      dataset_slug: string
+      dataset_name: string
+      field_id: string
+      original_field_id: string
+      clean_field_id: string
+      code_field_id: string
+    }>('/editor/datasets/from-csv', payload).then(r => r.data),
+
+  uploadDatasetField: (datasetId: string, fieldId: string, file: File) => {
+    const fd = new FormData()
+    fd.append('field_id', fieldId)
+    fd.append('file', file)
+    return client.post(`/datasets/${datasetId}/entries/upload`, fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then(r => r.data)
+  },
+
+  uploadDatasetText: (datasetId: string, fieldId: string, text: string) => {
+    const fd = new FormData()
+    fd.append('field_id', fieldId)
+    fd.append('text_value', text)
+    return client.post(`/datasets/${datasetId}/entries/upload`, fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then(r => r.data)
+  },
+
+  /** @deprecated use uploadDatasetField */
+  replaceDatasetFile: (datasetId: string, fieldId: string, file: File) => {
+    const fd = new FormData()
+    fd.append('field_id', fieldId)
+    fd.append('file', file)
+    return client.post(`/datasets/${datasetId}/entries/upload`, fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then(r => r.data)
+  },
+
   generateTrainer: (payload: {
     description: string
     data_source_type?: string
@@ -69,6 +115,8 @@ export const editorApi = {
     csv_schema?: { columns: string[]; sample_rows: string[][] } | null
     available_datasets?: { id: string; name: string; fields: { label: string; type: string }[] }[]
     generate_now?: boolean
+    uploaded_dataset_slug?: string | null
+    uploaded_dataset_id?: string | null
   }) =>
     client.post<{
       message: string
@@ -76,5 +124,6 @@ export const editorApi = {
       filename: string | null
       suggestions: string[]
       has_code: boolean
+      debug?: { tokens: { input: number; output: number; total: number }; cost_usd: number; model: string }
     }>('/editor/ai-chat', payload).then(r => r.data),
 }

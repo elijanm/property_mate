@@ -3,7 +3,7 @@ import uuid
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from beanie import Document
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from app.utils.datetime import utc_now
 
 
@@ -53,6 +53,7 @@ class ModelVersion(BaseModel):
 
 
 class AnnotationProject(Document):
+    model_config = ConfigDict(protected_namespaces=())
     org_id: str = ""
     name: str
     description: str = ""

@@ -172,8 +172,13 @@
     <li><a href="#base-trainer">BaseTrainer Contract</a></li>
     <li><a href="#data-sources">Data Sources (15+)</a></li>
     <li><a href="#dataset-source">↳ MLDock Dataset</a></li>
+    <li><a href="#fetch-bytes">↳ _fetch_bytes helper</a></li>
+    <li><a href="#data-sources-other">↳ Other sources</a></li>
+    <li><a href="#predict-inference">predict() &amp; Inference Inputs</a></li>
+    <li><a href="#trainer-bundle">↳ TrainerBundle</a></li>
     <li><a href="#trainer-lifecycle">Training Lifecycle</a></li>
     <li><a href="#example-classifier">Example: Classifier</a></li>
+    <li><a href="#example-segmentation">Example: Segmentation</a></li>
     <li><a href="#example-regressor">Example: Regressor</a></li>
     <li><a href="#example-pytorch">Example: PyTorch</a></li>
     <li><a href="#train-api">Training API</a></li>
@@ -213,6 +218,7 @@
   <ul>
     <li><a href="#output-display">output_display</a></li>
     <li><a href="#output-display-types">Field Types</a></li>
+    <li><a href="#output-display-grouped">Grouped / Bulk Output</a></li>
     <li><a href="#derived-metrics">derived_metrics</a></li>
     <li><a href="#derived-metrics-builtin">Built-in Metric Keys</a></li>
     <li><a href="#ui-schema-pyfunc">Pyfunc / Pre-trained</a></li>
@@ -1029,6 +1035,125 @@ curl https://api.mldock.io/api/v1/training/jobs/{job_id}</code></pre>
       "Body Condition Score" → <code class="inline">body_condition_score</code>.
     </div>
 
+  </section>
+
+  <!-- ═══ _FETCH_BYTES ═══ -->
+  <section id="fetch-bytes">
+    <h2>self._fetch_bytes — File Fetching Helper</h2>
+    <p>
+      When your dataset contains <code class="inline">file</code> or <code class="inline">image</code> fields, each
+      raw entry dict has a <code class="inline">file_key</code> (S3 object key) and a <code class="inline">file_url</code>
+      (presigned URL). <strong>Do not use <code class="inline">requests.get(file_url)</code> directly</strong> — presigned
+      URLs embed the internal MinIO hostname (<code class="inline">minio:9000</code>) which may be inaccessible depending on
+      network configuration.
+    </p>
+    <p>
+      <code class="inline">BaseTrainer</code> provides <code class="inline">self._fetch_bytes(file_key, file_url)</code>
+      as a built-in static method. It tries to read from S3 directly first (reliable in all environments), and falls back
+      to the presigned URL if S3 access fails.
+    </p>
+
+    <h3>Signature</h3>
+    <pre><code><span class="kw">def</span> <span class="fn">_fetch_bytes</span>(
+    file_key: <span class="cl">Optional</span>[<span class="dt">str</span>],  <span class="cm"># S3 object key, e.g. "org1/datasets/…/photo.jpg"</span>
+    file_url: <span class="cl">Optional</span>[<span class="dt">str</span>],  <span class="cm"># presigned URL (fallback only)</span>
+) -> <span class="cl">Optional</span>[<span class="dt">bytes</span>]</code></pre>
+
+    <table>
+      <thead><tr><th>Scenario</th><th>Behaviour</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">file_key</code> set, S3 reachable</td><td>Reads directly from MinIO via <code class="inline">aioboto3</code>. Handles both running and non-running event loops.</td></tr>
+        <tr><td><code class="inline">file_key</code> set, S3 fails</td><td>Logs a warning and falls back to <code class="inline">file_url</code>.</td></tr>
+        <tr><td>Only <code class="inline">file_url</code> set</td><td>Downloads via <code class="inline">requests.get</code> (120 s timeout).</td></tr>
+        <tr><td>Both <code class="inline">None</code></td><td>Returns <code class="inline">None</code>.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Raw entry dict shape (DatasetDataSource)</h3>
+    <p>Each dict in the <code class="inline">raw</code> list passed to <code class="inline">preprocess()</code> looks like:</p>
+    <pre><code>{
+    <span class="st">"entry_id"</span>:       <span class="st">"69b9dfe6357a2906c7b709d6"</span>,
+    <span class="st">"field_id"</span>:       <span class="st">"996c75da-b628-48ee-b6fe-bbbfeb5dcc39"</span>,
+    <span class="st">"field_label"</span>:    <span class="st">"Original Upload"</span>,    <span class="cm"># human label you defined</span>
+    <span class="st">"field_type"</span>:     <span class="st">"file"</span>,               <span class="cm"># image | file | text | number</span>
+    <span class="st">"text_value"</span>:     <span class="kw">None</span>,                 <span class="cm"># set for text/number fields</span>
+    <span class="st">"file_key"</span>:       <span class="st">"org/datasets/…/data.csv"</span>,  <span class="cm"># S3 key — always set for file entries</span>
+    <span class="st">"file_url"</span>:       <span class="st">"https://minio:9000/…?X-Amz-…"</span>,  <span class="cm"># presigned URL (may be internal)</span>
+    <span class="st">"file_mime"</span>:      <span class="st">"text/csv"</span>,
+    <span class="st">"description"</span>:    <span class="kw">None</span>,
+    <span class="st">"captured_at"</span>:    <span class="st">"2026-03-17T08:12:00+00:00"</span>,
+    <span class="st">"collector_id"</span>:   <span class="st">"__admin__"</span>,
+    <span class="st">"collector_name"</span>: <span class="st">""</span>,
+    <span class="st">"points_awarded"</span>: <span class="nu">0</span>,
+}</code></pre>
+
+    <h3>Standard pattern — CSV / Excel from file field</h3>
+    <pre><code><span class="kw">import</span> io
+<span class="kw">import</span> pandas <span class="kw">as</span> pd
+
+<span class="kw">def</span> <span class="fn">preprocess</span>(<span class="dt">self</span>, raw):
+    <span class="cm"># Prefer the "Clean Copy" field; fall back to "Original Upload"</span>
+    clean = [e <span class="kw">for</span> e <span class="kw">in</span> raw
+             <span class="kw">if</span> e.get(<span class="st">"field_label"</span>) == <span class="st">"Clean Copy"</span>
+             <span class="kw">and</span> (e.get(<span class="st">"file_key"</span>) <span class="kw">or</span> e.get(<span class="st">"file_url"</span>))]
+    orig  = [e <span class="kw">for</span> e <span class="kw">in</span> raw
+             <span class="kw">if</span> e.get(<span class="st">"field_label"</span>) == <span class="st">"Original Upload"</span>
+             <span class="kw">and</span> (e.get(<span class="st">"file_key"</span>) <span class="kw">or</span> e.get(<span class="st">"file_url"</span>))]
+    entry = (clean <span class="kw">or</span> orig)
+    <span class="kw">if not</span> entry:
+        <span class="kw">raise</span> <span class="cl">ValueError</span>(<span class="st">"No file data in dataset — upload a CSV via the Datasets page."</span>)
+
+    e       = entry[<span class="nu">-1</span>]                               <span class="cm"># most recent upload</span>
+    content = <span class="dt">self</span>.<span class="fn">_fetch_bytes</span>(e.get(<span class="st">"file_key"</span>), e.get(<span class="st">"file_url"</span>))
+    <span class="kw">if</span> content <span class="kw">is</span> <span class="kw">None</span>:
+        <span class="kw">raise</span> <span class="cl">ValueError</span>(<span class="st">"Could not fetch file from storage."</span>)
+
+    fname = (e.get(<span class="st">"file_key"</span>) <span class="kw">or</span> <span class="st">""</span>).split(<span class="st">"/"</span>)[<span class="nu">-1</span>].lower()
+    <span class="kw">if</span> fname.endswith((<span class="st">".xlsx"</span>, <span class="st">".xls"</span>)):
+        df = pd.<span class="fn">read_excel</span>(io.<span class="cl">BytesIO</span>(content))
+    <span class="kw">else</span>:
+        <span class="kw">try</span>:
+            df = pd.<span class="fn">read_csv</span>(io.<span class="cl">BytesIO</span>(content))
+        <span class="kw">except</span> <span class="cl">Exception</span>:
+            <span class="cm"># rows with unquoted commas / extra fields — skip bad lines</span>
+            df = pd.<span class="fn">read_csv</span>(io.<span class="cl">BytesIO</span>(content), on_bad_lines=<span class="st">"skip"</span>, engine=<span class="st">"python"</span>)
+
+    <span class="kw">return</span> df</code></pre>
+
+    <div class="note">
+      <strong>CSV with unquoted commas?</strong> If your source CSV has field values that contain
+      commas and no quoting, the strict C parser will raise a
+      <code class="inline">ParserError: Expected N fields … saw M</code>. The try/except above
+      automatically re-parses with <code class="inline">on_bad_lines='skip'</code> and the Python engine,
+      which is more tolerant of malformed rows.
+    </div>
+
+    <h3>Image loading pattern</h3>
+    <pre><code><span class="kw">import</span> numpy <span class="kw">as</span> np
+<span class="kw">from</span> PIL <span class="kw">import</span> Image
+<span class="kw">from</span> io <span class="kw">import</span> BytesIO
+
+<span class="kw">def</span> <span class="fn">preprocess</span>(<span class="dt">self</span>, raw):
+    X, y = [], []
+    <span class="kw">for</span> e <span class="kw">in</span> raw:
+        <span class="kw">if</span> e.get(<span class="st">"field_label"</span>) == <span class="st">"Photo"</span> <span class="kw">and</span> e.get(<span class="st">"field_type"</span>) == <span class="st">"image"</span>:
+            content = <span class="dt">self</span>.<span class="fn">_fetch_bytes</span>(e.get(<span class="st">"file_key"</span>), e.get(<span class="st">"file_url"</span>))
+            <span class="kw">if</span> content <span class="kw">is None</span>: <span class="kw">continue</span>
+            img = Image.<span class="fn">open</span>(BytesIO(content)).<span class="fn">resize</span>((<span class="nu">224</span>, <span class="nu">224</span>))
+            X.<span class="fn">append</span>(np.<span class="fn">array</span>(img))
+        <span class="kw">elif</span> e.get(<span class="st">"field_label"</span>) == <span class="st">"Label"</span>:
+            y.<span class="fn">append</span>(e.get(<span class="st">"text_value"</span>, <span class="st">""</span>))
+    <span class="kw">return</span> np.<span class="fn">array</span>(X), np.<span class="fn">array</span>(y)</code></pre>
+
+    <div class="note">
+      <strong>Do not re-define _fetch_bytes</strong> — it is a <code class="inline">@staticmethod</code> on
+      <code class="inline">BaseTrainer</code> and is available on every trainer instance as
+      <code class="inline">self._fetch_bytes(file_key, file_url)</code>. Defining your own version will shadow it.
+    </div>
+  </section>
+
+  <!-- ═══ OTHER DATA SOURCE EXAMPLES ═══ -->
+  <section id="data-sources-other">
     <h3>Usage examples (other sources)</h3>
     <pre><code><span class="kw">from</span> app.abstract.data_source <span class="kw">import</span> (
     S3DataSource, MongoDBDataSource, HuggingFaceDataSource,
@@ -1061,6 +1186,175 @@ data_source = <span class="cl">PaginatedAPIDataSource</span>(
     data_key=<span class="st">"results"</span>,
     max_pages=<span class="nu">50</span>,
 )</code></pre>
+  </section>
+
+  <!-- ═══ PREDICT & INFERENCE INPUTS ═══ -->
+  <section id="predict-inference">
+    <h2>predict() &amp; Inference Inputs</h2>
+
+    <p>
+      <code class="inline">predict(self, model, inputs)</code> is called at <strong>inference time</strong>
+      on a <strong>fresh trainer instance</strong>.  Any state stored on <code class="inline">self</code>
+      during <code class="inline">preprocess()</code> or <code class="inline">train()</code> is lost.
+    </p>
+
+    <h3>The Golden Rule</h3>
+    <div class="warning-box" style="background:rgba(255,107,107,0.08);border:1px solid rgba(255,107,107,0.4);border-radius:8px;padding:16px 20px;margin-bottom:20px;">
+      <strong style="color:#ff6b6b;">Never store a fitted transformer on <code style="color:#ff6b6b">self</code> and use it in predict().</strong>
+      The trainer object is re-instantiated for every inference request — <code class="inline">self.scaler</code>,
+      <code class="inline">self.encoder</code>, <code class="inline">self.feature_names</code>, etc. set during
+      training are all gone.
+    </div>
+
+    <h3>Full list of artifacts that must live inside the model, not on self</h3>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:24px;">
+      <thead><tr style="background:var(--surface2);">
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">Artifact</th>
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">Examples</th>
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">Correct storage</th>
+      </tr></thead>
+      <tbody>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Scaler</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">StandardScaler, MinMaxScaler, RobustScaler</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Pipeline step <em>or</em> TrainerBundle.scaler</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Encoder</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">LabelEncoder, OrdinalEncoder, OneHotEncoder</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Pipeline step <em>or</em> TrainerBundle.encoder</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Vectorizer / Tokenizer</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">TfidfVectorizer, CountVectorizer</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Pipeline step <em>or</em> TrainerBundle.vectorizer</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Imputer</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">SimpleImputer</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Pipeline step</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Dimensionality reducer</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">PCA, TruncatedSVD</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Pipeline step <em>or</em> TrainerBundle.extra['pca']</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Feature names list</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">self.feature_names = df.columns.tolist()</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">TrainerBundle.feature_names</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Class / label map</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">self.classes_ = ['churn', 'retain']</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">TrainerBundle.label_map <em>or</em> module-level constant</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Decision threshold</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">self.threshold = np.percentile(scores, 5)</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">TrainerBundle.threshold</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Pattern A — sklearn Pipeline (supervised tabular)</h3>
+    <p>Scaler, encoder, and imputer are Pipeline steps.  MLflow saves the entire pipeline
+    as one joblib artifact.  <code class="inline">auto_train_tabular()</code> already returns a Pipeline.</p>
+    <pre><code><span class="kw">from</span> sklearn.pipeline <span class="kw">import</span> Pipeline
+<span class="kw">from</span> sklearn.preprocessing <span class="kw">import</span> StandardScaler
+<span class="kw">from</span> sklearn.ensemble <span class="kw">import</span> RandomForestClassifier
+
+<span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed, config: TrainingConfig):
+    X_train, y_train = preprocessed
+    pipeline = Pipeline([
+        (<span class="st">'scaler'</span>, StandardScaler()),
+        (<span class="st">'clf'</span>,    RandomForestClassifier(n_estimators=<span class="nu">200</span>, random_state=config.random_seed)),
+    ])
+    pipeline.fit(X_train, y_train)
+    <span class="kw">return</span> pipeline          <span class="cm"># scaler + model saved together in MLflow artifact</span>
+
+<span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, model, inputs: dict) -> dict:
+    <span class="kw">import</span> pandas <span class="kw">as</span> pd
+    row  = pd.DataFrame([[inputs[<span class="st">'f1'</span>], inputs[<span class="st">'f2'</span>]]], columns=[<span class="st">'f1'</span>, <span class="st">'f2'</span>])
+    pred = model.predict(row)[<span class="nu">0</span>]   <span class="cm"># Pipeline applies scaler then predicts</span>
+    proba = model.predict_proba(row)[<span class="nu">0</span>].tolist()
+    <span class="kw">return</span> {<span class="st">"label"</span>: <span class="fn">str</span>(pred), <span class="st">"confidence"</span>: <span class="fn">round</span>(<span class="fn">max</span>(proba), <span class="nu">4</span>)}</code></pre>
+
+    <h3>Pattern B — file inputs (base64-encoded CSV or image)</h3>
+    <p>When <code class="inline">input_schema</code> declares a field with <code class="inline">"type": "file"</code>,
+    the inference endpoint base64-encodes the uploaded bytes before passing them to
+    <code class="inline">predict()</code>.  Always decode with <code class="inline">base64.b64decode()</code>.</p>
+    <pre><code><span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, model, inputs: dict) -> dict:
+    <span class="kw">import</span> base64, io, pandas <span class="kw">as</span> pd
+
+    <span class="cm"># inputs['transaction_data'] is base64-encoded bytes of the uploaded CSV</span>
+    csv_bytes = base64.<span class="fn">b64decode</span>(inputs[<span class="st">'transaction_data'</span>])
+    df = pd.<span class="fn">read_csv</span>(io.StringIO(csv_bytes.<span class="fn">decode</span>(<span class="st">'utf-8'</span>)))
+
+    preds = model.predict(df[<span class="dt">self</span>.<span class="fn">get_feature_names</span>()])
+    <span class="kw">return</span> {<span class="st">"predictions"</span>: preds.tolist(), <span class="st">"count"</span>: <span class="fn">len</span>(preds)}</code></pre>
+
+    <h3>Which scaler should I use?</h3>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px;">
+      <thead><tr style="background:var(--surface2);">
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">Scaler</th>
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">When to use</th>
+      </tr></thead>
+      <tbody>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">StandardScaler</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Default choice for KMeans, SVM, logistic regression, neural nets — features at different scales</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">MinMaxScaler</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">When output must be bounded 0–1 (image pixel values, probability inputs)</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">RobustScaler</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Data with significant outliers (financial data, sensor readings)</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">None</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Tree-based models (RandomForest, GBM, XGBoost, LightGBM) are invariant to feature scale</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═══ TRAINER BUNDLE ═══ -->
+  <section id="trainer-bundle">
+    <h2>TrainerBundle — Multi-Artifact Container</h2>
+    <p>
+      When a sklearn <code class="inline">Pipeline</code> is not suitable — unsupervised models (KMeans,
+      IsolationForest), multi-step preprocessing that does not fit the Pipeline API, or when you
+      need to carry a fitted threshold or label map — return a
+      <code class="inline">TrainerBundle</code> from <code class="inline">train()</code>.
+      The platform saves the entire bundle as a single joblib artifact via
+      <code class="inline">mlflow.sklearn</code>.
+    </p>
+    <pre><code><span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> BaseTrainer, TrainerBundle, TrainingConfig
+
+<span class="kw">class</span> <span class="cl">AnomalyDetector</span>(<span class="cl">BaseTrainer</span>):
+    name      = <span class="st">"anomaly_detector"</span>
+    framework = <span class="st">"sklearn"</span>
+
+    <span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed, config: TrainingConfig):
+        <span class="kw">import</span> numpy <span class="kw">as</span> np
+        <span class="kw">from</span> sklearn.ensemble <span class="kw">import</span> IsolationForest
+        <span class="kw">from</span> sklearn.preprocessing <span class="kw">import</span> StandardScaler
+
+        feature_cols = <span class="fn">list</span>(preprocessed.columns)
+        X = preprocessed.values.astype(<span class="fn">float</span>)
+
+        scaler   = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        iso = IsolationForest(contamination=<span class="nu">0.05</span>, random_state=config.random_seed)
+        iso.fit(X_scaled)
+
+        <span class="cm"># Fit threshold on training scores so predict() is consistent</span>
+        scores    = iso.decision_function(X_scaled)
+        threshold = <span class="fn">float</span>(np.percentile(scores, <span class="nu">5</span>))
+
+        <span class="kw">return</span> TrainerBundle(
+            model=iso,
+            scaler=scaler,
+            feature_names=feature_cols,
+            threshold=threshold,
+        )
+
+    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, model: TrainerBundle, inputs: dict) -> dict:
+        <span class="kw">import</span> numpy <span class="kw">as</span> np
+        row      = np.array([[inputs.get(f, <span class="nu">0</span>) <span class="kw">for</span> f <span class="kw">in</span> model.feature_names]])
+        X_scaled = model.scaler.transform(row)
+        score    = <span class="fn">float</span>(model.model.decision_function(X_scaled)[<span class="nu">0</span>])
+        is_anom  = score &lt; (model.threshold <span class="kw">or</span> <span class="nu">0.0</span>)
+        <span class="kw">return</span> {<span class="st">"is_anomaly"</span>: is_anom, <span class="st">"anomaly_score"</span>: <span class="fn">round</span>(score, <span class="nu">4</span>)}</code></pre>
+
+    <h4>TrainerBundle attributes</h4>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px;">
+      <thead><tr style="background:var(--surface2);">
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">Attribute</th>
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">Type</th>
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">Purpose</th>
+      </tr></thead>
+      <tbody>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">model</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">any</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">The trained estimator (required)</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">scaler</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">sklearn Scaler</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Fitted scaler — apply in predict() before model.predict()</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">encoder</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">sklearn Encoder</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Fitted encoder for categorical columns</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">vectorizer</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">sklearn Vectorizer</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Fitted text vectorizer (TF-IDF, Count)</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">feature_names</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">List[str]</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Ordered column names used during training</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">label_map</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Dict</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">raw int → human label (e.g. cluster → segment name)</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">threshold</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">float</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Fitted decision threshold (anomaly, binary classifier)</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">extra</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Dict</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Arbitrary extra artifacts (PCA, n_clusters, config snapshots)</td></tr>
+      </tbody>
+    </table>
+
+    <div class="note-box" style="background:rgba(0,212,170,0.06);border:1px solid rgba(0,212,170,0.3);border-radius:8px;padding:16px 20px;">
+      <strong style="color:var(--accent2);">How it is saved</strong> — When <code class="inline">train()</code> returns a
+      <code class="inline">TrainerBundle</code>, the platform automatically calls
+      <code class="inline">mlflow.sklearn.log_model(bundle, ...)</code> regardless of the trainer's
+      <code class="inline">framework</code> attribute.  joblib serialises the entire bundle
+      (model + scaler + all fields) into one artifact.  <code class="inline">_load_raw_model()</code>
+      at inference time loads it back and hands the whole bundle to
+      <code class="inline">trainer.predict(model, inputs)</code>.
+    </div>
   </section>
 
   <!-- Training Lifecycle -->
@@ -1109,10 +1403,19 @@ data_source = <span class="cl">PaginatedAPIDataSource</span>(
 
   <!-- Example: Classifier -->
   <section id="example-classifier">
-    <h2>Example: Full Rent Prediction Trainer</h2>
+    <h2>Example: Rent Prediction (sklearn Pipeline — scaler embedded)</h2>
+    <p>
+      This example uses a sklearn <code class="inline">Pipeline</code> so the
+      <code class="inline">StandardScaler</code> is saved inside the MLflow artifact.
+      <code class="inline">predict()</code> calls <code class="inline">model.predict(row)</code> —
+      the pipeline applies scaling automatically. No <code class="inline">self.scaler</code> needed.
+    </p>
     <pre><code><span class="kw">import</span> io
 <span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> BaseTrainer, TrainingConfig, EvaluationResult
 <span class="kw">from</span> app.abstract.data_source <span class="kw">import</span> S3DataSource
+
+
+<span class="cl">_FEATURES</span> = [<span class="st">"bedrooms"</span>, <span class="st">"bathrooms"</span>, <span class="st">"sq_ft"</span>, <span class="st">"floor"</span>]
 
 
 <span class="kw">class</span> <span class="cl">RentPredictionTrainer</span>(<span class="cl">BaseTrainer</span>):
@@ -1121,63 +1424,153 @@ data_source = <span class="cl">PaginatedAPIDataSource</span>(
     description = <span class="st">"Predicts monthly rent from property features"</span>
     framework   = <span class="st">"sklearn"</span>
     schedule    = <span class="st">"0 3 * * 1"</span>   <span class="cm"># retrain every Monday at 3am</span>
-    tags        = {<span class="st">"domain"</span>: <span class="st">"finance"</span>, <span class="st">"type"</span>: <span class="st">"regression"</span>}
 
-    data_source = <span class="cl">S3DataSource</span>(
-        bucket=<span class="st">"pms-ml"</span>,
-        key=<span class="st">"datasets/properties.csv"</span>,
-    )
+    data_source = <span class="cl">S3DataSource</span>(bucket=<span class="st">"pms-ml"</span>, key=<span class="st">"datasets/properties.csv"</span>)
 
     <span class="kw">def</span> <span class="fn">preprocess</span>(<span class="dt">self</span>, raw_data):
-        <span class="kw">import</span> pandas <span class="kw">as</span> pd, numpy <span class="kw">as</span> np
-        <span class="kw">from</span> sklearn.model_selection <span class="kw">import</span> train_test_split
-        <span class="kw">from</span> sklearn.preprocessing <span class="kw">import</span> StandardScaler
-
+        <span class="kw">import</span> pandas <span class="kw">as</span> pd
         df = pd.<span class="fn">read_csv</span>(io.<span class="cl">BytesIO</span>(raw_data))
-        features = [<span class="st">"bedrooms"</span>, <span class="st">"bathrooms"</span>, <span class="st">"sq_ft"</span>, <span class="st">"floor"</span>]
-        X = df[features].values
-        y = df[<span class="st">"monthly_rent"</span>].values
+        <span class="kw">return</span> df[[<span class="st">"bedrooms"</span>, <span class="st">"bathrooms"</span>, <span class="st">"sq_ft"</span>, <span class="st">"floor"</span>, <span class="st">"monthly_rent"</span>]]
 
-        <span class="dt">self</span>.scaler = <span class="cl">StandardScaler</span>()
-        X_scaled = <span class="dt">self</span>.scaler.fit_transform(X)
-
-        <span class="kw">return</span> train_test_split(X_scaled, y, test_size=<span class="nu">0.2</span>, random_state=<span class="nu">42</span>)
-
-    <span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed_data, config: <span class="cl">TrainingConfig</span>):
+    <span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed, config: <span class="cl">TrainingConfig</span>):
+        <span class="kw">from</span> sklearn.pipeline <span class="kw">import</span> Pipeline
+        <span class="kw">from</span> sklearn.preprocessing <span class="kw">import</span> StandardScaler
         <span class="kw">from</span> sklearn.ensemble <span class="kw">import</span> GradientBoostingRegressor
-        X_train, X_test, y_train, y_test = preprocessed_data
-        model = <span class="cl">GradientBoostingRegressor</span>(
-            n_estimators=<span class="nu">200</span>,
-            learning_rate=<span class="nu">0.05</span>,
-            max_depth=<span class="nu">5</span>,
-        )
-        model.fit(X_train, y_train)
-        <span class="kw">return</span> model, (X_test, y_test)
+        <span class="kw">from</span> sklearn.model_selection <span class="kw">import</span> train_test_split
+
+        X = preprocessed[<span class="cl">_FEATURES</span>].values
+        y = preprocessed[<span class="st">"monthly_rent"</span>].values
+        X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=<span class="nu">0.2</span>, random_state=config.random_seed)
+
+        <span class="cm"># Scaler is a Pipeline step — saved with the model in the MLflow artifact.</span>
+        <span class="cm"># predict() calls model.predict(X) and scaling is applied automatically.</span>
+        pipeline = Pipeline([
+            (<span class="st">'scaler'</span>, StandardScaler()),
+            (<span class="st">'gbr'</span>,    GradientBoostingRegressor(n_estimators=<span class="nu">200</span>, learning_rate=<span class="nu">0.05</span>,
+                                                    max_depth=<span class="nu">5</span>, random_state=config.random_seed)),
+        ])
+        pipeline.fit(X_tr, y_tr)
+        <span class="kw">return</span> pipeline, (X_te, y_te)   <span class="cm"># tuple → platform calls evaluate(pipeline, (X_te, y_te))</span>
 
     <span class="kw">def</span> <span class="fn">evaluate</span>(<span class="dt">self</span>, model, test_data) -> <span class="cl">EvaluationResult</span>:
         <span class="kw">from</span> sklearn.metrics <span class="kw">import</span> mean_absolute_error, r2_score
-        X_test, y_test = test_data
-        y_pred = model.predict(X_test)
+        X_te, y_te = test_data
+        y_pred = model.predict(X_te)   <span class="cm"># pipeline: scale → predict</span>
         <span class="kw">return</span> <span class="cl">EvaluationResult</span>(
-            mae=<span class="fn">float</span>(mean_absolute_error(y_test, y_pred)),
-            r2=<span class="fn">float</span>(r2_score(y_test, y_pred)),
-            y_true=y_test.tolist(),
-            y_pred=y_pred.tolist(),
-            extra_metrics={<span class="st">"training_samples"</span>: <span class="fn">len</span>(X_test) * <span class="nu">4</span>}
+            mae=<span class="fn">float</span>(mean_absolute_error(y_te, y_pred)),
+            r2=<span class="fn">float</span>(r2_score(y_te, y_pred)),
+            y_true=y_te.tolist(), y_pred=y_pred.tolist(),
         )
 
-    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, model, inputs: dict):
+    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, model, inputs: dict) -> dict:
         <span class="kw">import</span> numpy <span class="kw">as</span> np
-        features = np.array([[
-            inputs[<span class="st">"bedrooms"</span>], inputs[<span class="st">"bathrooms"</span>],
-            inputs[<span class="st">"sq_ft"</span>],   inputs[<span class="st">"floor"</span>],
-        ]])
-        scaled = <span class="dt">self</span>.scaler.transform(features)
-        pred   = model.predict(scaled)[<span class="nu">0</span>]
-        <span class="kw">return</span> {<span class="st">"monthly_rent"</span>: <span class="fn">round</span>(<span class="fn">float</span>(pred), <span class="nu">2</span>)}
+        row  = np.array([[inputs.get(f, <span class="nu">0</span>) <span class="kw">for</span> f <span class="kw">in</span> <span class="cl">_FEATURES</span>]])
+        pred = <span class="fn">float</span>(model.predict(row)[<span class="nu">0</span>])   <span class="cm"># pipeline: scale → predict (no self.scaler!)</span>
+        <span class="kw">return</span> {<span class="st">"monthly_rent"</span>: <span class="fn">round</span>(pred, <span class="nu">2</span>)}
 
     <span class="kw">def</span> <span class="fn">get_feature_names</span>(<span class="dt">self</span>):
-        <span class="kw">return</span> [<span class="st">"bedrooms"</span>, <span class="st">"bathrooms"</span>, <span class="st">"sq_ft"</span>, <span class="st">"floor"</span>]</code></pre>
+        <span class="kw">return</span> <span class="cl">_FEATURES</span></code></pre>
+  </section>
+
+  <!-- Example: Customer Segmentation -->
+  <section id="example-segmentation">
+    <h2>Example: Customer Segmentation (TrainerBundle — KMeans + scaler)</h2>
+    <p>
+      KMeans is unsupervised so sklearn <code class="inline">Pipeline</code> is awkward (no
+      <code class="inline">fit(X, y)</code>).  Instead, return a <code class="inline">TrainerBundle</code>
+      that carries the fitted scaler, feature names, and label map alongside the model.
+      The platform saves the bundle as one joblib artifact.  In <code class="inline">predict()</code>
+      the bundle is passed back as the <code class="inline">model</code> argument.
+    </p>
+    <div class="callout info">
+      <strong>Bulk / file-in predict()</strong> — when <code class="inline">input_schema</code> has a
+      <code class="inline">"file"</code> field, the user uploads a CSV and the entire file is
+      base64-encoded in <code class="inline">inputs["transaction_data"]</code>. Decode it, re-run the
+      same aggregation from <code class="inline">preprocess()</code>, then return a <strong>list of rows</strong>
+      under <code class="inline">"groups"</code> plus an aggregate <code class="inline">"summary"</code> dict.
+      Use <code class="inline">output_display = [OutputFieldSpec("groups", "table_list", …), OutputFieldSpec("summary", "json", …)]</code>.
+      See <a href="#output-display">output_display → Grouped / bulk output</a> for the full pattern.
+    </div>
+    <pre><code><span class="kw">import</span> io
+<span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> BaseTrainer, TrainerBundle, TrainingConfig, EvaluationResult
+<span class="kw">from</span> app.abstract.data_source <span class="kw">import</span> DatasetDataSource
+
+
+<span class="cl">_FEATURES</span> = [<span class="st">"monthly_spend"</span>, <span class="st">"purchase_frequency"</span>, <span class="st">"avg_order_value"</span>,
+             <span class="st">"days_since_last_purchase"</span>, <span class="st">"login_count_30d"</span>]
+
+
+<span class="kw">class</span> <span class="cl">CustomerSegmentation</span>(<span class="cl">BaseTrainer</span>):
+    name      = <span class="st">"customer_segmentation"</span>
+    framework = <span class="st">"sklearn"</span>
+
+    data_source = <span class="cl">DatasetDataSource</span>(
+        slug=<span class="st">"customer-data"</span>,
+        auto_create_spec={
+            <span class="st">"name"</span>: <span class="st">"Customer Data"</span>,
+            <span class="st">"fields"</span>: [{<span class="st">"label"</span>: <span class="st">"Original Upload"</span>, <span class="st">"type"</span>: <span class="st">"file"</span>, <span class="st">"required"</span>: <span class="kw">True</span>}],
+        },
+    )
+
+    input_schema = {
+        <span class="st">"monthly_spend"</span>:            {<span class="st">"type"</span>: <span class="st">"number"</span>, <span class="st">"label"</span>: <span class="st">"Monthly Spend (KES)"</span>, <span class="st">"required"</span>: <span class="kw">True</span>},
+        <span class="st">"purchase_frequency"</span>:       {<span class="st">"type"</span>: <span class="st">"number"</span>, <span class="st">"label"</span>: <span class="st">"Purchases / Month"</span>,    <span class="st">"required"</span>: <span class="kw">True</span>},
+        <span class="st">"avg_order_value"</span>:          {<span class="st">"type"</span>: <span class="st">"number"</span>, <span class="st">"label"</span>: <span class="st">"Avg Order (KES)"</span>,       <span class="st">"required"</span>: <span class="kw">True</span>},
+        <span class="st">"days_since_last_purchase"</span>: {<span class="st">"type"</span>: <span class="st">"number"</span>, <span class="st">"label"</span>: <span class="st">"Days Since Purchase"</span>,   <span class="st">"required"</span>: <span class="kw">True</span>},
+        <span class="st">"login_count_30d"</span>:          {<span class="st">"type"</span>: <span class="st">"number"</span>, <span class="st">"label"</span>: <span class="st">"Logins (30 days)"</span>,      <span class="st">"required"</span>: <span class="kw">False</span>},
+    }
+
+    <span class="kw">def</span> <span class="fn">preprocess</span>(<span class="dt">self</span>, raw):
+        <span class="kw">import</span> pandas <span class="kw">as</span> pd
+        entry = next((e <span class="kw">for</span> e <span class="kw">in</span> raw
+                      <span class="kw">if</span> e.get(<span class="st">"field_type"</span>) == <span class="st">"file"</span>
+                      <span class="kw">and</span> (e.get(<span class="st">"file_key"</span>) <span class="kw">or</span> e.get(<span class="st">"file_url"</span>))), <span class="kw">None</span>)
+        <span class="kw">if not</span> entry:
+            <span class="kw">raise</span> <span class="cl">ValueError</span>(<span class="st">"No file in dataset"</span>)
+        content = <span class="dt">self</span>.<span class="fn">_fetch_bytes</span>(entry.get(<span class="st">"file_key"</span>), entry.get(<span class="st">"file_url"</span>))
+        df = pd.<span class="fn">read_csv</span>(io.BytesIO(content))
+        cols = [c <span class="kw">for</span> c <span class="kw">in</span> <span class="cl">_FEATURES</span> <span class="kw">if</span> c <span class="kw">in</span> df.columns]
+        <span class="kw">return</span> df[cols].fillna(df[cols].median())
+
+    <span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed, config: TrainingConfig):
+        <span class="kw">import</span> numpy <span class="kw">as</span> np
+        <span class="kw">from</span> sklearn.preprocessing <span class="kw">import</span> StandardScaler
+        <span class="kw">from</span> sklearn.cluster <span class="kw">import</span> KMeans
+
+        feature_cols = <span class="fn">list</span>(preprocessed.columns)
+        X = preprocessed.values.astype(<span class="fn">float</span>)
+
+        scaler   = StandardScaler()          <span class="cm"># ← fitted on training data</span>
+        X_scaled = scaler.fit_transform(X)
+
+        kmeans = KMeans(n_clusters=<span class="nu">4</span>, n_init=<span class="nu">20</span>, random_state=config.random_seed)
+        kmeans.fit(X_scaled)
+
+        <span class="cm"># Assign labels by ascending mean monthly_spend per cluster</span>
+        spend_idx = feature_cols.index(<span class="st">"monthly_spend"</span>) <span class="kw">if</span> <span class="st">"monthly_spend"</span> <span class="kw">in</span> feature_cols <span class="kw">else</span> <span class="nu">0</span>
+        spend_by_c = {c: X[kmeans.labels_ == c, spend_idx].mean() <span class="kw">for</span> c <span class="kw">in</span> <span class="fn">range</span>(<span class="nu">4</span>)}
+        sorted_c   = <span class="fn">sorted</span>(spend_by_c, key=<span class="kw">lambda</span> c: spend_by_c[c])
+        names      = [<span class="st">"Dormant"</span>, <span class="st">"Occasional"</span>, <span class="st">"Regular"</span>, <span class="st">"High Value"</span>]
+        label_map  = {<span class="fn">int</span>(c): names[i] <span class="kw">for</span> i, c <span class="kw">in</span> <span class="fn">enumerate</span>(sorted_c)}
+
+        <span class="cm"># TrainerBundle bundles model + scaler + feature_names + label_map into</span>
+        <span class="cm"># one joblib artifact.  predict() receives the loaded bundle as `model`.</span>
+        <span class="kw">return</span> TrainerBundle(
+            model=kmeans,
+            scaler=scaler,          <span class="cm"># ← saved, not stored on self</span>
+            feature_names=feature_cols,
+            label_map=label_map,
+        )
+
+    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, model: TrainerBundle, inputs: dict) -> dict:
+        <span class="kw">import</span> numpy <span class="kw">as</span> np
+        row      = np.array([[inputs.get(f, <span class="nu">0</span>) <span class="kw">for</span> f <span class="kw">in</span> model.feature_names]])
+        <span class="cm"># model.scaler is the fitted StandardScaler from train() — loaded from MLflow</span>
+        X_scaled = model.scaler.transform(row)
+        cluster  = <span class="fn">int</span>(model.model.predict(X_scaled)[<span class="nu">0</span>])
+        label    = model.label_map.get(cluster, <span class="fn">str</span>(cluster))
+        dist     = <span class="fn">float</span>(np.linalg.norm(X_scaled - model.model.cluster_centers_[cluster]))
+        <span class="kw">return</span> {<span class="st">"segment_label"</span>: label, <span class="st">"segment_id"</span>: cluster, <span class="st">"distance"</span>: <span class="fn">round</span>(dist, <span class="nu">4</span>)}</code></pre>
   </section>
 
   <!-- Example: PyTorch -->
@@ -2577,8 +2970,9 @@ GET /deployments?trainer_name=water-meter-ocr</code></pre>
         <tr><td><code class="inline">confidence</code></td><td>Progress bar + percentage</td><td>Float 0–1</td></tr>
         <tr><td><code class="inline">ranked_list</code></td><td>Compact ranked table</td><td>List of <code class="inline">{"label": str, "confidence": float}</code> dicts</td></tr>
         <tr><td><code class="inline">bbox_list</code></td><td>Detection cards with coords</td><td>List of <code class="inline">{"label": str, "bbox": [x1,y1,x2,y2], "confidence": float}</code></td></tr>
+        <tr><td><code class="inline">table_list</code></td><td>Scrollable HTML table</td><td>List of arbitrary dicts (e.g. customer segments, bulk rows) — columns are inferred from object keys</td></tr>
         <tr><td><code class="inline">text</code></td><td>Plain paragraph</td><td>Any multi-word string</td></tr>
-        <tr><td><code class="inline">json</code></td><td>Collapsible <code>&lt;pre&gt;</code></td><td>Any JSON-serialisable value (dict, list, etc.)</td></tr>
+        <tr><td><code class="inline">json</code></td><td>Collapsible <code>&lt;pre&gt;</code></td><td>Plain dict / nested object — use for aggregate summaries</td></tr>
       </tbody>
     </table>
 
@@ -2619,7 +3013,60 @@ GET /deployments?trainer_name=water-meter-ocr</code></pre>
       Exactly one field per trainer should be <code class="inline">primary=True</code>. This value becomes the
       <code class="inline">predicted_label</code> stored in <code class="inline">InferenceFeedback</code>, drives the confusion matrix, and
       pre-fills the "actual value" box so reviewers can correct it with one click.
+      For bulk / grouped outputs (no single predicted label), omit <code class="inline">primary=True</code> entirely.
     </div>
+
+    <h3 id="output-display-grouped">Grouped / bulk output — <code>table_list</code> + <code>json</code></h3>
+    <p>
+      Some models return a list of rows (e.g. customer segments, anomaly detections, bulk scoring)
+      plus an aggregate summary dict.  Use <code class="inline">table_list</code> for the rows and
+      <code class="inline">json</code> for the summary.  In <code class="inline">output_schema</code> use
+      <code class="inline">type: "list"</code> for the rows and <code class="inline">type: "json"</code> for the dict.
+    </p>
+    <pre><code><span class="cm"># output_schema — describes what predict() returns (used by API consumers + schema endpoint)</span>
+output_schema = {
+    <span class="st">"groups"</span>: {
+        <span class="st">"type"</span>: <span class="st">"list"</span>,
+        <span class="st">"label"</span>: <span class="st">"Customer Segments"</span>,
+        <span class="st">"description"</span>: <span class="st">"One row per customer — CustomerID, segment_label, confidence_score, avg_transaction_value, purchase_frequency"</span>,
+    },
+    <span class="st">"summary"</span>: {
+        <span class="st">"type"</span>: <span class="st">"json"</span>,
+        <span class="st">"label"</span>: <span class="st">"Summary Statistics"</span>,
+        <span class="st">"description"</span>: <span class="st">"Aggregate stats: total_customers, avg_transaction_value, avg_purchase_frequency, segment_counts"</span>,
+    },
+}
+
+<span class="cm"># output_display — controls how InferenceResultRenderer renders each key</span>
+output_display = [
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"groups"</span>,  <span class="st">"table_list"</span>, <span class="st">"Customer Segments"</span>,  span=<span class="nu">2</span>),
+    <span class="cl">OutputFieldSpec</span>(<span class="st">"summary"</span>, <span class="st">"json"</span>,        <span class="st">"Summary Statistics"</span>, span=<span class="nu">2</span>),
+]</code></pre>
+
+    <p>The <code class="inline">table_list</code> renderer auto-infers columns from the first row's keys,
+    highlights <code class="inline">*_label</code> / <code class="inline">*_segment</code> fields as coloured pills,
+    and formats numbers to 2 decimal places in a scrollable table (max 288px height).</p>
+
+    <p>The corresponding <code class="inline">predict()</code> return value:</p>
+    <pre><code><span class="kw">return</span> {
+    <span class="st">"groups"</span>: [
+        {
+            <span class="st">"CustomerID"</span>: <span class="st">"C001"</span>,
+            <span class="st">"segment_label"</span>: <span class="st">"High Value"</span>,
+            <span class="st">"confidence_score"</span>: <span class="nu">94.2</span>,
+            <span class="st">"avg_transaction_value"</span>: <span class="nu">182.50</span>,
+            <span class="st">"purchase_frequency"</span>: <span class="nu">23</span>,
+        },
+        <span class="cm"># ... one dict per customer</span>
+    ],
+    <span class="st">"summary"</span>: {
+        <span class="st">"total_customers"</span>: <span class="nu">412</span>,
+        <span class="st">"avg_transaction_value"</span>: <span class="nu">97.30</span>,
+        <span class="st">"avg_purchase_frequency"</span>: <span class="nu">8.4</span>,
+        <span class="st">"segment_counts"</span>: {<span class="st">"High Value"</span>: <span class="nu">88</span>, <span class="st">"At Risk"</span>: <span class="nu">106</span>, <span class="st">"New Customer"</span>: <span class="nu">134</span>, <span class="st">"Dormant"</span>: <span class="nu">84</span>},
+    },
+}</code></pre>
+
   </section>
 
   <section id="derived-metrics">
@@ -2926,8 +3373,89 @@ GET /deployments?trainer_name=water-meter-ocr</code></pre>
         <tr><td>Drift check returns no alerts (no baseline)</td><td><code class="inline">DriftBaseline</code> not set for this trainer</td><td>Call <code class="inline">POST /monitoring/drift/{trainer}/baseline</code> first. Requires ≥ 30 successful inference logs.</td></tr>
         <tr><td>Drift check skipped: too few samples</td><td>Fewer than 30 inferences in the check window</td><td>Lower <code class="inline">hours</code> in the check request to widen the window, or wait for more traffic</td></tr>
         <tr><td>Performance snapshot shows 0 requests</td><td>No <code class="inline">InferenceLog</code> docs in the window</td><td>The scheduler only writes snapshots for trainers with activity — force one via <code class="inline">POST /monitoring/performance/{trainer}/snapshot</code></td></tr>
+        <tr>
+          <td><code class="inline">ParserError: Expected N fields in line X, saw N+1</code></td>
+          <td>CSV contains unquoted commas inside a field (e.g. address, description, free-text). The default pandas C engine is strict about field counts.</td>
+          <td>Always wrap <code class="inline">pd.read_csv</code> in a try/except with an <code class="inline">engine='python'</code> fallback — see pattern below.</td>
+        </tr>
+        <tr>
+          <td><code class="inline">AttributeError: 'TrainerName' object has no attribute 'scaler'</code> (or <code class="inline">encoder</code>, <code class="inline">feature_names</code>, etc.)</td>
+          <td><code class="inline">predict()</code> runs on a fresh trainer instance — anything stored on <code class="inline">self</code> during <code class="inline">train()</code> is lost.</td>
+          <td>Never store fitted transformers on <code class="inline">self</code>. Use a <strong>sklearn Pipeline</strong> (scaler as a step) or return a <strong>TrainerBundle</strong> from <code class="inline">train()</code>. See the <a href="#predict-inference">predict() &amp; Inference Inputs</a> section.</td>
+        </tr>
+        <tr>
+          <td><code class="inline">AttributeError: 'ClientResponse' object has no attribute 'iter_chunks'</code></td>
+          <td>aioboto3 StreamingBody wraps an aiohttp <code class="inline">ClientResponse</code> which only has <code class="inline">iter_any()</code>, not <code class="inline">iter_chunks()</code>.</td>
+          <td>Use <code class="inline">iter_any(chunk_size)</code> when streaming S3 objects, or read the full body with <code class="inline">await resp["Body"].read()</code>.</td>
+        </tr>
       </tbody>
     </table>
+
+    <h3>CSV ParserError — safe read pattern</h3>
+    <p>
+      Real-world CSVs frequently contain unquoted commas inside fields (addresses, product
+      descriptions, free-text notes). The default pandas C parser raises
+      <code class="inline">ParserError: Expected N fields in line X, saw N+1</code> when it
+      encounters them. <strong>Always use the try/except fallback below</strong> — it applies
+      everywhere you call <code class="inline">pd.read_csv()</code> in a trainer.
+    </p>
+    <pre><code><span class="cm"># ❌ WRONG — crashes on CSVs with unquoted commas or extra fields:</span>
+df = pd.<span class="fn">read_csv</span>(io.BytesIO(content))
+
+<span class="cm"># ✅ CORRECT — copy this exact pattern for every pd.read_csv call:</span>
+<span class="kw">try</span>:
+    df = pd.<span class="fn">read_csv</span>(io.BytesIO(content))
+<span class="kw">except</span> Exception:
+    df = pd.<span class="fn">read_csv</span>(io.BytesIO(content), on_bad_lines=<span class="st">'skip'</span>, engine=<span class="st">'python'</span>)
+
+<span class="cm"># For Excel files — no fallback needed (openpyxl is forgiving):</span>
+df = pd.<span class="fn">read_excel</span>(io.BytesIO(content))</code></pre>
+    <p>
+      <code class="inline">engine='python'</code> is slower but tolerates malformed rows.
+      <code class="inline">on_bad_lines='skip'</code> drops rows that can't be parsed rather than
+      aborting. For training data this trade-off is almost always correct — a few bad rows
+      are preferable to a failed training run.
+    </p>
+
+    <h3>Lost scaler / encoder at inference time</h3>
+    <p>
+      <code class="inline">predict(self, model, inputs)</code> is called on a
+      <strong>fresh trainer instance</strong> — state set on <code class="inline">self</code>
+      during <code class="inline">preprocess()</code> or <code class="inline">train()</code>
+      does not survive.
+    </p>
+    <pre><code><span class="cm"># ❌ WRONG — self.scaler is gone at inference time:</span>
+<span class="kw">def</span> <span class="fn">preprocess</span>(<span class="dt">self</span>, raw):
+    <span class="dt">self</span>.scaler = StandardScaler()
+    X_scaled = <span class="dt">self</span>.scaler.fit_transform(X)
+    ...
+
+<span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, model, inputs):
+    scaled = <span class="dt">self</span>.scaler.transform(...)   <span class="cm"># AttributeError!</span>
+
+<span class="cm"># ✅ OPTION A — sklearn Pipeline (supervised tabular):</span>
+<span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed, config):
+    pipeline = Pipeline([(<span class="st">'scaler'</span>, StandardScaler()), (<span class="st">'clf'</span>, RandomForestClassifier())])
+    pipeline.fit(X, y)
+    <span class="kw">return</span> pipeline   <span class="cm"># scaler is inside the MLflow artifact</span>
+
+<span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, model, inputs):
+    pred = model.predict(row)   <span class="cm"># pipeline scales + predicts automatically</span>
+
+<span class="cm"># ✅ OPTION B — TrainerBundle (unsupervised / multi-artifact):</span>
+<span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> TrainerBundle
+
+<span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed, config):
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    kmeans = KMeans(n_clusters=<span class="nu">4</span>).fit(X_scaled)
+    <span class="kw">return</span> TrainerBundle(model=kmeans, scaler=scaler, feature_names=cols)
+
+<span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, model: TrainerBundle, inputs):
+    row = np.array([[inputs[f] <span class="kw">for</span> f <span class="kw">in</span> model.feature_names]])
+    X_scaled = model.scaler.transform(row)   <span class="cm"># scaler loaded from MLflow bundle</span>
+    cluster = <span class="fn">int</span>(model.model.predict(X_scaled)[<span class="nu">0</span>])
+    <span class="kw">return</span> {<span class="st">"segment"</span>: cluster}</code></pre>
 
     <h3>Check container logs</h3>
     <pre><code><span class="cm"># ML service (API + inference)</span>

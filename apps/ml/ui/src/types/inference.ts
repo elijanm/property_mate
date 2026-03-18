@@ -1,6 +1,6 @@
 export interface OutputFieldSpec {
   key: string
-  type: 'image' | 'reading' | 'label' | 'confidence' | 'ranked_list' | 'bbox_list' | 'text' | 'json'
+  type: 'image' | 'reading' | 'label' | 'confidence' | 'ranked_list' | 'bbox_list' | 'table_list' | 'text' | 'json'
   label: string
   primary: boolean
   hint: string

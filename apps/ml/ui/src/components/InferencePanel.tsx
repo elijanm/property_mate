@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import type { ModelDeployment, SchemaField, OutputSchemaField } from '@/types/trainer'
 import type { InferenceResult } from '@/types/inference'
 import { inferenceApi } from '@/api/inference'
+import { datasetsApi } from '@/api/datasets'
 import { Upload, Send, Loader2, Info, RefreshCw, Sparkles, ChevronRight, ChevronDown, ImageIcon, X, GitBranch } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -65,6 +66,9 @@ export default function InferencePanel({ deployment, allDeployments, onResult, o
   const outputSchema = deployment.output_schema ?? {}
   const hasSchema = Object.keys(schema).length > 0
   const hasOutputSchema = Object.keys(outputSchema).length > 0
+
+  // Dataset slug from trainer's DatasetDataSource — used for sample CSV upload
+  const datasetSlug = (deployment.data_source_info as Record<string, unknown> | undefined)?.dataset_slug as string | undefined
 
   const [fields, setFields] = useState<Record<string, string>>(() => defaultFields(schema))
   // imageFields stores base64 strings keyed by schema field name
@@ -203,6 +207,7 @@ export default function InferencePanel({ deployment, allDeployments, onResult, o
                       value={imageFields[key] ?? null}
                       onChange={b64 => setImageFields(p => ({ ...p, [key]: b64 }))}
                       onClear={() => setImageFields(p => { const n = { ...p }; delete n[key]; return n })}
+                      datasetSlug={datasetSlug}
                     />
                   ) : (
                     <SchemaInput
@@ -363,6 +368,15 @@ export default function InferencePanel({ deployment, allDeployments, onResult, o
                   {f.example != null && (
                     <p className="text-[11px] text-gray-500 italic">{String(f.example)}</p>
                   )}
+                  {f.sample_url && (
+                    <a
+                      href={f.sample_url}
+                      download
+                      className="inline-flex items-center gap-1 text-[11px] text-brand-400 hover:text-brand-300 underline underline-offset-2 mt-0.5"
+                    >
+                      ↓ Sample CSV
+                    </a>
+                  )}
                 </div>
               ))}
             </div>
@@ -475,11 +489,38 @@ function SchemaInput({
 }
 
 function ImageInput({
-  fieldKey, field, value, onChange, onClear,
-}: { fieldKey: string; field: SchemaField; value: string | null; onChange: (b64: string) => void; onClear: () => void }) {
+  fieldKey, field, value, onChange, onClear, datasetSlug,
+}: { fieldKey: string; field: SchemaField; value: string | null; onChange: (b64: string) => void; onClear: () => void; datasetSlug?: string }) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const sampleRef = useRef<HTMLInputElement>(null)
   const label = field.label ?? fieldKey
   const accept = field.type === 'image' ? 'image/*' : '*/*'
+
+  // Sample upload state (only for file fields without a pre-set sample_url)
+  const showSampleUpload = field.type === 'file' && !field.sample_url && !!datasetSlug
+  const [sampleUploading, setSampleUploading] = useState(false)
+  const [sampleUrl, setSampleUrl] = useState<string | null>(null)
+  const [sampleError, setSampleError] = useState<string | null>(null)
+
+  const handleSampleUpload = async (f: File) => {
+    if (!datasetSlug) return
+    setSampleUploading(true)
+    setSampleError(null)
+    try {
+      // Resolve dataset by slug → get the first file field
+      const dataset = await datasetsApi.getBySlug(datasetSlug)
+      const fileField = dataset.fields.find(df => df.type === 'file')
+      if (!fileField) throw new Error('No file field found in dataset')
+      const entry = await datasetsApi.uploadEntryDirect(dataset.id, fileField.id, f)
+      const url = entry.file_url
+      if (!url) throw new Error('Upload succeeded but no download URL was returned')
+      setSampleUrl(url)
+    } catch (e: unknown) {
+      setSampleError(e instanceof Error ? e.message : 'Upload failed')
+    } finally {
+      setSampleUploading(false)
+    }
+  }
 
   const handleFile = (f: File) => {
     const reader = new FileReader()
@@ -511,6 +552,39 @@ function ImageInput({
       </div>
       {field.description && (
         <p className="text-xs text-gray-500">{field.description}</p>
+      )}
+
+      {/* Sample CSV — pre-set URL or uploadable */}
+      {(field.sample_url || sampleUrl) ? (
+        <a
+          href={field.sample_url ?? sampleUrl!}
+          download
+          className="inline-flex items-center gap-1 text-[11px] text-brand-400 hover:text-brand-300 underline underline-offset-2"
+          onClick={e => e.stopPropagation()}
+        >
+          ↓ Download sample CSV
+        </a>
+      ) : showSampleUpload && (
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => sampleRef.current?.click()}
+            disabled={sampleUploading}
+            className="inline-flex items-center gap-1.5 text-[11px] text-gray-500 hover:text-brand-400 border border-dashed border-gray-700 hover:border-brand-600 px-2 py-1 rounded-lg transition-colors disabled:opacity-50"
+          >
+            {sampleUploading
+              ? <><Loader2 size={10} className="animate-spin" /> Uploading sample…</>
+              : <><Upload size={10} /> Upload sample CSV to dataset</>}
+          </button>
+          {sampleError && <span className="text-[11px] text-red-400">{sampleError}</span>}
+          <input
+            ref={sampleRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) handleSampleUpload(f) }}
+          />
+        </div>
       )}
 
       {value ? (

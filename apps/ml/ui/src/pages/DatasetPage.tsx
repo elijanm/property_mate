@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, Globe, Lock, GitFork, Link2, BarChart2, MapPin, TrendingUp, Award, Video, Film, Share2, ExternalLink, UserMinus, RefreshCw, ThumbsUp, ThumbsDown, Phone, Loader2 } from 'lucide-react'
+import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, Globe, Lock, GitFork, Link2, BarChart2, MapPin, TrendingUp, Award, Video, Film, Share2, ExternalLink, UserMinus, RefreshCw, ThumbsUp, ThumbsDown, Phone, Loader2, Download } from 'lucide-react'
 import type { DatasetOverview } from '@/types/dataset'
 import clsx from 'clsx'
 import { datasetsApi } from '@/api/datasets'
@@ -959,9 +959,31 @@ function DatasetCard({
 }) {
   const isRef   = dataset.reference_type === 'reference'
   const isClone = dataset.reference_type === 'clone'
+  const [downloading, setDownloading] = useState(false)
+
+  const handleDownload = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (downloading) return
+    setDownloading(true)
+    try {
+      await datasetsApi.exportCsv(dataset.id, `${dataset.slug ?? dataset.name}_entries`)
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   return (
-    <div className="bg-gray-800/50 border border-gray-700/50 rounded-2xl p-5 hover:border-gray-600/50 transition-colors">
+    <div className="relative group bg-gray-800/50 border border-gray-700/50 rounded-2xl p-5 hover:border-gray-600/50 transition-colors">
+      {/* Download on hover */}
+      <button
+        onClick={handleDownload}
+        disabled={downloading}
+        title="Download entries as CSV"
+        className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] bg-gray-700/90 hover:bg-indigo-700 border border-gray-600 hover:border-indigo-600 text-gray-300 hover:text-white rounded-lg transition-all disabled:opacity-40 z-10"
+      >
+        {downloading ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+        {downloading ? 'Exporting…' : 'Download'}
+      </button>
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -1349,6 +1371,8 @@ function EntriesPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: 
   const [loading, setLoading] = useState(true)
   const [lightbox, setLightbox] = useState<DatasetEntry | null>(null)
   const [actingId, setActingId] = useState<string | null>(null)
+  const [csvPreview, setCsvPreview] = useState<{ entry: DatasetEntry; rows: string[][]; cols: string[] } | null>(null)
+  const [csvLoading, setCsvLoading] = useState<string | null>(null)  // entry id being fetched
 
   const [showFilters, setShowFilters] = useState(false)
   const [filterField, setFilterField] = useState('')
@@ -1382,6 +1406,44 @@ function EntriesPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: 
 
   const hasFilter = filterField || filterCollector || filterDateFrom || filterDateTo
   const clearFilters = () => { setFilterField(''); setFilterCollector(''); setFilterDateFrom(''); setFilterDateTo('') }
+
+  // Resolve an entry's file_url for use in <img>, <a>, fetch(), etc.
+  // If the URL is the backend proxy path (/api/v1/datasets/…/file), append the
+  // JWT token as a query param so the browser's direct request is authenticated.
+  const resolveFileUrl = (url: string | null | undefined): string | null => {
+    if (!url) return null
+    if (url.startsWith('/api/')) {
+      const token = localStorage.getItem('ml_token') ?? ''
+      return `${url}?token=${encodeURIComponent(token)}`
+    }
+    return url
+  }
+
+  const isCsvLike = (e: DatasetEntry) =>
+    e.file_mime === 'text/csv' || e.file_mime === 'text/plain' ||
+    e.file_mime === 'application/vnd.ms-excel' ||
+    e.file_mime?.includes('spreadsheet') ||
+    (e.file_url?.split('?')[0].match(/\.(csv|tsv|txt)$/i) != null)
+
+  const openCsvPreview = async (e: DatasetEntry) => {
+    const url = resolveFileUrl(e.file_url)
+    if (!url) return
+    setCsvLoading(e.id)
+    try {
+      const resp = await fetch(url)
+      const text = await resp.text()
+      const lines = text.split(/\r?\n/).filter(Boolean)
+      const cols = lines[0]?.split(',').map(c => c.trim().replace(/^"(.*)"$/, '$1')) ?? []
+      const rows = lines.slice(1, 201).map(l =>
+        l.split(',').map(c => c.trim().replace(/^"(.*)"$/, '$1'))
+      )
+      setCsvPreview({ entry: e, cols, rows })
+    } catch {
+      window.open(url, '_blank')
+    } finally {
+      setCsvLoading(null)
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex">
@@ -1498,25 +1560,51 @@ function EntriesPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: 
                 return (
                   <div key={e.id} className={clsx('border rounded-xl overflow-hidden group relative', reviewColor)}>
                     {/* Media area */}
-                    {e.file_url && isImage ? (
-                      <button onClick={() => setLightbox(e)} className="w-full">
-                        <img src={e.file_url} alt="" className="w-full h-32 object-cover hover:opacity-90 transition-opacity" />
-                      </button>
-                    ) : e.file_url && isVideo ? (
-                      <button onClick={() => setLightbox(e)} className="relative w-full h-32 bg-black block">
-                        <video src={e.file_url} className="w-full h-full object-contain" preload="metadata" muted playsInline />
-                        <div className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/20 transition-colors">
-                          <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur flex items-center justify-center">
-                            <svg viewBox="0 0 24 24" fill="white" className="w-5 h-5 translate-x-0.5"><path d="M8 5v14l11-7z"/></svg>
+                    {(() => {
+                      const furl = resolveFileUrl(e.file_url)
+                      return furl && isImage ? (
+                        <button onClick={() => setLightbox(e)} className="w-full">
+                          <img src={furl} alt="" className="w-full h-32 object-cover hover:opacity-90 transition-opacity" />
+                        </button>
+                      ) : furl && isVideo ? (
+                        <button onClick={() => setLightbox(e)} className="relative w-full h-32 bg-black block">
+                          <video src={furl} className="w-full h-full object-contain" preload="metadata" muted playsInline />
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/20 transition-colors">
+                            <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur flex items-center justify-center">
+                              <svg viewBox="0 0 24 24" fill="white" className="w-5 h-5 translate-x-0.5"><path d="M8 5v14l11-7z"/></svg>
+                            </div>
+                          </div>
+                        </button>
+                      ) : furl ? (
+                        <div className="flex flex-col items-center justify-center h-32 bg-gray-700/50 gap-2">
+                          <FileText size={20} className="text-gray-500" />
+                          <div className="flex items-center gap-1.5">
+                            {isCsvLike(e) ? (
+                              <button
+                                onClick={() => openCsvPreview(e)}
+                                disabled={csvLoading === e.id}
+                                className="px-2 py-1 text-[11px] bg-indigo-700 hover:bg-indigo-600 text-white rounded-md transition-colors disabled:opacity-50"
+                              >
+                                {csvLoading === e.id ? '…' : '📋 Preview'}
+                              </button>
+                            ) : (
+                              <a href={furl} target="_blank" rel="noreferrer"
+                                className="px-2 py-1 text-[11px] bg-gray-600 hover:bg-gray-500 text-white rounded-md transition-colors">
+                                View
+                              </a>
+                            )}
+                            <a
+                              href={furl}
+                              download
+                              className="px-2 py-1 text-[11px] bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white border border-gray-600 rounded-md transition-colors"
+                            >
+                              ⬇ Download
+                            </a>
                           </div>
                         </div>
-                      </button>
-                    ) : e.file_url ? (
-                      <a href={e.file_url} target="_blank" rel="noreferrer"
-                        className="flex items-center justify-center h-32 bg-gray-700/50 text-gray-400 hover:text-white text-xs gap-1">
-                        <FileText size={20} /> View file
-                      </a>
-                    ) : (
+                      ) : null
+                    })()}
+                    {!resolveFileUrl(e.file_url) && (
                       <div className="flex items-center justify-center h-20 bg-gray-700/30 text-gray-500 text-xs px-2 text-center">
                         {e.text_value ?? '—'}
                       </div>
@@ -1575,6 +1663,61 @@ function EntriesPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: 
         </div>
       </div>
 
+      {/* CSV preview modal */}
+      {csvPreview && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80" onClick={() => setCsvPreview(null)}>
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-5xl max-h-[85vh] flex flex-col mx-4" onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-700 shrink-0">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-white">{fieldName(csvPreview.entry.field_id)}</p>
+                <p className="text-[11px] text-gray-500 mt-0.5">
+                  {csvPreview.cols.length} columns · {csvPreview.rows.length} rows shown
+                  {csvPreview.rows.length === 200 && ' (first 200 rows)'}
+                </p>
+              </div>
+              <div className="flex items-center gap-3 ml-4 shrink-0">
+                <a href={resolveFileUrl(csvPreview.entry.file_url) ?? '#'} download
+                  onClick={e => e.stopPropagation()}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-indigo-700 hover:bg-indigo-600 text-white rounded-lg transition-colors">
+                  ⬇ Download
+                </a>
+                <button onClick={() => setCsvPreview(null)} className="text-gray-400 hover:text-white transition-colors">
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+            {/* Table */}
+            <div className="flex-1 overflow-auto p-0">
+              <table className="min-w-full text-[11px]">
+                <thead className="sticky top-0 bg-gray-800 z-10">
+                  <tr>
+                    <th className="px-3 py-2 text-left text-gray-500 font-medium border-b border-gray-700 w-10">#</th>
+                    {csvPreview.cols.map((col, i) => (
+                      <th key={i} className="px-3 py-2 text-left text-gray-300 font-medium border-b border-gray-700 whitespace-nowrap max-w-[200px] truncate">
+                        {col}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {csvPreview.rows.map((row, ri) => (
+                    <tr key={ri} className={ri % 2 === 0 ? 'bg-gray-900' : 'bg-gray-800/50'}>
+                      <td className="px-3 py-1.5 text-gray-600 border-b border-gray-800">{ri + 1}</td>
+                      {csvPreview.cols.map((_, ci) => (
+                        <td key={ci} className="px-3 py-1.5 text-gray-300 border-b border-gray-800 max-w-[200px] truncate" title={row[ci] ?? ''}>
+                          {row[ci] ?? ''}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Media lightbox */}
       {lightbox && (
         <div
@@ -1589,7 +1732,7 @@ function EntriesPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: 
             </div>
             <div className="flex items-center gap-3 ml-4 shrink-0">
               <a
-                href={lightbox.file_url!}
+                href={resolveFileUrl(lightbox.file_url) ?? '#'}
                 target="_blank"
                 rel="noreferrer"
                 onClick={e => e.stopPropagation()}
@@ -1608,7 +1751,7 @@ function EntriesPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: 
           <div className="flex-1 flex items-center justify-center p-4 min-h-0" onClick={e => e.stopPropagation()}>
             {lightbox.file_mime?.startsWith('video/') ? (
               <video
-                src={lightbox.file_url!}
+                src={resolveFileUrl(lightbox.file_url) ?? undefined}
                 controls
                 autoPlay
                 playsInline
@@ -1617,7 +1760,7 @@ function EntriesPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: 
               />
             ) : (
               <img
-                src={lightbox.file_url!}
+                src={resolveFileUrl(lightbox.file_url) ?? undefined}
                 alt={lightbox.description ?? ''}
                 className="max-w-full max-h-full rounded-lg object-contain"
                 style={{ maxHeight: 'calc(100vh - 140px)' }}

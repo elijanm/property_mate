@@ -167,7 +167,7 @@ def _trainer_template(class_name: str) -> str:
 
 The service auto-discovers and registers this file on save.
 """
-from app.abstract.base_trainer import BaseTrainer, TrainingConfig
+from app.abstract.base_trainer import BaseTrainer, TrainingConfig, EvaluationResult, TrainerBundle
 from app.abstract.data_source import InMemoryDataSource
 
 
@@ -359,7 +359,7 @@ You MUST output ONLY valid Python code — no prose, no markdown fences, no expl
 The code must follow the BaseTrainer pattern exactly as documented below.
 
 ━━ BaseTrainer CONTRACT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-from app.abstract.base_trainer import BaseTrainer, TrainingConfig, EvaluationResult
+from app.abstract.base_trainer import BaseTrainer, TrainingConfig, EvaluationResult, TrainerBundle
 from app.abstract.data_source import (
     DatasetDataSource, InMemoryDataSource, UploadedFileDataSource,
     S3DataSource, URLDataSource, MongoDBDataSource, HuggingFaceDataSource,
@@ -420,6 +420,9 @@ Rules:
 - input_schema and output_schema MUST be defined for the UI to render forms correctly.
 - If data_source uses DatasetDataSource, always set auto_create_spec so the dataset is
   auto-created on first run without manual setup.
+- FORBIDDEN: Never use pd.read_excel('/path'), pd.read_csv('/path'), open('/path'), or any
+  hard-coded file paths inside the trainer. ALL data access MUST go through the raw dict
+  returned by data_source.load() — e.g. df = pd.read_csv(raw['data_file']).
 """
 
 
@@ -431,6 +434,59 @@ class GenerateTrainerRequest(BaseModel):
     extra_notes: str = ""            # any extra instructions
 
 
+# ── LLM config helpers ────────────────────────────────────────────────────────
+
+# OpenAI GPT-4o baseline rates (USD per token)
+_OPENAI_INPUT_RATE  = 5.00  / 1_000_000   # $5  per 1M input tokens
+_OPENAI_OUTPUT_RATE = 15.00 / 1_000_000   # $15 per 1M output tokens
+_OLLAMA_DISCOUNT    = 0.40                 # Ollama / openai_compatible: 40% of OpenAI rate
+
+
+def _get_llm_config() -> tuple[str, str, str, str]:
+    """Return (base_url, api_key, model_name, provider).
+
+    Reads:
+      LLM_PROVIDER  — openai | ollama | openai_compatible   (default: openai)
+      LLM_API_KEY   — API key (for Ollama any non-empty string works; defaults to "ollama")
+      LLM_MODEL     — model name                            (default: gpt-4o)
+      LLM_BASE_URL  — only required for openai_compatible; optional override for ollama
+      LLM_TEMPERATURE  — sampling temperature               (default: 0.3)
+      LLM_MAX_TOKENS   — max response tokens                (default: 1024 for generate, 6000 for chat)
+    """
+    provider   = os.environ.get("LLM_PROVIDER", "openai").lower()
+    api_key    = os.environ.get("LLM_API_KEY", "")
+    model_name = os.environ.get("LLM_MODEL", "gpt-4o")
+
+    if provider == "ollama":
+        base_url = os.environ.get("LLM_BASE_URL", "http://localhost:11434/v1")
+        if not api_key:
+            api_key = "ollama"          # Ollama accepts any non-empty string
+    elif provider == "openai":
+        base_url = "https://api.openai.com/v1"
+    else:                               # openai_compatible
+        base_url = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")
+        if not api_key:
+            api_key = "key"
+
+    return base_url, api_key, model_name, provider
+
+
+def _calc_token_cost(provider: str, input_tokens: int, output_tokens: int) -> float:
+    """Return USD cost for the given token counts based on provider pricing."""
+    if provider in ("ollama", "openai_compatible"):
+        rate_in  = _OPENAI_INPUT_RATE  * _OLLAMA_DISCOUNT
+        rate_out = _OPENAI_OUTPUT_RATE * _OLLAMA_DISCOUNT
+    else:                               # openai — pass through at cost, no markup
+        rate_in  = _OPENAI_INPUT_RATE
+        rate_out = _OPENAI_OUTPUT_RATE
+    return round(rate_in * input_tokens + rate_out * output_tokens, 8)
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate when the API doesn't return usage (e.g. local Ollama)."""
+    return max(1, int(len(text.split()) * 1.35))
+
+
 @router.post("/ai-generate")
 async def ai_generate_trainer(
     body: GenerateTrainerRequest,
@@ -440,17 +496,33 @@ async def ai_generate_trainer(
     Generate a complete trainer plugin from a natural-language description using the
     configured LLM. Returns the Python source that can be pasted directly into the editor.
     """
-    import os as _os
+    base_url, api_key, model_name, provider = _get_llm_config()
 
-    base_url   = _os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    api_key    = _os.environ.get("OPENAI_API_KEY", "")
-    model_name = _os.environ.get("OPENAI_MODEL", "gpt-4o")
-
-    if not api_key:
+    if not api_key or api_key == "key":
         raise HTTPException(
             status_code=503,
-            detail="LLM not configured. Set OPENAI_BASE_URL, OPENAI_API_KEY, and OPENAI_MODEL.",
+            detail="LLM not configured. Set LLM_PROVIDER, LLM_API_KEY, and LLM_MODEL.",
         )
+
+    # ── Billing: check + reserve ─────────────────────────────────────────────
+    job_id = str(uuid.uuid4())
+    reservation = _calc_token_cost(provider, 3_000, 4_096)   # ~7k tokens max
+    try:
+        from app.services import wallet_service as _ws
+        _wallet = await _ws.get_or_create(user.email, user.org_id or "")
+        if _ws.available(_wallet) < reservation:
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    f"Insufficient wallet balance to use AI features. "
+                    f"Need ~${reservation:.4f} USD. Top up your wallet."
+                ),
+            )
+        await _ws.reserve(_wallet, reservation, job_id, "AI Generate reservation")
+    except HTTPException:
+        raise
+    except Exception:
+        pass   # billing unavailable — allow through (safe fallback)
 
     ds_hints: dict[str, str] = {
         "dataset":    "Use DatasetDataSource(slug=..., auto_create_spec={...}) so the dataset is auto-created.",
@@ -479,6 +551,9 @@ async def ai_generate_trainer(
         + "\nOutput ONLY the Python source code."
     )
 
+    temperature = float(os.environ.get("LLM_TEMPERATURE", "0.3"))
+    max_tokens  = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
+
     try:
         import httpx
         async with httpx.AsyncClient(timeout=120) as http:
@@ -491,28 +566,45 @@ async def ai_generate_trainer(
                         {"role": "system", "content": _TRAINER_SYSTEM_PROMPT},
                         {"role": "user",   "content": user_prompt},
                     ],
-                    "temperature": 0.3,
-                    "max_tokens": 4096,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
                 },
             )
         resp.raise_for_status()
-        data    = resp.json()
-        code    = data["choices"][0]["message"]["content"].strip()
+        data = resp.json()
+        code = data["choices"][0]["message"]["content"].strip()
+
+        # ── Charge wallet for actual tokens used ─────────────────────────────
+        usage = data.get("usage", {})
+        in_tok  = usage.get("prompt_tokens")    or _estimate_tokens(user_prompt)
+        out_tok = usage.get("completion_tokens") or _estimate_tokens(code)
+        actual_cost = _calc_token_cost(provider, int(in_tok), int(out_tok))
+        try:
+            from app.services import wallet_service as _ws
+            _wallet2 = await _ws.get_or_create(user.email, user.org_id or "")
+            await _ws.release_and_charge(_wallet2, job_id, actual_cost)
+        except Exception:
+            pass
 
         # Strip markdown fences if the model wrapped the code anyway
         if code.startswith("```"):
-            lines = code.splitlines()
-            code  = "\n".join(
-                l for l in lines
-                if not l.strip().startswith("```")
-            ).strip()
+            code = "\n".join(l for l in code.splitlines() if not l.strip().startswith("```")).strip()
 
-        return {"code": code, "model": model_name}
+        return {"code": code, "model": model_name, "tokens": {"input": in_tok, "output": out_tok}, "cost_usd": actual_cost}
 
-    except httpx.HTTPStatusError as exc:
-        logger.error("ai_generate_failed", status=exc.response.status_code, body=exc.response.text[:500])
-        raise HTTPException(status_code=502, detail=f"LLM API error: {exc.response.status_code}")
+    except HTTPException:
+        raise
     except Exception as exc:
+        # Release reservation on failure
+        try:
+            from app.services import wallet_service as _ws
+            _wallet3 = await _ws.get_or_create(user.email, user.org_id or "")
+            await _ws.release_and_charge(_wallet3, job_id, 0.0)
+        except Exception:
+            pass
+        if hasattr(exc, "response"):
+            logger.error("ai_generate_failed", status=getattr(exc.response, "status_code", "?"), body=str(exc)[:400])
+            raise HTTPException(status_code=502, detail=f"LLM API error: {getattr(exc.response, 'status_code', exc)}")
         logger.error("ai_generate_error", error=str(exc))
         raise HTTPException(status_code=502, detail=f"LLM request failed: {exc}")
 
@@ -523,31 +615,93 @@ _CHAT_SYSTEM_PROMPT = """\
 You are an expert ML engineer assistant helping a user design and build a trainer plugin for MLDock.
 Engage in focused, practical conversation to understand requirements, then generate production-ready code.
 
-CONVERSATION RULES:
-1. First response: Acknowledge the idea, then ask exactly ONE key question about the most critical
-   unknown — usually: what columns are in the data, what the prediction target is, or what the
-   merge key is when combining multiple data sources.
-2. Subsequent responses: Give a concise helpful answer and ask at most ONE follow-up question.
-3. CSV/dataset schema provided: analyze it, suggest which columns are features vs target,
-   highlight the unique identifier (customer_id, transaction_id, etc.) for dataset merging.
-4. Multi-dataset merging: explain how preprocess() will join them on the shared key.
-5. Suggest output_schema with derived metrics: segment labels, scores, feature importances,
-   cluster counts, silhouette score, probabilities, etc.
-6. When confident OR generate_now=True: generate the FULL trainer code.
+━━ SCOPE EVALUATION (always assess this) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-CODE GENERATION FORMAT:
-Wrap code in exactly this tag:
+Before diving into requirements, mentally assess:
+
+1. CAN A TRAINER BE BUILT FOR THIS?
+   → Identify the model type: classification / regression / clustering / anomaly /
+     NLP / image / time-series / custom
+   → Identify what the model should return per inference: the output fields and their types
+   → If feasible — say so briefly and proceed
+   → If not feasible (e.g. user asks for real-time video processing, live audio, web scraping) —
+     explain why it's outside a trainer's scope and suggest what IS possible
+
+2. SCOPE WARNING for complex projects:
+   If the request involves: large image datasets (zip of images, segmentation, detection, OCR,
+   plate recognition), video frames, real-time streams, multi-modal data, or highly custom
+   architectures:
+   → Acknowledge upfront: "This is a larger-scope project. I can build a working trainer, but
+     production-quality results for [task] typically require significant data, GPU resources,
+     and hyperparameter tuning. Results should be validated by a domain expert."
+   → Then proceed — build the best trainer possible given the constraints.
+
+3. DEFAULT DEFENSE MECHANISM (non-negotiable):
+   Every trainer you generate MUST begin with this comment block:
+   # ⚠ AI-GENERATED TRAINER
+   # Review by a qualified data scientist or ML engineer before production use.
+   # Validate output quality on your specific dataset. For complex tasks
+   # (image segmentation, object detection, NLP at scale), expert review is essential.
+
+━━ FIRST RESPONSE RULES (critical) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Check what data context you have BEFORE asking any technical questions:
+
+CASE A — No CSV uploaded AND no dataset selected:
+  → DO NOT ask about column names. You don't know what data they have yet.
+  → Acknowledge the idea warmly (1 sentence), briefly state what model type would suit it
+    and what outputs it would produce, then say:
+    "To get started, could you either:
+     • Upload a CSV or Excel file using the Upload Data button below, or
+     • Describe your data — what fields/columns you typically have and roughly how many rows?"
+  → Nothing else. One clear ask.
+
+CASE B — CSV schema IS available (shown in CONTEXT section):
+  → Acknowledge the idea (1 sentence).
+  → State the recommended model type and expected outputs.
+  → Immediately analyze the schema: identify likely features, target column, and unique ID field.
+  → Ask ONE focused question about anything ambiguous.
+
+CASE C — Platform dataset IS selected:
+  → Acknowledge the idea (1 sentence).
+  → State the recommended model type and expected outputs.
+  → Reference the dataset fields shown in CONTEXT.
+  → Ask ONE question to clarify the task goal if needed, or proceed to generate.
+
+CASE D — Data inspection summary received (user just cleaned/uploaded data):
+  → Act like a senior data scientist receiving a brief.
+  → State clearly: what model type fits, what the target variable likely is, what features
+    to use, what algorithm to start with, and what output fields the trainer should produce.
+  → If anything is ambiguous, ask ONE focused question. Otherwise generate.
+
+━━ SUBSEQUENT RESPONSES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Give a helpful answer and ask at most ONE follow-up question per turn.
+- If user describes columns in text: treat that as the schema — analyze and proceed.
+- Multi-dataset merging: identify the shared join key, explain how preprocess() will merge them.
+- Suggest output_schema with derived metrics: segment labels, scores, feature importances,
+  cluster counts, probabilities, confidence intervals, etc.
+- When you have enough information OR generate_now=True: generate the FULL trainer code.
+
+━━ CODE GENERATION FORMAT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+When you generate trainer code you MUST use EXACTLY this wrapper — no markdown fences inside it:
+
 <CODE_START filename="descriptive_snake_case.py">
-...python code here...
+# paste raw Python here — no ```python, no backticks
 </CODE_START>
 
-After the code block, optionally add suggestions:
+CRITICAL: Do NOT wrap the code block in backticks. Do NOT put ```python inside <CODE_START>.
+The filename attribute must be snake_case.py derived from the class name.
+
+After the closing tag, optionally add ONE line:
 SUGGESTIONS: Refine the algorithm | Add more features | Explain output fields | Test with sample data
 
-STYLE:
-- Be concise: max 2 short paragraphs of text (outside code)
-- No verbose explanations unless asked
-- Practical, actionable guidance
+━━ STYLE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Max 2 short paragraphs of text (outside code blocks)
+- Never ask multiple questions at once
+- Never ask about column names when you have no data context yet — ask for the file first
 """
 
 _CHAT_CODE_INSTRUCTIONS = """
@@ -559,8 +713,179 @@ OUTPUT SCHEMA — always include derived metrics relevant to the task:
   - regression: {"prediction": {"type": "float"}, "confidence_interval": {"type": "dict"}}
   - anomaly: {"is_anomaly": {"type": "bool"}, "anomaly_score": {"type": "float"}, "reason": {"type": "str"}}
 
+DATA LOADING — CRITICAL (read carefully):
+  ALL data loading goes through DatasetDataSource. NEVER hard-code file paths.
+
+  THE THREE FIELD LABELS ARE ALWAYS AND ONLY:
+    "Original Upload"  — the raw file the user uploaded
+    "Clean Copy"       — cleaned version (may be absent)
+    "Cleaning Code"    — preprocessing script (file, may be absent)
+
+  NEVER use field labels derived from the user's description of their data.
+  Even if the user says "I have transaction data and customer profiles",
+  the ACTUAL field labels in the workshop dataset are always exactly the three above.
+  The user's data is stored INSIDE the uploaded file — it is not split into separate fields.
+
+  ❌ WRONG (do not generate this — ever):
+    trans_data   = [e for e in raw if e.get('field_label') == 'Transaction Data' ...]
+    profile_data = [e for e in raw if e.get('field_label') == 'Customer Profile Data' ...]
+    sales        = [e for e in raw if e.get('field_label') == 'Sales CSV' ...]
+
+  ✅ CORRECT (copy this exactly — field_label is always one of the three workshop labels):
+    clean = [e for e in raw if e.get('field_label') == 'Clean Copy' and (e.get('file_key') or e.get('file_url'))]
+    orig  = [e for e in raw if e.get('field_label') == 'Original Upload' and (e.get('file_key') or e.get('file_url'))]
+    all_f = [e for e in raw if e.get('field_type') == 'file' and (e.get('file_key') or e.get('file_url'))]
+    entry = clean or orig or all_f
+
+  data_source MUST always be DatasetDataSource with these three fields:
+    fields=[
+      {"label": "Original Upload", "type": "file", "required": True},
+      {"label": "Clean Copy",      "type": "file", "required": False},
+      {"label": "Cleaning Code",   "type": "file", "required": False},
+    ]
+
+  CRITICAL: preprocess(self, raw) receives a LIST OF DICTS (not a dict).
+  Each dict has keys: field_label, field_type, file_url, file_key, text_value, etc.
+  file_url is a presigned S3 URL; file_key is the raw S3 object key.
+
+  ALWAYS use self._fetch_bytes(file_key, file_url) — a method on BaseTrainer that
+  reads directly from S3 (reliable) and falls back to the presigned URL automatically.
+  Do NOT define your own _fetch_bytes — it is already available on self.
+
+  CORRECT pattern — copy this exactly:
+    import io
+    clean = [e for e in raw if e.get('field_label') == 'Clean Copy' and (e.get('file_key') or e.get('file_url'))]
+    orig  = [e for e in raw if e.get('field_label') == 'Original Upload' and (e.get('file_key') or e.get('file_url'))]
+    all_f = [e for e in raw if e.get('field_type') == 'file' and (e.get('file_key') or e.get('file_url'))]
+    entry = clean or orig or all_f
+    if not entry:
+        raise ValueError("No file data in dataset — upload a CSV via the Datasets page.")
+    e = entry[-1]
+    content = self._fetch_bytes(e.get('file_key'), e.get('file_url'))
+    if content is None:
+        raise ValueError("Could not fetch file from storage.")
+    fname = (e.get('file_key') or '').split('/')[-1].lower()
+    if fname.endswith(('.xlsx', '.xls')):
+        df = pd.read_excel(io.BytesIO(content))
+    else:
+        try:
+            df = pd.read_csv(io.BytesIO(content))
+        except Exception:
+            df = pd.read_csv(io.BytesIO(content), on_bad_lines='skip', engine='python')
+
+  CSV READ RULE — ALWAYS use the try/except fallback above. NEVER use a bare read_csv:
+    ❌ WRONG — crashes on CSVs with unquoted commas or extra fields:
+        df = pd.read_csv(io.BytesIO(content))
+
+    ✅ CORRECT — always copy this exact pattern:
+        try:
+            df = pd.read_csv(io.BytesIO(content))
+        except Exception:
+            df = pd.read_csv(io.BytesIO(content), on_bad_lines='skip', engine='python')
+
+  This applies to EVERY pd.read_csv call in preprocess() — no exceptions.
+  Real-world CSVs frequently have unquoted commas in fields (e.g. addresses, descriptions)
+  that cause "Expected N fields, saw N+1" ParserError with the default C engine.
+
+  If UPLOADED DATASET slug is provided in CONTEXT use that slug exactly.
+
+  FORBIDDEN:
+    - field labels other than "Original Upload", "Clean Copy", "Cleaning Code" in preprocess()
+    - raw.get('clean_copy'), raw['original_upload'], raw.get('data_file')
+    - pd.read_excel('/any/path'), pd.read_csv('/any/path'), open('/any/path')
+    - bare pd.read_csv(buf) without the try/except fallback shown above
+  raw is a LIST — it has no .get() method. Always iterate with a list comprehension.
+
 DATASET MERGING — when multiple sources must be merged on a unique key:
   preprocess() should: load all sources → merge on unique_id → feature engineer → return DataFrame
+
+PREDICT() — CRITICAL (read carefully):
+  predict(self, model, inputs) is called at INFERENCE TIME on a FRESH trainer instance.
+  Anything stored on self during preprocess() or train() is GONE.
+
+  NEVER store fitted transformers on self and use them in predict():
+    ❌ WRONG — self.scaler lost at inference time:
+        def preprocess(self, raw):
+            self.scaler = StandardScaler()
+            X_scaled = self.scaler.fit_transform(X)
+            ...
+        def predict(self, model, inputs):
+            scaled = self.scaler.transform(...)   # AttributeError at runtime!
+
+  TWO CORRECT PATTERNS — pick one:
+
+  OPTION A — sklearn Pipeline (recommended for supervised tabular models):
+    Put scaler, encoder, imputer as Pipeline steps so they are saved and loaded
+    automatically as part of the model artifact. auto_train_tabular() already
+    returns a Pipeline — scaler is always bundled when you use it.
+
+    ✅ CORRECT (manual Pipeline):
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.ensemble import RandomForestClassifier
+
+        def train(self, preprocessed, config):
+            pipeline = Pipeline([
+                ('scaler', StandardScaler()),
+                ('clf',    RandomForestClassifier(n_estimators=200, random_state=config.random_seed)),
+            ])
+            pipeline.fit(X_train, y_train)
+            return pipeline                    # scaler saved inside MLflow artifact
+
+        def predict(self, model, inputs):
+            import pandas as pd
+            row = pd.DataFrame([[inputs['f1'], inputs['f2']]], columns=['f1', 'f2'])
+            pred = model.predict(row)[0]       # Pipeline scales + predicts automatically
+            return {"label": str(pred)}
+
+  OPTION B — TrainerBundle (required for unsupervised models or multi-artifact cases):
+    from app.abstract.base_trainer import TrainerBundle
+
+    ✅ CORRECT (KMeans example — Pipeline is awkward for unsupervised):
+        def train(self, preprocessed, config):
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.cluster import KMeans
+
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
+            kmeans = KMeans(n_clusters=4, random_state=config.random_seed)
+            kmeans.fit(X_scaled)
+
+            return TrainerBundle(
+                model=kmeans,
+                scaler=scaler,
+                feature_names=list(df.columns),
+                label_map={0: "Low Value", 1: "Mid Value", 2: "High Value", 3: "VIP"},
+            )
+
+        def predict(self, model: TrainerBundle, inputs: dict) -> dict:
+            import pandas as pd
+            row = pd.DataFrame([[inputs[f] for f in model.feature_names]],
+                               columns=model.feature_names)
+            X_scaled = model.scaler.transform(row)
+            cluster   = int(model.model.predict(X_scaled)[0])
+            label     = model.label_map.get(cluster, str(cluster))
+            return {"segment": cluster, "segment_label": label}
+
+  FILE INPUTS (base64) — when input_schema has a "file" type field, the value
+  in inputs[key] is BASE64-ENCODED bytes (the caller uploaded a CSV/image).
+  ALWAYS decode it before use:
+
+    ✅ CORRECT pattern for a CSV file input:
+        def predict(self, model, inputs):
+            import base64, io, pandas as pd
+            csv_bytes = base64.b64decode(inputs['transaction_data'])
+            df = pd.read_csv(io.StringIO(csv_bytes.decode('utf-8')))
+            preds = model.predict(df[self.get_feature_names()])
+            return {"predictions": preds.tolist(), "count": len(preds)}
+
+  SCALERS THAT APPLY TO ALL CASES:
+    - StandardScaler   → use when feature magnitudes differ (most tabular data)
+    - MinMaxScaler     → use when output must be 0–1 range
+    - RobustScaler     → use when data has significant outliers
+    - No scaler        → tree-based models (RF, GBM, XGB) do NOT need a scaler;
+                         auto_train_tabular() only applies StandardScaler to features
+                         alongside ordinal encoding for categoricals inside the Pipeline
 
 TEMPLATE CONTRACT:
 """ + _TRAINER_SYSTEM_PROMPT
@@ -579,6 +904,8 @@ class AiChatRequest(BaseModel):
     csv_schema: Optional[dict] = None          # {"columns": [...], "sample_rows": [[...]]}
     available_datasets: Optional[List[dict]] = None
     generate_now: bool = False
+    uploaded_dataset_slug: Optional[str] = None
+    uploaded_dataset_id: Optional[str] = None
 
 
 def _pascal_to_snake(name: str) -> str:
@@ -596,18 +923,39 @@ async def ai_chat_trainer(
     Multi-turn conversational trainer design.
     Returns a chat response (text) + optionally extracted Python code.
     """
-    import os as _os
     import re as _re
 
-    base_url   = _os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    api_key    = _os.environ.get("OPENAI_API_KEY", "")
-    model_name = _os.environ.get("OPENAI_MODEL", "gpt-4o")
+    base_url, api_key, model_name, provider = _get_llm_config()
 
-    if not api_key:
+    if not api_key or api_key == "key":
         raise HTTPException(
             status_code=503,
-            detail="LLM not configured. Set OPENAI_BASE_URL, OPENAI_API_KEY, and OPENAI_MODEL.",
+            detail="LLM not configured. Set LLM_PROVIDER, LLM_API_KEY, and LLM_MODEL.",
         )
+
+    # ── Billing: check balance + reserve ─────────────────────────────────────
+    chat_job_id  = str(uuid.uuid4())
+    # Estimate: full conversation history + system prompt + generous output
+    history_chars = sum(len(m.content) for m in body.messages)
+    est_in   = max(2_000, int(history_chars / 4) + 1_500)   # chars÷4 ≈ tokens + system prompt
+    est_out  = int(os.environ.get("LLM_MAX_TOKENS", "6000"))
+    reservation = _calc_token_cost(provider, est_in, est_out)
+    try:
+        from app.services import wallet_service as _ws
+        _wallet = await _ws.get_or_create(user.email, user.org_id or "")
+        if _ws.available(_wallet) < max(reservation, 0.001):
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    f"Insufficient wallet balance to use AI features. "
+                    f"Estimated cost ~${reservation:.4f} USD. Top up your wallet."
+                ),
+            )
+        await _ws.reserve(_wallet, reservation, chat_job_id, "AI Workshop chat reservation")
+    except HTTPException:
+        raise
+    except Exception:
+        pass   # billing unavailable — allow through
 
     # ── Build context section ────────────────────────────────────────────────
     ctx_parts: list[str] = []
@@ -639,6 +987,42 @@ async def ai_chat_trainer(
     }
     ctx_parts.append(f"DATA SOURCE: {ds_hints.get(body.data_source_type, body.data_source_type)}")
 
+    if body.uploaded_dataset_slug:
+        ctx_parts.append(
+            f"UPLOADED DATASET — MANDATORY: use this exact slug in data_source:\n"
+            f"  slug = \"{body.uploaded_dataset_slug}\"\n\n"
+            f"  data_source = DatasetDataSource(\n"
+            f"      slug=\"{body.uploaded_dataset_slug}\",\n"
+            f"      auto_create_spec={{\"name\": \"AI Workshop Data\", \"fields\": [\n"
+            f"          {{\"label\": \"Original Upload\", \"type\": \"file\", \"required\": True}},\n"
+            f"          {{\"label\": \"Clean Copy\", \"type\": \"file\", \"required\": False}},\n"
+            f"          {{\"label\": \"Cleaning Code\", \"type\": \"file\", \"required\": False}},\n"
+            f"      ]}},\n"
+            f"  )\n\n"
+            f"  Dataset fields:\n"
+            f"    'Original Upload' — raw CSV uploaded by the user (file)\n"
+            f"    'Clean Copy'      — cleaned version after preprocessing (file, may be absent)\n"
+            f"    'Cleaning Code'   — Python preprocessing script stored as .py file\n\n"
+            f"  NOTE: use self._fetch_bytes(file_key, file_url) — built-in BaseTrainer method.\n\n"
+            f"  CORRECT preprocess() pattern:\n"
+            f"    import io\n"
+            f"    clean = [e for e in raw if e.get('field_label') == 'Clean Copy' and (e.get('file_key') or e.get('file_url'))]\n"
+            f"    orig  = [e for e in raw if e.get('field_label') == 'Original Upload' and (e.get('file_key') or e.get('file_url'))]\n"
+            f"    entry = clean or orig\n"
+            f"    if not entry: raise ValueError('No data in dataset — upload a CSV via the Datasets page.')\n"
+            f"    e = entry[-1]\n"
+            f"    content = self._fetch_bytes(e.get('file_key'), e.get('file_url'))\n"
+            f"    if content is None: raise ValueError('Could not fetch file from storage.')\n"
+            f"    fname = (e.get('file_key') or '').split('/')[-1].lower()\n"
+            f"    if fname.endswith(('.xlsx','.xls')):\n"
+            f"        df = pd.read_excel(io.BytesIO(content))\n"
+            f"    else:\n"
+            f"        try:\n"
+            f"            df = pd.read_csv(io.BytesIO(content))\n"
+            f"        except Exception:\n"
+            f"            df = pd.read_csv(io.BytesIO(content), on_bad_lines='skip', engine='python')"
+        )
+
     if body.framework not in ("auto",):
         ctx_parts.append(f"FRAMEWORK: {body.framework}")
     if body.class_name:
@@ -659,6 +1043,9 @@ async def ai_chat_trainer(
         llm_messages.append({"role": m.role, "content": m.content})
 
     # ── Call LLM ─────────────────────────────────────────────────────────────
+    temperature = float(os.environ.get("LLM_TEMPERATURE", "0.35"))
+    max_tokens  = int(os.environ.get("LLM_MAX_TOKENS", "6000"))
+
     try:
         import httpx
         async with httpx.AsyncClient(timeout=180) as http:
@@ -668,13 +1055,36 @@ async def ai_chat_trainer(
                 json={
                     "model": model_name,
                     "messages": llm_messages,
-                    "temperature": 0.35,
-                    "max_tokens": 6000,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
                 },
             )
         resp.raise_for_status()
-        raw: str = resp.json()["choices"][0]["message"]["content"].strip()
+        resp_data = resp.json()
+        raw: str  = resp_data["choices"][0]["message"]["content"].strip()
+
+        # ── Charge wallet for actual tokens ──────────────────────────────────
+        usage   = resp_data.get("usage", {})
+        in_tok  = usage.get("prompt_tokens")    or _estimate_tokens(" ".join(m["content"] for m in llm_messages))
+        out_tok = usage.get("completion_tokens") or _estimate_tokens(raw)
+        actual_cost = _calc_token_cost(provider, int(in_tok), int(out_tok))
+        try:
+            from app.services import wallet_service as _ws
+            _wallet2 = await _ws.get_or_create(user.email, user.org_id or "")
+            await _ws.release_and_charge(_wallet2, chat_job_id, actual_cost)
+        except Exception:
+            pass
+
+    except HTTPException:
+        raise
     except Exception as exc:
+        # Release reservation on failure
+        try:
+            from app.services import wallet_service as _ws
+            _wallet3 = await _ws.get_or_create(user.email, user.org_id or "")
+            await _ws.release_and_charge(_wallet3, chat_job_id, 0.0)
+        except Exception:
+            pass
         logger.error("ai_chat_failed", error=str(exc))
         raise HTTPException(status_code=502, detail=f"LLM request failed: {exc}")
 
@@ -682,26 +1092,59 @@ async def ai_chat_trainer(
     code: Optional[str] = None
     filename: Optional[str] = None
 
+    def _derive_filename(src: str) -> str:
+        """Derive snake_case.py filename from the first class name in the code."""
+        m = _re.search(r'class\s+(\w+)\s*\(BaseTrainer\)', src)
+        if not m:
+            m = _re.search(r'class\s+(\w+)', src)
+        return (_pascal_to_snake(m.group(1)) + ".py") if m else "generated_trainer.py"
+
+    def _strip_fences(src: str) -> str:
+        """Remove any ``` ... ``` wrapper lines from extracted code."""
+        lines = src.splitlines()
+        return "\n".join(l for l in lines if not _re.match(r'\s*```', l)).strip()
+
+    # Pass 1 — explicit <CODE_START filename="..."> tag (our preferred format)
     code_match = _re.search(
-        r'<CODE_START\s+filename=["\']([^"\']+)["\']>(.*?)</CODE_START>',
-        raw, _re.DOTALL,
+        r'<CODE_START\s+filename=["\']([^"\']+)["\']>\s*(.*?)\s*</CODE_START>',
+        raw, _re.DOTALL | _re.IGNORECASE,
     )
     if code_match:
         filename = code_match.group(1).strip()
-        code = code_match.group(2).strip()
+        code = _strip_fences(code_match.group(2).strip())
         raw = (raw[:code_match.start()] + raw[code_match.end():]).strip()
-    else:
-        # Fallback: fenced python block that contains a BaseTrainer class
-        fence = _re.search(r'```(?:python)?\n(.*?)```', raw, _re.DOTALL)
-        if fence and "BaseTrainer" in fence.group(1):
-            code = fence.group(1).strip()
-            cls_m = _re.search(r'class\s+(\w+)\s*\(BaseTrainer\)', code)
-            filename = (_pascal_to_snake(cls_m.group(1)) + ".py") if cls_m else "generated_trainer.py"
-            raw = (raw[:fence.start()] + raw[fence.end():]).strip()
 
-    # Strip any remaining markdown fences
-    if code and code.startswith("```"):
-        code = "\n".join(l for l in code.splitlines() if not l.strip().startswith("```")).strip()
+    # Pass 2 — <CODE_START> without filename attribute
+    if not code:
+        code_match2 = _re.search(r'<CODE_START[^>]*>\s*(.*?)\s*</CODE_START>', raw, _re.DOTALL | _re.IGNORECASE)
+        if code_match2:
+            code = _strip_fences(code_match2.group(1).strip())
+            filename = _derive_filename(code)
+            raw = (raw[:code_match2.start()] + raw[code_match2.end():]).strip()
+
+    # Pass 3 — any fenced block (```python, ```py, ``` Python, ``` , etc.)
+    if not code:
+        fence = _re.search(r'```[a-zA-Z]*[ \t]*\n(.*?)```', raw, _re.DOTALL)
+        if fence:
+            candidate = fence.group(1).strip()
+            # Only treat as trainer code if it looks like Python
+            if candidate and ('def ' in candidate or 'class ' in candidate or 'import ' in candidate):
+                code = _strip_fences(candidate)
+                filename = _derive_filename(code)
+                raw = (raw[:fence.start()] + raw[fence.end():]).strip()
+
+    # Pass 4 — bare class block (no fences at all) with BaseTrainer
+    if not code:
+        cls_start = _re.search(r'^(class\s+\w+\s*\(BaseTrainer\))', raw, _re.MULTILINE)
+        if cls_start:
+            code = raw[cls_start.start():].strip()
+            filename = _derive_filename(code)
+            raw = raw[:cls_start.start()].strip()
+
+    # Final cleanup: strip any still-leaked tags from message text
+    raw = _re.sub(r'</?CODE_START[^>]*>', '', raw).strip()
+    # Strip any remaining markdown fences left in message text
+    raw = _re.sub(r'```[a-zA-Z]*[ \t]*\n.*?```', '', raw, flags=_re.DOTALL).strip()
 
     # ── Extract SUGGESTIONS: line ─────────────────────────────────────────────
     suggestions: list[str] = []
@@ -718,12 +1161,144 @@ async def ai_chat_trainer(
     # Remove any residual markdown code fences from message text
     message_text = _re.sub(r'```.*?```', '', message_text, flags=_re.DOTALL).strip()
 
+    # When code was generated, replace the (often verbose) explanation with a short
+    # actionable note so the chat stays clean — the code belongs in the editor panel.
+    if code:
+        message_text = f"Trainer ready — check the **Code** tab to review and edit `{filename}`."
+
     return {
         "message": message_text,
         "code": code,
         "filename": filename,
         "suggestions": suggestions[:4],
         "has_code": code is not None,
+        "debug": {
+            "tokens": {"input": int(in_tok), "output": int(out_tok), "total": int(in_tok) + int(out_tok)},
+            "cost_usd": actual_cost,
+            "model": model_name,
+        },
+    }
+
+
+# ── Create dataset from CSV upload (AI Workshop helper) ───────────────────────
+
+class CreateDatasetFromCsvRequest(BaseModel):
+    name: str
+    description: str = ""
+    filename: str
+    csv_b64: str           # base64-encoded file bytes
+    content_type: str = "text/csv"
+    session_id: str = ""   # AI Workshop session GUID — used as slug for get-or-create
+
+
+@router.post("/datasets/from-csv", status_code=201)
+async def create_dataset_from_csv(
+    body: CreateDatasetFromCsvRequest,
+    user=Depends(require_roles("engineer", "admin")),
+):
+    """
+    Get-or-create a dataset for an AI Workshop session and seed it with CSV data.
+
+    If session_id is provided it is used as the dataset slug, so the same dataset
+    is reused across multiple uploads within the same workshop session.  Only the
+    Original Upload field is refreshed with new data on each call.
+    """
+    import base64 as _b64
+    import io as _io
+    import re as _re2
+    from fastapi import UploadFile as _UploadFile
+    import app.services.dataset_service as _ds_svc
+    from app.models.dataset import DatasetProfile as _DatasetProfile
+
+    # Derive slug: prefer session_id (stable across uploads), fall back to name-based
+    if body.session_id:
+        slug = f"ws-{body.session_id[:36]}"
+        slug = _re2.sub(r"[^a-z0-9\-]", "", slug)[:56] or "ai-workshop-data"
+    else:
+        slug = body.name.lower().replace(" ", "-")
+        slug = _re2.sub(r"[^a-z0-9\-]", "", slug)[:48] or "ai-workshop-data"
+
+    # ── Try to find an existing dataset with this slug ────────────────────────
+    profile = None
+    try:
+        existing = await _DatasetProfile.find_one(
+            {"org_id": user.org_id, "slug": slug, "deleted_at": None}
+        )
+        if existing:
+            profile = existing
+    except Exception:
+        pass
+
+    # ── Create if not found ───────────────────────────────────────────────────
+    if profile is None:
+        dataset_data = {
+            "name": body.name,
+            "slug": slug,
+            "description": body.description or f"Auto-created from AI Workshop: {body.filename}",
+            "category": "tabular",
+            "fields": [
+                {
+                    "label": "Original Upload",
+                    "instruction": "Upload the original CSV or Excel file as received",
+                    "type": "file",
+                    "capture_mode": "upload_only",
+                    "required": True,
+                    "order": 0,
+                },
+                {
+                    "label": "Clean Copy",
+                    "instruction": "Upload the cleaned version of the data (after preprocessing / fixing issues)",
+                    "type": "file",
+                    "capture_mode": "upload_only",
+                    "required": False,
+                    "order": 1,
+                },
+                {
+                    "label": "Cleaning Code",
+                    "instruction": "Python trainer or preprocessing code generated by AI (.py file)",
+                    "type": "file",
+                    "capture_mode": "upload_only",
+                    "required": False,
+                    "order": 2,
+                },
+            ],
+            "visibility": "private",
+        }
+        try:
+            profile = await _ds_svc.create_dataset(
+                user.org_id, dataset_data, user.email, acting_email=user.email
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to create dataset: {exc}")
+
+    fields_by_label = {f.label: str(f.id) for f in profile.fields}
+    original_field_id = fields_by_label.get("Original Upload", str(profile.fields[0].id))
+    clean_field_id    = fields_by_label.get("Clean Copy", "")
+    code_field_id     = fields_by_label.get("Cleaning Code", "")
+
+    # Seed / refresh Original Upload field with the provided CSV (best-effort)
+    try:
+        raw_bytes = _b64.b64decode(body.csv_b64)
+        file_obj = _io.BytesIO(raw_bytes)
+        fake_upload = _UploadFile(
+            filename=body.filename,
+            file=file_obj,
+            headers={"content-type": body.content_type},
+        )
+        await _ds_svc.upload_entry_direct(
+            user.org_id, str(profile.id), original_field_id, fake_upload, None, user.email
+        )
+    except Exception:
+        pass
+
+    return {
+        "dataset_id": str(profile.id),
+        "dataset_slug": profile.slug,
+        "dataset_name": profile.name,
+        "field_id": original_field_id,          # kept for backwards compat
+        "original_field_id": original_field_id,
+        "clean_field_id": clean_field_id,
+        "code_field_id": code_field_id,
     }
 
 

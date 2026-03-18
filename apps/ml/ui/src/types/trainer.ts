@@ -41,6 +41,7 @@ export interface ModelDeployment {
   tags: Record<string, string>
   category: Record<string, string>  // { key: 'ocr', label: 'OCR & Vision' }
   visibility: 'viewer' | 'engineer'  // 'viewer' = all roles, 'engineer' = engineer/admin only
+  data_source_info?: Record<string, unknown>
   created_at: string
 }
 
@@ -58,6 +59,7 @@ export interface SchemaField {
   step?: number
   unit?: string        // e.g. "cm", "kg"
   example?: unknown    // shown as hint text
+  sample_url?: string  // URL to a downloadable sample file (shown as a link in the file upload widget)
 }
 
 export interface OutputSchemaField {

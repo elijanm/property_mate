@@ -1,6 +1,9 @@
 """Dataset management API — admin/engineer endpoints."""
+import csv
+import io
 from typing import Optional, List
 from fastapi import APIRouter, Depends, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.dependencies.auth import RequireEngineer
@@ -207,6 +210,55 @@ async def get_dataset_overview(dataset_id: str, user: MLUser = RequireEngineer):
     return await svc.get_dataset_overview(user.org_id, dataset_id)
 
 
+@router.get("/{dataset_id}/export")
+async def export_dataset_csv(dataset_id: str, user: MLUser = RequireEngineer):
+    """
+    Export all entries as a CSV file.
+    Columns: entry_id, field_label, field_type, text_value, file_url, collector_id,
+             captured_at, review_status.
+    File entries include their presigned S3 URL in the file_url column.
+    """
+    profile = await svc.get_dataset(user.org_id, dataset_id)
+    entries = await svc.get_entries(user.org_id, dataset_id)
+
+    field_map = {f.id: f for f in profile.fields}
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "entry_id", "field_label", "field_type",
+        "text_value", "file_url",
+        "collector_id", "captured_at", "review_status",
+    ])
+    for entry in entries:
+        field = field_map.get(entry.get("field_id", ""))
+        # file_url is the proxy path (/api/v1/…/file) or a MEDIA_BASE_URL public URL;
+        # for the CSV export we want a direct download link so prefer a fresh presigned
+        # URL from the raw file_key, falling back to the proxy path.
+        from app.utils.s3_url import generate_presigned_url as _presign
+        file_key = entry.get("file_key") or ""
+        file_url = (_presign(file_key) if file_key else "") or entry.get("file_url") or ""
+        writer.writerow([
+            entry.get("id", ""),
+            field.label if field else entry.get("field_id", ""),
+            field.type if field else "",
+            entry.get("text_value") or "",
+            file_url,
+            entry.get("collector_id", ""),
+            entry.get("captured_at", ""),
+            entry.get("review_status", ""),
+        ])
+
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in profile.name)[:48]
+    filename = f"{safe_name}_entries.csv"
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/by-slug/{slug}")
 async def get_dataset_by_slug(slug: str, user: MLUser = RequireEngineer):
     """Look up a dataset by its slug (URL-friendly name) instead of ID."""
@@ -246,3 +298,14 @@ async def review_entry(dataset_id: str, entry_id: str, body: EntryReviewRequest,
 async def delete_entry(dataset_id: str, entry_id: str, user: MLUser = RequireEngineer):
     """Permanently delete a dataset entry and its S3 file."""
     await svc.delete_entry(user.org_id, dataset_id, entry_id)
+
+
+@router.get("/{dataset_id}/entries/{entry_id}/file")
+async def proxy_entry_file(dataset_id: str, entry_id: str, user: MLUser = RequireEngineer):
+    """
+    Proxy an entry's S3 file through the backend.
+    Used when MEDIA_BASE_URL / S3_PUBLIC_ENDPOINT_URL are not configured
+    (e.g. dev with internal minio:9000).  Accepts auth via Bearer header
+    or ?token= query param so <img src="…"> / <a href="…"> links work.
+    """
+    return await svc.proxy_entry_file(user.org_id, dataset_id, entry_id)

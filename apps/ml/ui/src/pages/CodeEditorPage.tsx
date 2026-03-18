@@ -10,6 +10,7 @@ import {
   MessageSquare,
 } from 'lucide-react'
 import { editorApi, type FileNode, type EditorDataset } from '@/api/editor'
+import { configApi } from '@/api/config'
 import { walletApi } from '@/api/wallet'
 import { datasetsApi } from '@/api/datasets'
 import { trainersApi } from '@/api/trainers'
@@ -31,6 +32,16 @@ interface LogLine {
   id: number
   text: string
   type: 'info' | 'error' | 'done' | 'connected'
+}
+
+interface SavedAiSession {
+  id: string
+  title: string          // first user message (truncated)
+  messages: AiChatMsg[]
+  session: AiSession
+  generatedCode: string
+  generatedFilename: string
+  savedAt: number
 }
 
 // ── File Explorer ─────────────────────────────────────────────────────────────
@@ -364,6 +375,597 @@ function QuotaBar({ wallet }: { wallet: WalletData | null }) {
   )
 }
 
+// ── Data inspection pipeline (browser-side, no LLM) ─────────────────────────
+
+interface ColumnProfile {
+  name: string
+  type: 'numeric' | 'categorical' | 'datetime' | 'id' | 'text'
+  total: number
+  missing: number
+  missingPct: number
+  unique: number
+  sample: string[]
+  min?: number; max?: number; mean?: number; std?: number; outliers?: number
+}
+
+interface DataInspection {
+  filename: string
+  rowCount: number
+  colCount: number
+  duplicateRows: number
+  columns: ColumnProfile[]
+  suggestions: CleaningSuggestion[]
+  rawColumns: string[]
+  rawRows: string[][]
+}
+
+type SuggestionActionType =
+  | 'drop_column' | 'drop_duplicates'
+  | 'impute_median' | 'impute_mean' | 'impute_mode' | 'impute_unknown'
+  | 'drop_missing_rows' | 'flag_outliers'
+
+interface SuggestionAlternative {
+  type: SuggestionActionType
+  label: string
+}
+
+interface CleaningSuggestion {
+  id: string
+  type: SuggestionActionType      // recommended default action
+  column?: string
+  problem: string                 // what is wrong
+  recommendation: string          // what we suggest and why
+  severity: 'high' | 'medium' | 'low'
+  autoFixable: boolean
+  alternatives: SuggestionAlternative[]
+}
+
+const MISSING_VALUES = new Set(['', 'null', 'none', 'na', 'n/a', 'nan', 'undefined', '-', '--', '?'])
+
+function isMissing(v: string) { return MISSING_VALUES.has(v.toLowerCase().trim()) }
+
+function detectType(col: string, values: string[]): ColumnProfile['type'] {
+  const nonNull = values.filter(v => !isMissing(v))
+  if (nonNull.length === 0) return 'categorical'
+  const isNumeric = nonNull.every(v => !isNaN(Number(v)) && v.trim() !== '')
+  if (isNumeric) {
+    // Likely an ID if all unique integers with no decimals
+    const nums = nonNull.map(Number)
+    if (nums.every(n => Number.isInteger(n)) && new Set(nonNull).size === nonNull.length && nonNull.length > 10) {
+      const colLower = col.toLowerCase()
+      if (colLower.includes('id') || colLower.includes('key') || colLower.includes('code')) return 'id'
+    }
+    return 'numeric'
+  }
+  const datePatterns = [/^\d{4}-\d{2}-\d{2}/, /^\d{2}\/\d{2}\/\d{4}/, /^\d{2}-\d{2}-\d{4}/]
+  if (datePatterns.some(p => nonNull.slice(0, 5).every(v => p.test(v.trim())))) return 'datetime'
+  const colLower = col.toLowerCase()
+  if (colLower.includes('id') || colLower.includes('key') || colLower.includes('code')) return 'id'
+  const uniqueRatio = new Set(nonNull).size / nonNull.length
+  return uniqueRatio > 0.5 && nonNull[0]?.length > 20 ? 'text' : 'categorical'
+}
+
+function profileColumn(name: string, values: string[]): ColumnProfile {
+  const total = values.length
+  const missing = values.filter(isMissing).length
+  const nonNull = values.filter(v => !isMissing(v))
+  const unique = new Set(nonNull).size
+  const type = detectType(name, values)
+  const sample = [...new Set(nonNull)].slice(0, 4)
+
+  let min, max, mean, std, outliers
+  if (type === 'numeric') {
+    const nums = nonNull.map(Number).filter(n => !isNaN(n))
+    if (nums.length) {
+      min = Math.min(...nums); max = Math.max(...nums)
+      mean = nums.reduce((a, b) => a + b, 0) / nums.length
+      const variance = nums.reduce((a, b) => a + (b - mean!) ** 2, 0) / nums.length
+      std = Math.sqrt(variance)
+      const q1 = nums.sort((a, b) => a - b)[Math.floor(nums.length * 0.25)]
+      const q3 = nums[Math.floor(nums.length * 0.75)]
+      const iqr = q3 - q1
+      outliers = nums.filter(n => n < q1 - 1.5 * iqr || n > q3 + 1.5 * iqr).length
+    }
+  }
+
+  return { name, type, total, missing, missingPct: total ? missing / total : 0, unique, sample, min, max, mean, std, outliers }
+}
+
+function buildSuggestions(columns: ColumnProfile[], duplicateRows: number, totalRows: number): CleaningSuggestion[] {
+  const suggestions: CleaningSuggestion[] = []
+
+  if (duplicateRows > 0) {
+    const pct = ((duplicateRows / totalRows) * 100).toFixed(1)
+    suggestions.push({
+      id: 'drop_duplicates',
+      type: 'drop_duplicates',
+      problem: `${duplicateRows} exact duplicate rows (${pct}% of data)`,
+      recommendation: 'Remove duplicates to prevent the model from overfitting to repeated examples and producing biased metrics.',
+      severity: duplicateRows / totalRows > 0.05 ? 'high' : 'medium',
+      autoFixable: true,
+      alternatives: [
+        { type: 'drop_duplicates', label: 'Remove duplicates — keep first occurrence (recommended)' },
+      ],
+    })
+  }
+
+  for (const col of columns) {
+    const missingPct = (col.missingPct * 100).toFixed(1)
+
+    // Columns that are >50% empty — drop the whole column
+    if (col.missingPct > 0.5) {
+      suggestions.push({
+        id: `drop_col_${col.name}`,
+        type: 'drop_column',
+        column: col.name,
+        problem: `"${col.name}" is ${(col.missingPct * 100).toFixed(0)}% empty`,
+        recommendation: `A column that is more than 50% missing provides almost no signal and can destabilise training. Dropping it is the safest choice.`,
+        severity: 'high',
+        autoFixable: true,
+        alternatives: [
+          { type: 'drop_column', label: 'Drop column (recommended — too sparse to be useful)' },
+          { type: 'drop_missing_rows', label: 'Drop rows where this column is missing instead' },
+        ],
+      })
+      continue
+    }
+
+    // ID / key columns — imputation makes no sense
+    if (col.type === 'id' && col.missingPct > 0) {
+      suggestions.push({
+        id: `missing_id_${col.name}`,
+        type: 'drop_missing_rows',
+        column: col.name,
+        problem: `"${col.name}" is an identifier column with ${missingPct}% missing values`,
+        recommendation: `Imputing an ID or key column is meaningless — a synthetic ID creates false links between records. Rows without a valid "${col.name}" should be dropped or investigated at the source.`,
+        severity: col.missingPct > 0.05 ? 'high' : 'medium',
+        autoFixable: true,
+        alternatives: [
+          { type: 'drop_missing_rows', label: 'Drop rows with missing ID (recommended)' },
+          { type: 'drop_column', label: 'Drop this ID column (if not used as a join key)' },
+        ],
+      })
+      continue
+    }
+
+    // Numeric (non-ID) with significant missing values
+    if (col.type === 'numeric' && col.missingPct > 0.05) {
+      suggestions.push({
+        id: `missing_${col.name}`,
+        type: 'impute_median',
+        column: col.name,
+        problem: `"${col.name}" has ${missingPct}% missing numeric values`,
+        recommendation: `Median imputation is robust to outliers and skewed distributions. If "${col.name}" is roughly symmetric, mean imputation is equally valid. If missingness itself is informative (e.g. "no purchase"), consider adding an is_missing flag instead.`,
+        severity: col.missingPct > 0.2 ? 'high' : 'medium',
+        autoFixable: true,
+        alternatives: [
+          { type: 'impute_median', label: 'Impute with median (recommended — robust to outliers)' },
+          { type: 'impute_mean', label: 'Impute with mean (better for symmetric distributions)' },
+          { type: 'drop_missing_rows', label: 'Drop rows with missing values' },
+        ],
+      })
+    } else if (col.type === 'numeric' && col.missingPct > 0) {
+      suggestions.push({
+        id: `missing_${col.name}`,
+        type: 'drop_missing_rows',
+        column: col.name,
+        problem: `"${col.name}" has ${col.missing} missing values (${missingPct}%)`,
+        recommendation: `Only ${col.missing} rows are affected. Dropping them is the cleanest option and avoids introducing any bias.`,
+        severity: 'low',
+        autoFixable: true,
+        alternatives: [
+          { type: 'drop_missing_rows', label: 'Drop rows with missing values (recommended — few rows)' },
+          { type: 'impute_median', label: 'Impute with median' },
+          { type: 'impute_mean', label: 'Impute with mean' },
+        ],
+      })
+    }
+
+    // Categorical / text with missing values
+    if ((col.type === 'categorical' || col.type === 'text') && col.missingPct > 0.05) {
+      suggestions.push({
+        id: `missing_${col.name}`,
+        type: 'impute_mode',
+        column: col.name,
+        problem: `"${col.name}" has ${missingPct}% missing values`,
+        recommendation: `Mode imputation (most frequent value) is the standard default. If missing values represent "none selected" or "not applicable", use "Unknown" instead — it avoids inflating the most common category artificially.`,
+        severity: col.missingPct > 0.2 ? 'high' : 'medium',
+        autoFixable: true,
+        alternatives: [
+          { type: 'impute_mode', label: 'Fill with most frequent value (mode)' },
+          { type: 'impute_unknown', label: 'Fill with "Unknown" (when missing is meaningful)' },
+          { type: 'drop_missing_rows', label: 'Drop rows with missing values' },
+        ],
+      })
+    } else if ((col.type === 'categorical' || col.type === 'text') && col.missingPct > 0) {
+      suggestions.push({
+        id: `missing_${col.name}`,
+        type: 'drop_missing_rows',
+        column: col.name,
+        problem: `"${col.name}" has ${col.missing} missing values (${missingPct}%)`,
+        recommendation: `Only ${col.missing} rows are affected. Dropping is cleanest. Alternatively, fill with "Unknown" if you want to preserve all rows.`,
+        severity: 'low',
+        autoFixable: true,
+        alternatives: [
+          { type: 'drop_missing_rows', label: 'Drop rows with missing values (recommended)' },
+          { type: 'impute_unknown', label: 'Fill with "Unknown"' },
+        ],
+      })
+    }
+
+    // Outliers (informational — not auto-fixable; skip ID/key/code columns)
+    const colLowerOut = col.name.toLowerCase()
+    const isIdLike = col.type === 'id' ||
+      colLowerOut.includes('id') || colLowerOut.includes('key') ||
+      colLowerOut.includes('code') || colLowerOut.includes('number') ||
+      colLowerOut.includes('ref') || colLowerOut.includes('no.')
+    if (col.type === 'numeric' && !isIdLike && col.outliers && col.outliers > 0) {
+      const outPct = ((col.outliers / col.total) * 100).toFixed(1)
+      suggestions.push({
+        id: `outliers_${col.name}`,
+        type: 'flag_outliers',
+        column: col.name,
+        problem: `"${col.name}" has ${col.outliers} outlier values (${outPct}% of rows, IQR method)`,
+        recommendation: `Range: ${col.min?.toFixed(2)} – ${col.max?.toFixed(2)}, mean: ${col.mean?.toFixed(2)}, std: ${col.std?.toFixed(2)}. Review whether these are data errors (cap/remove) or genuine extremes (keep and use a robust algorithm like tree-based models).`,
+        severity: Number(outPct) > 5 ? 'medium' : 'low',
+        autoFixable: false,
+        alternatives: [],
+      })
+    }
+  }
+
+  return suggestions
+}
+
+function inspectData(filename: string, columns: string[], rows: string[][]): DataInspection {
+  const profiles = columns.map((col, i) => profileColumn(col, rows.map(r => r[i] ?? '')))
+
+  // Detect duplicate rows
+  const rowKeys = rows.map(r => r.join('\x00'))
+  const seen = new Set<string>()
+  let duplicateRows = 0
+  for (const key of rowKeys) { if (seen.has(key)) duplicateRows++; else seen.add(key) }
+
+  const suggestions = buildSuggestions(profiles, duplicateRows, rows.length)
+
+  return { filename, rowCount: rows.length, colCount: columns.length, duplicateRows, columns: profiles, suggestions, rawColumns: columns, rawRows: rows }
+}
+
+function applyCleaning(
+  inspection: DataInspection,
+  // Map of suggestion.id → chosen action type (overrides suggestion.type)
+  selectedActions: Record<string, SuggestionActionType> = {},
+  // If provided, only apply these suggestion IDs (else apply all autoFixable)
+  applyIds?: string[],
+): { columns: string[]; rows: string[][]; log: string[] } {
+  let { rawColumns: columns, rawRows: rows } = inspection
+  const log: string[] = []
+
+  const toApply = inspection.suggestions.filter(s =>
+    s.autoFixable && (applyIds ? applyIds.includes(s.id) : true)
+  )
+
+  for (const s of toApply) {
+    const actionType = selectedActions[s.id] ?? s.type
+
+    if (actionType === 'drop_duplicates') {
+      const before = rows.length
+      const seen = new Set<string>()
+      rows = rows.filter(r => { const k = r.join('\x00'); if (seen.has(k)) return false; seen.add(k); return true })
+      log.push(`Removed ${before - rows.length} duplicate rows`)
+    }
+
+    if (actionType === 'drop_column' && s.column) {
+      const idx = columns.indexOf(s.column)
+      if (idx >= 0) {
+        columns = columns.filter((_, i) => i !== idx)
+        rows = rows.map(r => r.filter((_, i) => i !== idx))
+        log.push(`Dropped column "${s.column}" (${(s.column)} was >50% missing or is an unused ID)`)
+      }
+    }
+
+    if ((actionType === 'impute_median' || actionType === 'impute_mean') && s.column) {
+      const idx = columns.indexOf(s.column)
+      if (idx >= 0) {
+        const vals = rows.map(r => r[idx]).filter(v => !isMissing(v))
+        const nums = vals.map(Number).filter(n => !isNaN(n)).sort((a, b) => a - b)
+        let fill: string
+        if (actionType === 'impute_median') {
+          fill = String(nums[Math.floor(nums.length / 2)] ?? 0)
+        } else {
+          fill = String(nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : 0)
+        }
+        const filled = rows.filter(r => isMissing(r[idx])).length
+        rows = rows.map(r => { if (isMissing(r[idx])) { const nr = [...r]; nr[idx] = fill; return nr } return r })
+        log.push(`Imputed ${filled} missing values in "${s.column}" with ${actionType === 'impute_median' ? 'median' : 'mean'} (${Number(fill).toFixed(4)})`)
+      }
+    }
+
+    if (actionType === 'impute_mode' && s.column) {
+      const idx = columns.indexOf(s.column)
+      if (idx >= 0) {
+        const vals = rows.map(r => r[idx]).filter(v => !isMissing(v))
+        const freq: Record<string, number> = {}
+        vals.forEach(v => { freq[v] = (freq[v] ?? 0) + 1 })
+        const fill = Object.entries(freq).sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
+        const filled = rows.filter(r => isMissing(r[idx])).length
+        rows = rows.map(r => { if (isMissing(r[idx])) { const nr = [...r]; nr[idx] = fill; return nr } return r })
+        log.push(`Imputed ${filled} missing values in "${s.column}" with mode ("${fill}")`)
+      }
+    }
+
+    if (actionType === 'impute_unknown' && s.column) {
+      const idx = columns.indexOf(s.column)
+      if (idx >= 0) {
+        const filled = rows.filter(r => isMissing(r[idx])).length
+        rows = rows.map(r => { if (isMissing(r[idx])) { const nr = [...r]; nr[idx] = 'Unknown'; return nr } return r })
+        log.push(`Filled ${filled} missing values in "${s.column}" with "Unknown"`)
+      }
+    }
+
+    if (actionType === 'drop_missing_rows' && s.column) {
+      const idx = columns.indexOf(s.column)
+      if (idx >= 0) {
+        const before = rows.length
+        rows = rows.filter(r => !isMissing(r[idx]))
+        log.push(`Dropped ${before - rows.length} rows where "${s.column}" was missing`)
+      }
+    }
+  }
+
+  return { columns, rows, log }
+}
+
+function downloadCsv(columns: string[], rows: string[][], filename: string) {
+  const escape = (v: string) => v.includes(',') || v.includes('"') || v.includes('\n') ? `"${v.replace(/"/g, '""')}"` : v
+  const content = [columns, ...rows].map(r => r.map(escape).join(',')).join('\n')
+  const blob = new Blob([content], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a'); a.href = url; a.download = filename; a.click()
+  URL.revokeObjectURL(url)
+}
+
+// ── DataInspectionCard component ──────────────────────────────────────────────
+
+function DataInspectionCard({
+  inspection,
+  onApplyAndContinue,
+  onSkip,
+}: {
+  inspection: DataInspection
+  onApplyAndContinue: (cleaned: { columns: string[]; rows: string[][] }, log: string[]) => void
+  onSkip: () => void
+}) {
+  const [colsExpanded, setColsExpanded] = useState(false)
+  // Per-suggestion: which alternative action is selected
+  const [selectedActions, setSelectedActions] = useState<Record<string, SuggestionActionType>>({})
+  // IDs of suggestions already individually applied
+  const [appliedIds, setAppliedIds] = useState<Set<string>>(new Set())
+  // Working copy of data (updated as user applies individual fixes)
+  const [workingData, setWorkingData] = useState<{ columns: string[]; rows: string[][] }>({
+    columns: inspection.rawColumns,
+    rows: inspection.rawRows,
+  })
+  const [workingLog, setWorkingLog] = useState<string[]>([])
+
+  const high    = inspection.suggestions.filter(s => s.severity === 'high').length
+  const fixable = inspection.suggestions.filter(s => s.autoFixable)
+  const pending = fixable.filter(s => !appliedIds.has(s.id))
+
+  const severityBorder = (s: CleaningSuggestion['severity']) =>
+    s === 'high' ? 'border-red-800/50 bg-red-950/20' :
+    s === 'medium' ? 'border-amber-800/50 bg-amber-950/10' :
+    'border-gray-700/50 bg-gray-800/20'
+
+  const severityIcon = (s: CleaningSuggestion['severity']) =>
+    s === 'high' ? '⛔' : s === 'medium' ? '⚠️' : 'ℹ️'
+
+  const typeIcon = (t: ColumnProfile['type']) =>
+    t === 'numeric' ? '#' : t === 'datetime' ? '📅' : t === 'id' ? '🔑' : t === 'text' ? '📝' : '🏷'
+
+  const applyOne = (s: CleaningSuggestion) => {
+    // Build a temporary inspection from current working data so we apply on top of prior fixes
+    const tmpInspection: DataInspection = { ...inspection, rawColumns: workingData.columns, rawRows: workingData.rows }
+    const result = applyCleaning(tmpInspection, selectedActions, [s.id])
+    setWorkingData({ columns: result.columns, rows: result.rows })
+    setWorkingLog(prev => [...prev, ...result.log])
+    setAppliedIds(prev => new Set([...prev, s.id]))
+  }
+
+  const applyAll = () => {
+    const tmpInspection: DataInspection = { ...inspection, rawColumns: workingData.columns, rawRows: workingData.rows }
+    const remainingIds = pending.map(s => s.id)
+    const result = applyCleaning(tmpInspection, selectedActions, remainingIds)
+    const finalLog = [...workingLog, ...result.log]
+    onApplyAndContinue({ columns: result.columns, rows: result.rows }, finalLog)
+  }
+
+  const continueWithCurrent = () => {
+    onApplyAndContinue({ columns: workingData.columns, rows: workingData.rows }, workingLog)
+  }
+
+  return (
+    <div className="bg-gray-900 border border-gray-700 rounded-2xl overflow-hidden text-xs w-full">
+      {/* Header */}
+      <div className="px-4 py-3 border-b border-gray-800 flex items-center gap-3">
+        <Database size={13} className="text-emerald-400 flex-shrink-0" />
+        <div className="flex-1 min-w-0">
+          <p className="text-white font-medium truncate">{inspection.filename}</p>
+          <p className="text-gray-500 text-[10px]">{inspection.rowCount.toLocaleString()} rows · {inspection.colCount} columns</p>
+        </div>
+        {inspection.duplicateRows > 0 && (
+          <span className="px-2 py-0.5 rounded-full text-[10px] text-amber-400 bg-amber-900/20 border border-amber-800/40 flex-shrink-0">
+            {inspection.duplicateRows} dupes
+          </span>
+        )}
+        {high > 0 && <span className="px-2 py-0.5 rounded-full text-[10px] text-red-400 bg-red-900/20 border border-red-800/40 flex-shrink-0">{high} critical</span>}
+      </div>
+
+      {/* Column table */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-[10px]">
+          <thead>
+            <tr className="border-b border-gray-800">
+              <th className="px-3 py-2 text-left text-gray-500 font-medium">Column</th>
+              <th className="px-3 py-2 text-left text-gray-500 font-medium">Type</th>
+              <th className="px-3 py-2 text-right text-gray-500 font-medium">Missing</th>
+              <th className="px-3 py-2 text-right text-gray-500 font-medium">Unique</th>
+              <th className="px-3 py-2 text-left text-gray-500 font-medium hidden sm:table-cell">Sample</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(colsExpanded ? inspection.columns : inspection.columns.slice(0, 8)).map(col => (
+              <tr key={col.name} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+                <td className="px-3 py-1.5 font-mono text-gray-200 max-w-[120px] truncate">{col.name}</td>
+                <td className="px-3 py-1.5 text-gray-500">
+                  <span className="mr-1">{typeIcon(col.type)}</span>{col.type}
+                </td>
+                <td className={clsx('px-3 py-1.5 text-right font-mono',
+                  col.missingPct > 0.2 ? 'text-red-400' : col.missingPct > 0 ? 'text-amber-400' : 'text-gray-600')}>
+                  {col.missingPct > 0 ? `${(col.missingPct * 100).toFixed(1)}%` : '—'}
+                </td>
+                <td className="px-3 py-1.5 text-right text-gray-400 font-mono">{col.unique.toLocaleString()}</td>
+                <td className="px-3 py-1.5 text-gray-500 hidden sm:table-cell max-w-[160px] truncate">
+                  {col.sample.slice(0, 3).join(', ')}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {inspection.columns.length > 8 && (
+          <button onClick={() => setColsExpanded(e => !e)} className="w-full py-1.5 text-[10px] text-gray-600 hover:text-gray-400 transition-colors border-t border-gray-800">
+            {colsExpanded ? 'Show less ↑' : `Show ${inspection.columns.length - 8} more columns ↓`}
+          </button>
+        )}
+      </div>
+
+      {/* Per-suggestion cards */}
+      {inspection.suggestions.length > 0 && (
+        <div className="border-t border-gray-800 px-4 py-3 space-y-3">
+          <p className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">
+            Data Quality Issues — {inspection.suggestions.length} found
+          </p>
+          {inspection.suggestions.map(s => {
+            const isApplied = appliedIds.has(s.id)
+            const chosenType = selectedActions[s.id] ?? s.type
+            return (
+              <div key={s.id} className={clsx('rounded-xl border overflow-hidden', severityBorder(s.severity), isApplied && 'opacity-60')}>
+                {/* Problem row */}
+                <div className="px-3 py-2 flex items-start gap-2">
+                  <span className="flex-shrink-0 text-[11px] mt-px">{severityIcon(s.severity)}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-gray-200 leading-snug">{s.problem}</p>
+                    <p className="text-gray-500 mt-0.5 leading-relaxed">{s.recommendation}</p>
+                  </div>
+                  {isApplied && (
+                    <span className="flex-shrink-0 flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-900/20 border border-emerald-700/40 rounded-full px-2 py-0.5">
+                      <CheckCircle2 size={9} /> Applied
+                    </span>
+                  )}
+                </div>
+
+                {/* Alternative actions */}
+                {s.autoFixable && !isApplied && s.alternatives.length > 1 && (
+                  <div className="px-3 pb-2 flex flex-wrap gap-1.5">
+                    {s.alternatives.map(alt => (
+                      <button
+                        key={alt.type}
+                        onClick={() => setSelectedActions(prev => ({ ...prev, [s.id]: alt.type }))}
+                        className={clsx(
+                          'px-2.5 py-1 text-[10px] rounded-full border transition-colors leading-tight',
+                          chosenType === alt.type
+                            ? 'bg-violet-800/50 border-violet-600/60 text-violet-200'
+                            : 'bg-gray-800/60 border-gray-700/60 text-gray-400 hover:border-gray-500 hover:text-gray-200',
+                        )}
+                      >
+                        {alt.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Apply this fix */}
+                {s.autoFixable && !isApplied && (
+                  <div className="px-3 pb-2.5">
+                    <button
+                      onClick={() => applyOne(s)}
+                      className="px-3 py-1 text-[11px] font-medium bg-emerald-800/50 hover:bg-emerald-700/60 border border-emerald-700/50 text-emerald-300 rounded-lg transition-colors"
+                    >
+                      ✓ Apply this fix
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Applied log */}
+      {workingLog.length > 0 && (
+        <div className="border-t border-gray-800 px-4 py-2 space-y-0.5">
+          {workingLog.map((l, i) => (
+            <p key={i} className="text-[10px] text-emerald-500">✓ {l}</p>
+          ))}
+        </div>
+      )}
+
+      {/* Bottom actions */}
+      <div className="border-t border-gray-800 px-4 py-3 flex items-center gap-2 flex-wrap">
+        {inspection.suggestions.length === 0 ? (
+          <>
+            <span className="text-[11px] text-emerald-400 flex items-center gap-1">
+              <CheckCircle2 size={11} /> Data looks clean
+            </span>
+            <button
+              onClick={onSkip}
+              className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-violet-700 hover:bg-violet-600 text-white rounded-lg transition-colors"
+            >
+              Continue to model design →
+            </button>
+          </>
+        ) : (
+          <>
+            {pending.length > 0 && (
+              <button
+                onClick={applyAll}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg transition-colors"
+              >
+                ✓ Apply all {pending.length} remaining fix{pending.length > 1 ? 'es' : ''} &amp; continue
+              </button>
+            )}
+            {appliedIds.size > 0 && pending.length === 0 && (
+              <button
+                onClick={continueWithCurrent}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg transition-colors"
+              >
+                <CheckCircle2 size={11} /> Continue with cleaned data
+              </button>
+            )}
+            {appliedIds.size > 0 && pending.length > 0 && (
+              <button
+                onClick={continueWithCurrent}
+                className="px-3 py-1.5 text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
+              >
+                Continue with {appliedIds.size} fix{appliedIds.size > 1 ? 'es' : ''} applied
+              </button>
+            )}
+            <button
+              onClick={() => { downloadCsv(inspection.rawColumns, inspection.rawRows, `original_${inspection.filename}`) }}
+              className="px-3 py-1.5 text-xs text-gray-500 hover:text-white bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
+            >
+              ↓ Raw CSV
+            </button>
+            <button onClick={onSkip} className="ml-auto text-xs text-gray-600 hover:text-gray-400 transition-colors">
+              Skip cleaning →
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── AI Workshop ───────────────────────────────────────────────────────────────
 
 const DS_TYPES = [
@@ -383,6 +985,13 @@ const FW_TYPES = [
   { value: 'custom',     label: 'Custom / Other' },
 ]
 
+interface AttachedFile {
+  name: string
+  size: number
+  mime: string
+  localUrl?: string   // object URL for image preview (freed on unmount)
+}
+
 interface AiChatMsg {
   id: string
   role: 'user' | 'assistant'
@@ -391,6 +1000,9 @@ interface AiChatMsg {
   filename?: string | null
   suggestions?: string[]
   csvPreview?: { columns: string[]; rows: string[][] }
+  dataInspection?: DataInspection
+  attachedFile?: AttachedFile
+  debug?: { tokens: { input: number; output: number; total: number }; cost_usd: number; model: string }
 }
 
 interface AiSession {
@@ -399,15 +1011,26 @@ interface AiSession {
   framework: string
   className: string
   csvSchema: { columns: string[]; sample_rows: string[][] } | null
+  existingCode?: string   // pre-loaded code for "refine existing trainer"
+  existingFilename?: string
+  datasetId?: string
+  datasetSlug?: string
+  datasetOriginalFieldId?: string
+  datasetCleanFieldId?: string
+  datasetCodeFieldId?: string
+  initialUserMessage?: string  // auto-sent as first message (used by "Fix with AI")
 }
 
 // ── Chat bubble ───────────────────────────────────────────────────────────────
 
 function ChatBubble({
-  msg, onSuggestion,
+  msg, onSuggestion, onInspectionApply, onInspectionSkip, showCostDebug = false,
 }: {
   msg: AiChatMsg
   onSuggestion: (text: string) => void
+  onInspectionApply?: (inspection: DataInspection, cleaned: { columns: string[]; rows: string[][] }, log: string[]) => void
+  onInspectionSkip?: (inspection: DataInspection) => void
+  showCostDebug?: boolean
 }) {
   const isUser = msg.role === 'user'
   return (
@@ -419,7 +1042,16 @@ function ChatBubble({
         </div>
       )}
 
-      <div className={clsx('flex flex-col gap-2', isUser ? 'items-end' : 'items-start', 'max-w-[88%]')}>
+      <div className={clsx('flex flex-col gap-2', isUser ? 'items-end' : 'items-start', 'max-w-[92%]')}>
+        {/* Data inspection card */}
+        {msg.dataInspection && (
+          <DataInspectionCard
+            inspection={msg.dataInspection}
+            onApplyAndContinue={(cleaned, log) => onInspectionApply?.(msg.dataInspection!, cleaned, log)}
+            onSkip={() => onInspectionSkip?.(msg.dataInspection!)}
+          />
+        )}
+
         {/* CSV preview card */}
         {msg.csvPreview && (
           <div className="bg-gray-800/80 border border-gray-700 rounded-xl p-3 text-xs w-full max-w-sm">
@@ -455,6 +1087,30 @@ function ChatBubble({
           </div>
         )}
 
+        {/* Attached file card */}
+        {msg.attachedFile && (
+          <div className="flex items-center gap-2.5 bg-gray-800/80 border border-gray-700 rounded-xl px-3 py-2 max-w-xs">
+            {msg.attachedFile.mime.startsWith('image/') && msg.attachedFile.localUrl ? (
+              <img
+                src={msg.attachedFile.localUrl}
+                alt={msg.attachedFile.name}
+                className="w-14 h-14 object-cover rounded-lg flex-shrink-0 border border-gray-700"
+              />
+            ) : (
+              <div className="w-10 h-10 rounded-lg bg-gray-700 flex items-center justify-center flex-shrink-0">
+                <FileCode size={16} className="text-gray-400" />
+              </div>
+            )}
+            <div className="min-w-0">
+              <p className="text-xs text-gray-200 truncate font-medium">{msg.attachedFile.name}</p>
+              <p className="text-[10px] text-gray-500 mt-0.5">
+                {msg.attachedFile.mime || 'file'} · {(msg.attachedFile.size / 1024).toFixed(0)} KB
+              </p>
+              <p className="text-[10px] text-emerald-500 mt-0.5">✓ saved to dataset</p>
+            </div>
+          </div>
+        )}
+
         {/* Message bubble */}
         {msg.content && (
           <div className={clsx(
@@ -487,6 +1143,19 @@ function ChatBubble({
                 {s}
               </button>
             ))}
+          </div>
+        )}
+
+        {/* Token / cost debug badge */}
+        {showCostDebug && msg.debug && msg.role === 'assistant' && (
+          <div className="flex items-center gap-2 mt-1.5 px-2 py-1 bg-gray-900/60 border border-gray-700/50 rounded-lg w-fit">
+            <span className="text-[10px] text-gray-500 font-mono">
+              ↑{msg.debug.tokens.input.toLocaleString()} ↓{msg.debug.tokens.output.toLocaleString()} tok
+            </span>
+            <span className="text-gray-700">·</span>
+            <span className="text-[10px] text-gray-500 font-mono">${msg.debug.cost_usd.toFixed(5)}</span>
+            <span className="text-gray-700">·</span>
+            <span className="text-[10px] text-gray-600">{msg.debug.model}</span>
           </div>
         )}
       </div>
@@ -579,20 +1248,33 @@ function AiWorkshop({
   datasets,
   onBack,
   onUseCode,
+  savedSessions = [],
+  onSaveSession,
+  onRestoreSession,
+  onDeleteSession,
+  restoreSession,
+  showCostDebug = false,
 }: {
   session: AiSession
   datasets: EditorDataset[]
   onBack: () => void
-  onUseCode: (code: string, filename: string) => void
+  onUseCode: (code: string, filename: string, sessionSnapshot: SavedAiSession) => void
+  savedSessions?: SavedAiSession[]
+  onSaveSession?: (s: SavedAiSession) => void
+  onRestoreSession?: (s: SavedAiSession | undefined) => void
+  onDeleteSession?: (id: string) => void
+  restoreSession?: SavedAiSession
+  showCostDebug?: boolean
 }) {
-  const [session, setSession] = useState<AiSession>(initialSession)
-  const [messages, setMessages] = useState<AiChatMsg[]>([])
+  const [session, setSession] = useState<AiSession>(restoreSession?.session ?? initialSession)
+  const [messages, setMessages] = useState<AiChatMsg[]>(restoreSession?.messages ?? [])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [activePanel, setActivePanel] = useState<'code' | 'plan'>('code')
-  const [generatedCode, setGeneratedCode] = useState('')
-  const [generatedFilename, setGeneratedFilename] = useState('ai_trainer.py')
-  const [setupDone, setSetupDone] = useState(false)
+  const [generatedCode, setGeneratedCode] = useState(restoreSession?.generatedCode ?? initialSession.existingCode ?? '')
+  const [generatedFilename, setGeneratedFilename] = useState(restoreSession?.generatedFilename ?? initialSession.existingFilename ?? 'ai_trainer.py')
+  const [currentSessionId] = useState(() => restoreSession?.id ?? crypto.randomUUID())
+  const [setupDone, setSetupDone] = useState(!!(restoreSession || initialSession.existingCode))
 
   const chatBottomRef = useRef<HTMLDivElement>(null)
   const csvInputRef = useRef<HTMLInputElement>(null)
@@ -601,6 +1283,31 @@ function AiWorkshop({
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, sending])
+
+  // Auto-save session whenever messages or code change so history persists
+  useEffect(() => {
+    if (messages.length === 0) return
+    const snap: SavedAiSession = {
+      id: currentSessionId,
+      title: messages.find(m => m.role === 'user')?.content.slice(0, 60) ?? 'Session',
+      messages,
+      session,
+      generatedCode,
+      generatedFilename,
+      savedAt: Date.now(),
+    }
+    onSaveSession?.(snap)
+  }, [messages, generatedCode]) // eslint-disable-line
+
+  // Auto-send initial message (e.g. error from "Fix with AI")
+  const autoSentRef = useRef(false)
+  useEffect(() => {
+    if (!autoSentRef.current && setupDone && initialSession.initialUserMessage && messages.length === 0) {
+      autoSentRef.current = true
+      // Small delay so the component is fully rendered before the API call
+      setTimeout(() => sendMessage(initialSession.initialUserMessage!), 100)
+    }
+  }, [setupDone]) // eslint-disable-line
 
   const sendMessage = async (text: string, sessionOverride?: AiSession, generateNow = false) => {
     const activeSession = sessionOverride ?? session
@@ -618,7 +1325,22 @@ function AiWorkshop({
     setSending(true)
 
     try {
-      const history = newMessages.map(m => ({ role: m.role, content: m.content }))
+      // When refining existing code, prepend the code as context in the first user message
+      let history = newMessages.map(m => ({ role: m.role, content: m.content }))
+      if (activeSession.existingCode && history.filter(m => m.role === 'user').length === 1) {
+        const codeCtx = `Here is my existing trainer code:\n\`\`\`python\n${activeSession.existingCode}\n\`\`\`\n\n`
+        history = history.map((m, i) => (i === history.findIndex(x => x.role === 'user') ? { ...m, content: codeCtx + m.content } : m))
+      }
+      // Always provide a dataset slug so the backend injects the correct field-label
+      // constraint even when no CSV has been uploaded yet in this session.
+      // Fall back to the most recent saved session's slug if the current one is absent.
+      const effectiveSlug = activeSession.datasetSlug
+        ?? savedSessions?.find(s => s.session?.datasetSlug)?.session?.datasetSlug
+        ?? null
+      const effectiveDatasetId = activeSession.datasetId
+        ?? savedSessions?.find(s => s.session?.datasetId)?.session?.datasetId
+        ?? null
+
       const result = await editorApi.aiChat({
         messages: history,
         data_source_type: activeSession.dsType,
@@ -627,6 +1349,8 @@ function AiWorkshop({
         csv_schema: activeSession.csvSchema,
         available_datasets: datasets.map(d => ({ id: d.id, name: d.name, fields: d.fields })),
         generate_now: generateNow,
+        uploaded_dataset_slug: effectiveSlug,
+        uploaded_dataset_id: effectiveDatasetId,
       })
 
       const aiMsg: AiChatMsg = {
@@ -636,6 +1360,7 @@ function AiWorkshop({
         code: result.code,
         filename: result.filename,
         suggestions: result.suggestions,
+        debug: result.debug,
       }
       setMessages(prev => [...prev, aiMsg])
 
@@ -643,12 +1368,29 @@ function AiWorkshop({
         setGeneratedCode(result.code)
         setGeneratedFilename(result.filename ?? 'ai_trainer.py')
         setActivePanel('code')
+
+        // Upload generated trainer code as a .py file to the Cleaning Code field (best-effort)
+        const snap = session  // capture current session state
+        if (snap.datasetId && snap.datasetCodeFieldId) {
+          const fname = (result.filename ?? 'ai_trainer.py').replace(/\.py$/i, '') + '.py'
+          const pyFile = new File([result.code], fname, { type: 'text/x-python' })
+          editorApi.uploadDatasetField(snap.datasetId, snap.datasetCodeFieldId, pyFile).catch(() => {})
+        }
       }
     } catch (e: any) {
+      const status = e?.response?.status
+      const detail = e?.response?.data?.detail ?? ''
+      const isConfig = status === 503 || detail.toLowerCase().includes('not configured')
+      const isBalance = status === 402
       const errMsg: AiChatMsg = {
         id: crypto.randomUUID(),
         role: 'assistant',
-        content: `⚠ ${e?.response?.data?.detail ?? 'Failed to reach AI. Check LLM configuration.'}`,
+        content: isConfig
+          ? `⚠ AI is not configured yet.\n\nAsk your admin to set these environment variables on the backend:\n  LLM_PROVIDER=openai | ollama | openai_compatible\n  LLM_API_KEY=...\n  LLM_MODEL=...\n  LLM_BASE_URL=...  (required for ollama / openai_compatible)\n\nYou can still write trainers manually — go back to Files and create a new file.`
+          : isBalance
+          ? `⚠ ${detail}\n\nAI features are billed per token. Top up your wallet to continue.`
+          : `⚠ ${detail || 'Failed to reach AI. Try again or check the connection.'}`,
+        suggestions: isConfig ? ['Back to Files'] : isBalance ? ['Top up wallet', 'Back to Files'] : ['Try again', 'Generate Now'],
       }
       setMessages(prev => [...prev, errMsg])
     } finally {
@@ -656,54 +1398,388 @@ function AiWorkshop({
     }
   }
 
+  // When refining existing code — greet user with the file already loaded
+  useEffect(() => {
+    if (initialSession.existingCode && messages.length === 0) {
+      const name = initialSession.existingFilename ?? 'trainer'
+      const intro = `I've loaded your existing trainer **${name}**. What would you like to improve?\n\nFor example: refine the algorithm, add new output fields, change the data source, improve preprocessing, or add derived metrics.`
+      setMessages([{
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: intro,
+        suggestions: ['Improve the algorithm', 'Add derived metrics', 'Change data source', 'Add more output fields'],
+      }])
+    }
+  }, []) // eslint-disable-line
+
   const handleStartWorkshop = () => {
     if (!session.prompt.trim()) return
     setSetupDone(true)
     sendMessage(session.prompt, session)
   }
 
-  const handleCsvUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // ── ensure the session dataset exists, returns { datasetId, originalFieldId }
+  const ensureSessionDataset = async (): Promise<{ datasetId: string; originalFieldId: string; cleanFieldId: string; codeFieldId: string } | null> => {
+    const snap = session
+    if (snap.datasetId && snap.datasetOriginalFieldId) {
+      return { datasetId: snap.datasetId, originalFieldId: snap.datasetOriginalFieldId, cleanFieldId: snap.datasetCleanFieldId ?? '', codeFieldId: snap.datasetCodeFieldId ?? '' }
+    }
+    // Create with a minimal placeholder CSV (header only) to get the field IDs
+    const placeholderB64 = btoa(Array.from(new TextEncoder().encode('file\n'), b => String.fromCharCode(b)).join(''))
+    const dsResult = await editorApi.createDatasetFromCsv({
+      name: 'AI Workshop Dataset',
+      description: 'Auto-created from AI Workshop session',
+      filename: 'placeholder.csv',
+      csv_b64: placeholderB64,
+      content_type: 'text/csv',
+      session_id: currentSessionId,
+    })
+    setSession(prev => ({
+      ...prev,
+      dsType: 'dataset',
+      datasetId: dsResult.dataset_id,
+      datasetSlug: dsResult.dataset_slug,
+      datasetOriginalFieldId: dsResult.original_field_id,
+      datasetCleanFieldId: dsResult.clean_field_id,
+      datasetCodeFieldId: dsResult.code_field_id,
+    }))
+    return { datasetId: dsResult.dataset_id, originalFieldId: dsResult.original_field_id, cleanFieldId: dsResult.clean_field_id, codeFieldId: dsResult.code_field_id }
+  }
+
+  const handleFileAttach = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    const reader = new FileReader()
-    reader.onload = ev => {
-      const text = ev.target?.result as string
-      const lines = text.split(/\r?\n/).filter(Boolean)
-      if (lines.length === 0) return
-      const columns = lines[0].split(',').map(c => c.trim().replace(/^"(.*)"$/, '$1'))
-      const rows = lines.slice(1, 6).map(l =>
-        l.split(',').map(c => c.trim().replace(/^"(.*)"$/, '$1'))
-      )
-      const csvSchema = { columns, sample_rows: rows }
-      const updatedSession = { ...session, csvSchema }
-      setSession(updatedSession)
-
-      // Add a user message with the CSV preview
-      const csvMsg: AiChatMsg = {
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: `Uploaded CSV: ${file.name} (${columns.length} columns)`,
-        csvPreview: { columns, rows },
-      }
-      setMessages(prev => [...prev, csvMsg])
-
-      // Auto-send an analysis request
-      const analysisPrompt =
-        `I've uploaded "${file.name}". Columns: ${columns.join(', ')}. ` +
-        `Sample data: ${JSON.stringify(rows.slice(0, 2))}. ` +
-        `Please analyze the schema — which columns should be features vs target? ` +
-        `Is there a unique customer/record identifier for dataset merging?`
-
-      setTimeout(() => sendMessage(analysisPrompt, updatedSession), 100)
-    }
-    reader.readAsText(file)
     e.target.value = ''
+
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+    const isCsvOrExcel = ['csv', 'xlsx', 'xls'].includes(ext)
+
+    // ── Non-CSV/Excel: upload as dataset entry directly ──────────────────────
+    if (!isCsvOrExcel) {
+      const isImage = file.type.startsWith('image/')
+      const localUrl = isImage ? URL.createObjectURL(file) : undefined
+
+      const userMsgId = crypto.randomUUID()
+      const userMsg: AiChatMsg = {
+        id: userMsgId,
+        role: 'user',
+        content: '',
+        attachedFile: { name: file.name, size: file.size, mime: file.type || ext, localUrl },
+      }
+      const uploadingId = crypto.randomUUID()
+      const uploadingMsg: AiChatMsg = {
+        id: uploadingId,
+        role: 'assistant',
+        content: `Uploading "${file.name}" to the session dataset…`,
+      }
+      setMessages(prev => [...prev, userMsg, uploadingMsg])
+
+      try {
+        const ds = await ensureSessionDataset()
+        if (ds) {
+          await editorApi.uploadDatasetField(ds.datasetId, ds.originalFieldId, file)
+        }
+        const ackMsg: AiChatMsg = {
+          id: uploadingId,
+          role: 'assistant',
+          content: `File **${file.name}** (${file.type || ext}, ${(file.size / 1024).toFixed(0)} KB) has been saved to the session dataset.\n\nThe trainer's \`preprocess(raw)\` can access it via the \`file_url\` entry where \`field_label == "Original Upload"\`. What would you like to do with this file?`,
+          suggestions: isImage ? ['Use as training image', 'Describe image classification task', 'What format does the model expect?'] : ['Describe how to use this file', 'Show me how to load this in the trainer'],
+        }
+        setMessages(prev => prev.map(m => m.id === uploadingId ? ackMsg : m))
+      } catch (err: any) {
+        setMessages(prev => prev.map(m => m.id === uploadingId ? {
+          ...m,
+          content: `Failed to upload "${file.name}": ${err?.message ?? 'unknown error'}. You can describe the file in text and I'll help design the model.`,
+        } : m))
+      }
+      return
+    }
+
+    // ── CSV / Excel → existing inspection flow ────────────────────────────────
+    const fileMB = (file.size / 1024 / 1024).toFixed(2)
+
+    // User upload message + immediate "received" acknowledgement
+    const uploadMsg: AiChatMsg = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: `📎 ${file.name} · ${fileMB} MB`,
+    }
+    const analyzingId = crypto.randomUUID()
+    const analyzingMsg: AiChatMsg = {
+      id: analyzingId,
+      role: 'assistant',
+      content: `Got it — received "${file.name}" (${fileMB} MB). Sampling and inspecting your data now…`,
+    }
+    setMessages(prev => [...prev, uploadMsg, analyzingMsg])
+
+    // Yield to the browser so the "analyzing" message renders before we block
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    try {
+      let columns: string[] = []
+      let rows: string[][] = []
+      let sampledRows = 0    // 0 = no sampling needed
+      const MAX_SAMPLE_ROWS = 2000
+      const MAX_CSV_BYTES   = 4 * 1024 * 1024  // 4 MB slice cap for huge CSVs
+
+      if (ext === 'csv') {
+        // For very large CSVs, read only the first MAX_CSV_BYTES to avoid loading GBs
+        const blob = file.size > MAX_CSV_BYTES ? file.slice(0, MAX_CSV_BYTES) : file
+        const text = await blob.text()
+        const lines = text.split(/\r?\n/).filter(Boolean)
+        if (lines.length < 2) throw new Error('File appears empty or has no data rows')
+        columns = lines[0].split(',').map(c => c.trim().replace(/^"(.*)"$/, '$1'))
+        const allDataLines = lines.slice(1).filter(Boolean)
+        if (allDataLines.length > MAX_SAMPLE_ROWS) sampledRows = allDataLines.length
+        rows = allDataLines.slice(0, MAX_SAMPLE_ROWS).map(l =>
+          l.split(',').map(c => c.trim().replace(/^"(.*)"$/, '$1'))
+        )
+      } else {
+        // Excel: sheetRows limits how many rows the parser reads — prevents stack overflow
+        // on large workbooks without needing to stream.
+        const XLSX = await import('xlsx')
+        const buffer = await file.arrayBuffer()
+        const wb = XLSX.read(buffer, {
+          type: 'array',
+          sheetRows: MAX_SAMPLE_ROWS + 1,   // header + data rows only
+          cellText: false,
+          cellDates: false,
+        })
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        const data = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: '' }) as unknown[][]
+        if (data.length < 2) throw new Error('Spreadsheet appears empty or has no data rows')
+        columns = (data[0] ?? []).map(v => String(v))
+        const dataRows = data.slice(1)
+        // If we hit the cap there are likely more rows in the original file
+        if (dataRows.length >= MAX_SAMPLE_ROWS) sampledRows = MAX_SAMPLE_ROWS
+        rows = dataRows.map(row =>
+          columns.map((_, i) => String((row as unknown[])[i] ?? ''))
+        )
+      }
+
+      const inspection = inspectData(file.name, columns, rows)
+      // Annotate if we sampled
+      if (sampledRows) {
+        inspection.filename = `${file.name} (sampled: first ${rows.length.toLocaleString()} rows)`
+      }
+
+      setSession(prev => ({ ...prev, csvSchema: { columns, sample_rows: rows.slice(0, 5) } }))
+
+      // Replace the "analyzing" placeholder with the inspection card
+      const inspMsg: AiChatMsg = {
+        id: analyzingId,   // reuse same ID so the bubble replaces in-place
+        role: 'assistant',
+        content: sampledRows
+          ? `Large dataset detected — sampled the first ${rows.length.toLocaleString()} rows for inspection. Statistical profiles below represent this sample.`
+          : '',
+        dataInspection: inspection,
+      }
+      setMessages(prev => prev.map(m => m.id === analyzingId ? inspMsg : m))
+
+      // Sync upload to the session's dataset (get-or-create by session_id slug)
+      try {
+        const csvLines = [columns, ...rows.slice(0, 5000)].map(r =>
+          r.map(v => (v.includes(',') || v.includes('"') ? `"${v.replace(/"/g, '""')}"` : v)).join(',')
+        )
+        const csvText = csvLines.join('\n')
+        // btoa only handles Latin-1; encode to UTF-8 bytes first
+        const b64 = btoa(
+          Array.from(new TextEncoder().encode(csvText), b => String.fromCharCode(b)).join('')
+        )
+
+        // If we already have a dataset for this session, upload directly to it
+        const currentSession = session  // capture before async setState
+        const csvFilename = file.name.replace(/\.xlsx?$/i, '.csv')
+
+        let datasetId = currentSession.datasetId
+        let originalFieldId = currentSession.datasetOriginalFieldId
+        let cleanFieldId = currentSession.datasetCleanFieldId
+        let codeFieldId = currentSession.datasetCodeFieldId
+
+        if (datasetId && originalFieldId) {
+          const csvBlob = new Blob([csvText], { type: 'text/csv' })
+          const csvFile = new File([csvBlob], csvFilename, { type: 'text/csv' })
+          await editorApi.uploadDatasetField(datasetId, originalFieldId, csvFile)
+        } else {
+          // First upload in this session — create dataset keyed to session ID
+          const dsName = file.name.replace(/\.(csv|xlsx|xls)$/i, '').replace(/[_\-]/g, ' ')
+          const dsResult = await editorApi.createDatasetFromCsv({
+            name: dsName || 'AI Workshop Dataset',
+            description: `Auto-created from AI Workshop upload (${rows.length.toLocaleString()} rows × ${columns.length} columns)`,
+            filename: csvFilename,
+            csv_b64: b64,
+            content_type: 'text/csv',
+            session_id: currentSessionId,
+          })
+          datasetId = dsResult.dataset_id
+          originalFieldId = dsResult.original_field_id
+          cleanFieldId = dsResult.clean_field_id
+          codeFieldId = dsResult.code_field_id
+          setSession(prev => ({
+            ...prev,
+            dsType: 'dataset',
+            datasetId,
+            datasetSlug: dsResult.dataset_slug,
+            datasetOriginalFieldId: originalFieldId,
+            datasetCleanFieldId: cleanFieldId,
+            datasetCodeFieldId: codeFieldId,
+          }))
+        }
+
+        // Seed "Clean Copy" with the same file so all 3 fields are populated from the start.
+        // It will be overwritten with the cleaned version if the user applies the inspection card.
+        if (datasetId && cleanFieldId) {
+          const csvBlob2 = new Blob([csvText], { type: 'text/csv' })
+          const csvFile2 = new File([csvBlob2], csvFilename, { type: 'text/csv' })
+          editorApi.uploadDatasetField(datasetId, cleanFieldId, csvFile2).catch(() => {})
+        }
+      } catch {
+        // non-fatal — trainer will fall back to auto_create_spec
+      }
+
+    } catch (err: any) {
+      const errMsg: AiChatMsg = {
+        id: analyzingId,
+        role: 'assistant',
+        content: `I ran into a problem reading "${file.name}".\n\nIf this is a large file the most likely causes are:\n• Corrupted or non-standard Excel formatting — try re-saving as .csv first\n• Password-protected workbook — please remove the password before uploading\n• Very complex formulas/pivot tables — export to a plain CSV instead\n\nError detail: ${err?.message ?? 'Unknown parsing error'}`,
+        suggestions: ['Describe my data instead', 'Try uploading as CSV'],
+      }
+      setMessages(prev => prev.map(m => m.id === analyzingId ? errMsg : m))
+    }
+  }
+
+  const handleInspectionApply = (inspection: DataInspection, cleaned: { columns: string[]; rows: string[][] }, log: string[]) => {
+    downloadCsv(cleaned.columns, cleaned.rows, `cleaned_${inspection.filename}`)
+    const sampleSchema = { columns: cleaned.columns, sample_rows: cleaned.rows.slice(0, 5) }
+    const updatedSession = { ...session, csvSchema: sampleSchema }
+    setSession(updatedSession)
+
+    // Upload cleaned CSV to clean_copy field + cleaning code to code_used field (best-effort, background)
+    if (session.datasetId) {
+      const csvText = [cleaned.columns, ...cleaned.rows].map(r =>
+        r.map(v => (v.includes(',') || v.includes('"') ? `"${v.replace(/"/g, '""')}"` : v)).join(',')
+      ).join('\n')
+      const cleanedBlob = new Blob([csvText], { type: 'text/csv' })
+      const rawFilename = inspection.filename.split('/').pop() ?? inspection.filename
+      const cleanedFile = new File([cleanedBlob], `cleaned_${rawFilename.replace(/\s*\(sampled.*\)/, '')}`, { type: 'text/csv' })
+      if (session.datasetCleanFieldId) {
+        editorApi.uploadDatasetField(session.datasetId, session.datasetCleanFieldId, cleanedFile).catch(() => {})
+      }
+      if (session.datasetCodeFieldId && log.length > 0) {
+        const rawBase = (inspection.filename.split('/').pop() ?? 'data').replace(/\.(csv|xlsx?|tsv)$/i, '').replace(/\s+/g, '_')
+        const pyContent = `# Data Cleaning Log — ${inspection.filename}\n# Generated by AI Workshop on ${new Date().toISOString()}\n\n${log.map(l => `# ${l}`).join('\n')}\n\n# Columns retained: ${cleaned.columns.join(', ')}\n# Rows after cleaning: ${cleaned.rows.length}\n`
+        const pyFile = new File([pyContent], `cleaning_${rawBase}.py`, { type: 'text/x-python' })
+        editorApi.uploadDatasetField(session.datasetId, session.datasetCodeFieldId, pyFile).catch(() => {})
+      }
+    }
+
+    const cleaningLog = log.length > 0
+      ? `\n\nCleaning applied:\n${log.map(l => `• ${l}`).join('\n')}`
+      : '\n\nNo auto-fixes applied (data was already clean).'
+    const warnings = inspection.suggestions.filter(s => !s.autoFixable)
+    const warningText = warnings.length > 0
+      ? `\n\nManual review needed:\n${warnings.map(s => `⚠ ${s.problem}`).join('\n')}`
+      : ''
+
+    const summaryPrompt =
+      `Data inspection complete for "${inspection.filename}".\n` +
+      `Original: ${inspection.rowCount.toLocaleString()} rows × ${inspection.colCount} columns.` +
+      cleaningLog +
+      `\nCleaned dataset: ${cleaned.rows.length.toLocaleString()} rows × ${cleaned.columns.length} columns.` +
+      warningText +
+      `\n\nColumns available: ${cleaned.columns.join(', ')}.\n\n` +
+      `Based on this cleaned dataset, evaluate whether a useful ML model can be built here. Identify: ` +
+      `the most likely target variable, feature columns, recommended algorithm, and what output fields the trainer should produce per inference request.`
+
+    sendMessage(summaryPrompt, updatedSession)
+  }
+
+  const handleInspectionSkip = (inspection: DataInspection) => {
+    const skipPrompt =
+      `Dataset uploaded: "${inspection.filename}" — ${inspection.rowCount.toLocaleString()} rows × ${inspection.colCount} columns (raw, cleaning skipped by user).\n` +
+      `Columns: ${inspection.rawColumns.join(', ')}.\n\n` +
+      `Based on this data, evaluate whether a useful ML model can be built here. Identify: ` +
+      `likely target variable, feature columns, recommended algorithm, and expected output fields per inference request.`
+    sendMessage(skipPrompt)
   }
 
   const dsLabel = DS_TYPES.find(t => t.value === session.dsType)?.label ?? session.dsType
 
   // ── Setup screen ────────────────────────────────────────────────────────────
   if (!setupDone) {
+    const SAMPLE_PROMPTS: { label: string; icon: string; dsType: string; framework: string; prompt: string }[] = [
+      {
+        label: 'Customer Segmentation',
+        icon: '👥',
+        dsType: 'upload',
+        framework: 'sklearn',
+        prompt: 'Build a customer segmentation model from transaction history CSV. Allow uploading transaction data and customer profile data, merge them on customer_id. Automatically suggest which fields to use as features. Group customers into segments like High Value, At Risk, New Customer, and Dormant. Output segment label, confidence score, avg_transaction_value, and purchase_frequency.',
+      },
+      {
+        label: 'Churn Prediction',
+        icon: '📉',
+        dsType: 'upload',
+        framework: 'sklearn',
+        prompt: 'Predict customer churn from a CSV of subscription and usage data. Merge on account_id if multiple files are uploaded. Suggest which behavioral and demographic fields are most predictive. Output: churn_probability (0–1), risk_level (Low/Medium/High), top_3_risk_factors.',
+      },
+      {
+        label: 'Fraud Detection',
+        icon: '🔍',
+        dsType: 'upload',
+        framework: 'sklearn',
+        prompt: 'Build a real-time fraud detection model on transaction data. Accept a CSV with transaction fields. Identify the amount, timestamp, merchant_category, and location fields automatically. Use anomaly detection + classification. Output: is_fraud (bool), fraud_score (0–1), anomaly_reason.',
+      },
+      {
+        label: 'Sales Forecasting',
+        icon: '📈',
+        dsType: 'upload',
+        framework: 'sklearn',
+        prompt: 'Forecast monthly sales from historical sales CSV data. Auto-detect date, product_id, quantity, and revenue columns. Support merging product catalog data on product_id. Output: predicted_revenue, confidence_interval_low, confidence_interval_high, trend (up/flat/down).',
+      },
+      {
+        label: 'Image Classifier',
+        icon: '🖼️',
+        dsType: 'dataset',
+        framework: 'pytorch',
+        prompt: 'Build an image classification trainer using a pre-trained ResNet50 with transfer learning. Dataset: labeled images uploaded via the platform. Support up to 20 classes. Output: predicted_class, confidence, top_3_classes with scores.',
+      },
+      {
+        label: 'Sentiment Analysis',
+        icon: '💬',
+        dsType: 'upload',
+        framework: 'sklearn',
+        prompt: 'Train a text sentiment classifier on a CSV with a text column and a label column (positive/negative/neutral). Auto-detect the text and label columns. Use TF-IDF + logistic regression. Output: sentiment (string), confidence (float), sentiment_scores (dict with all class probabilities).',
+      },
+      {
+        label: 'Product Recommender',
+        icon: '🛍️',
+        dsType: 'upload',
+        framework: 'sklearn',
+        prompt: 'Build a product recommendation model from purchase history CSV. Merge on customer_id and product_id. Use collaborative filtering. Output: recommended_product_ids (list), scores (list), recommendation_reason (string).',
+      },
+      {
+        label: 'Anomaly Detection',
+        icon: '⚠️',
+        dsType: 'upload',
+        framework: 'sklearn',
+        prompt: 'Detect anomalies in time-series sensor or metric data from CSV. Auto-detect timestamp and value columns. Support multiple metric columns. Use Isolation Forest. Output: is_anomaly (bool), anomaly_score (float), severity (low/medium/high), affected_metrics (list).',
+      },
+      {
+        label: 'Price Optimization',
+        icon: '💰',
+        dsType: 'upload',
+        framework: 'sklearn',
+        prompt: 'Build a price optimization / elasticity model from historical pricing and sales CSV data. Auto-detect price, quantity_sold, product_id, and date columns. Output: optimal_price, expected_revenue, price_elasticity, demand_forecast.',
+      },
+      {
+        label: 'Document Classifier',
+        icon: '📄',
+        dsType: 'dataset',
+        framework: 'sklearn',
+        prompt: 'Classify documents or support tickets into categories from a labeled text CSV. Auto-detect the document text column and category label. Use TF-IDF vectorization. Output: category (string), confidence (float), alternative_categories (list of top 3).',
+      },
+    ]
+
     return (
       <div className="flex flex-col h-full bg-gray-950">
         {/* Header */}
@@ -716,26 +1792,55 @@ function AiWorkshop({
           <span className="text-sm font-semibold text-white">AI Trainer Workshop</span>
         </div>
 
-        {/* Setup form */}
-        <div className="flex-1 flex items-center justify-center p-8">
-          <div className="w-full max-w-xl space-y-5">
-            <div className="text-center space-y-1">
-              <div className="w-12 h-12 rounded-2xl bg-violet-900/40 border border-violet-700/40 flex items-center justify-center mx-auto mb-4">
-                <Sparkles size={22} className="text-violet-400" />
-              </div>
-              <h2 className="text-lg font-semibold text-white">What do you want to build?</h2>
-              <p className="text-sm text-gray-500">Describe your idea — the AI will guide you through the rest</p>
-            </div>
+        {/* Setup: history sidebar + form + samples */}
+        <div className="flex flex-1 min-h-0">
 
-            <textarea
-              autoFocus
-              rows={4}
-              value={session.prompt}
-              onChange={e => setSession(s => ({ ...s, prompt: e.target.value }))}
-              onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleStartWorkshop() }}
-              placeholder="e.g. Generate a customer segmentation model based on transaction history. Allow CSV upload. Merge on customer_id. Suggest which fields to group by."
-              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-violet-500 resize-none leading-relaxed"
-            />
+          {/* ── Session history sidebar ──────────────────────────────────── */}
+          <div className="w-44 flex-shrink-0 border-r border-gray-800 flex flex-col bg-gray-950/60 overflow-hidden">
+            <div className="px-3 py-2 border-b border-gray-800 text-[10px] text-gray-500 uppercase tracking-wider font-medium flex items-center justify-between">
+              <span className="flex items-center gap-1"><Clock size={10} /> History</span>
+            </div>
+            <div className="flex-1 overflow-y-auto py-1">
+              {savedSessions.length === 0 ? (
+                <div className="px-3 py-4 text-[11px] text-gray-600 italic">No sessions yet</div>
+              ) : savedSessions.map(s => (
+                <div key={s.id} className={clsx('group flex items-start hover:bg-gray-800 transition-colors', s.id === currentSessionId && 'bg-gray-800/50 border-l-2 border-violet-500')}>
+                  <button
+                    onClick={() => onRestoreSession?.(s)}
+                    className="flex-1 text-left px-3 py-2 text-[11px] min-w-0"
+                  >
+                    <div className="truncate font-medium text-gray-300">{s.title || 'Session'}</div>
+                    <div className="text-[10px] text-gray-600 mt-0.5">{new Date(s.savedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+                  </button>
+                  <button
+                    onClick={e => { e.stopPropagation(); onDeleteSession?.(s.id) }}
+                    className="opacity-0 group-hover:opacity-100 p-1.5 mt-1.5 mr-1 text-gray-600 hover:text-red-400 transition-all flex-shrink-0"
+                    title="Delete session"
+                  >
+                    <X size={10} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* ── Main form ─────────────────────────────────────────────────── */}
+          <div className="flex-1 flex items-center justify-center px-8 py-10 min-w-0">
+            <div className="w-full max-w-lg space-y-5">
+              <div>
+                <h2 className="text-base font-semibold text-white">What do you want to build?</h2>
+                <p className="text-xs text-gray-500 mt-0.5">Describe your idea — the AI will guide you through the rest</p>
+              </div>
+
+              <textarea
+                autoFocus
+                rows={5}
+                value={session.prompt}
+                onChange={e => setSession(s => ({ ...s, prompt: e.target.value }))}
+                onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleStartWorkshop() }}
+                placeholder="e.g. Generate a customer segmentation model based on transaction history. Allow CSV upload. Merge on customer_id. Suggest which fields to group by."
+                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-violet-500 resize-none leading-relaxed"
+              />
 
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -773,15 +1878,41 @@ function AiWorkshop({
               />
             </div>
 
-            <button
-              onClick={handleStartWorkshop}
-              disabled={!session.prompt.trim()}
-              className="w-full py-3 text-sm font-semibold bg-violet-700 hover:bg-violet-600 text-white rounded-xl transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
-            >
-              <MessageSquare size={14} /> Start AI Workshop →
-            </button>
-            <p className="text-center text-[11px] text-gray-600">Ctrl+Enter to start · You can upload a CSV in the chat for schema analysis</p>
+              <button
+                onClick={handleStartWorkshop}
+                disabled={!session.prompt.trim()}
+                className="w-full py-2.5 text-sm font-semibold bg-violet-700 hover:bg-violet-600 text-white rounded-xl transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
+              >
+                <MessageSquare size={14} /> Start AI Workshop →
+              </button>
+              <p className="text-[11px] text-gray-600">Ctrl+Enter to start · Upload a CSV in the chat for schema analysis</p>
+            </div>
           </div>
+
+          {/* ── Samples sidebar ───────────────────────────────────────────── */}
+          <div className="w-64 flex-shrink-0 border-l border-gray-800 flex flex-col">
+            <div className="px-4 py-3 border-b border-gray-800 flex-shrink-0">
+              <p className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Templates</p>
+            </div>
+            <div className="flex-1 overflow-y-auto py-2">
+              {SAMPLE_PROMPTS.map(s => (
+                <button
+                  key={s.label}
+                  onClick={() => setSession(prev => ({ ...prev, prompt: s.prompt, dsType: s.dsType, framework: s.framework }))}
+                  className={clsx(
+                    'w-full flex items-center gap-2.5 px-4 py-2.5 text-left transition-colors',
+                    session.prompt === s.prompt
+                      ? 'bg-violet-900/30 text-violet-200'
+                      : 'text-gray-400 hover:bg-gray-800/60 hover:text-white',
+                  )}
+                >
+                  <span className="text-base flex-shrink-0">{s.icon}</span>
+                  <span className="text-xs font-medium leading-tight">{s.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
         </div>
       </div>
     )
@@ -809,7 +1940,11 @@ function AiWorkshop({
         </div>
         {generatedCode && (
           <button
-            onClick={() => onUseCode(generatedCode, generatedFilename)}
+            onClick={() => {
+              const snap: SavedAiSession = { id: currentSessionId, title: messages.find(m => m.role === 'user')?.content.slice(0, 60) ?? 'Session', messages, session, generatedCode, generatedFilename, savedAt: Date.now() }
+              onSaveSession?.(snap)
+              onUseCode(generatedCode, generatedFilename, snap)
+            }}
             className="ml-auto flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-violet-700 hover:bg-violet-600 text-white rounded-lg transition-colors"
           >
             <Wand2 size={11} /> Open in Editor
@@ -817,15 +1952,65 @@ function AiWorkshop({
         )}
       </div>
 
-      {/* Body: chat + code panel */}
+      {/* Body: history sidebar + chat + code panel */}
       <div className="flex flex-1 min-h-0">
+
+        {/* ── Session history sidebar ─────────────────────────────────────── */}
+        <div className="w-44 flex-shrink-0 border-r border-gray-800 flex flex-col bg-gray-950/60 overflow-hidden">
+          <div className="px-3 py-2 border-b border-gray-800 text-[10px] text-gray-500 uppercase tracking-wider font-medium flex items-center gap-1">
+            <Clock size={10} /> History
+          </div>
+          <div className="flex-1 overflow-y-auto py-1">
+            {savedSessions.length === 0 ? (
+              <div className="px-3 py-4 text-[11px] text-gray-600 italic">No sessions yet</div>
+            ) : savedSessions.map(s => (
+              <div key={s.id} className={clsx('group flex items-start hover:bg-gray-800 transition-colors', s.id === currentSessionId && 'bg-gray-800/50 border-l-2 border-violet-500')}>
+                <button
+                  onClick={() => onRestoreSession?.(s)}
+                  className="flex-1 text-left px-3 py-2 text-[11px] min-w-0"
+                >
+                  <div className="truncate font-medium text-gray-300">{s.title || 'Session'}</div>
+                  <div className="text-[10px] text-gray-600 mt-0.5">{new Date(s.savedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+                </button>
+                <button
+                  onClick={e => { e.stopPropagation(); onDeleteSession?.(s.id) }}
+                  className="opacity-0 group-hover:opacity-100 p-1.5 mt-1.5 mr-1 text-gray-600 hover:text-red-400 transition-all flex-shrink-0"
+                  title="Delete session"
+                >
+                  <X size={10} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="border-t border-gray-800 p-2">
+            <button
+              onClick={() => onRestoreSession?.(undefined as any)}
+              className="w-full text-[11px] text-gray-500 hover:text-violet-300 py-1.5 text-center hover:bg-gray-800/50 rounded-lg transition-colors"
+            >
+              + New session
+            </button>
+          </div>
+        </div>
 
         {/* ── Chat panel ────────────────────────────────────────────────────── */}
         <div className="flex flex-col w-[52%] min-w-0 border-r border-gray-800">
           {/* Messages */}
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
             {messages.map(msg => (
-              <ChatBubble key={msg.id} msg={msg} onSuggestion={t => sendMessage(t)} />
+              <ChatBubble
+                key={msg.id}
+                msg={msg}
+                showCostDebug={showCostDebug}
+                onSuggestion={t => {
+                  if (t === 'Back to Files') { onBack(); return }
+                  if (t === 'Top up wallet') { onBack(); window.dispatchEvent(new CustomEvent('navigate', { detail: 'wallet' })); return }
+                  if (t === 'Try again') { sendMessage(messages[messages.length - 2]?.content ?? '', undefined, false); return }
+                  if (t === 'Generate Now') { sendMessage('', undefined, true); return }
+                  sendMessage(t)
+                }}
+                onInspectionApply={handleInspectionApply}
+                onInspectionSkip={handleInspectionSkip}
+              />
             ))}
 
             {/* Typing indicator */}
@@ -864,13 +2049,13 @@ function AiWorkshop({
               disabled={sending}
             />
             <div className="flex items-center gap-2">
-              <input ref={csvInputRef} type="file" accept=".csv" className="hidden" onChange={handleCsvUpload} />
+              <input ref={csvInputRef} type="file" accept="*" className="hidden" onChange={handleFileAttach} />
               <button
                 onClick={() => csvInputRef.current?.click()}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-gray-500 hover:text-white bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors flex-shrink-0"
-                title="Upload a CSV to analyze its schema"
+                title="Attach any file — CSV/Excel inspected inline, images/PDFs saved to dataset"
               >
-                <Paperclip size={11} /> Upload CSV
+                <Paperclip size={11} /> Attach file
               </button>
               <button
                 onClick={() => sendMessage(input || 'Generate the trainer now based on everything we discussed.', undefined, true)}
@@ -975,7 +2160,11 @@ function AiWorkshop({
                 <Save size={11} /> Keep editing
               </button>
               <button
-                onClick={() => onUseCode(generatedCode, generatedFilename)}
+                onClick={() => {
+                  const snap: SavedAiSession = { id: currentSessionId, title: messages.find(m => m.role === 'user')?.content.slice(0, 60) ?? 'Session', messages, session, generatedCode, generatedFilename, savedAt: Date.now() }
+                  onSaveSession?.(snap)
+                  onUseCode(generatedCode, generatedFilename, snap)
+                }}
                 className="flex items-center gap-1.5 px-4 py-1.5 text-[11px] font-semibold bg-violet-700 hover:bg-violet-600 text-white rounded-lg transition-colors"
               >
                 <Wand2 size={11} /> Open in Editor →
@@ -1010,10 +2199,19 @@ export default function CodeEditorPage() {
   const [newFileError, setNewFileError] = useState('')
 
   // AI Workshop
+  const AI_SESSIONS_KEY = `ml_ai_sessions_${user?.org_id ?? 'default'}_v1`
   const [aiMode, setAiMode] = useState(false)
   const [aiSession, setAiSession] = useState<AiSession>({
     prompt: '', dsType: 'dataset', framework: 'auto', className: '', csvSchema: null,
   })
+  const [savedAiSessions, setSavedAiSessions] = useState<SavedAiSession[]>(() => {
+    try { return JSON.parse(localStorage.getItem(`ml_ai_sessions_${user?.org_id ?? 'default'}_v1`) ?? '[]') }
+    catch { return [] }
+  })
+  const [lastAiSession, setLastAiSession] = useState<SavedAiSession | null>(null)
+  const [restoreAiSession, setRestoreAiSession] = useState<SavedAiSession | undefined>(undefined)
+  const [aiWorkshopKey, setAiWorkshopKey] = useState(0)
+  const [showCostDebug, setShowCostDebug] = useState(false)
 
   // Datasets
   const [datasets, setDatasets] = useState<EditorDataset[]>([])
@@ -1029,6 +2227,7 @@ export default function CodeEditorPage() {
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
   const [logs, setLogs] = useState<LogLine[]>([])
   const [logOpen, setLogOpen] = useState(false)
+  const [errorsExpanded, setErrorsExpanded] = useState(false)
   const logIdRef = useRef(0)
   const logBottomRef = useRef<HTMLDivElement>(null)
   const sseRef = useRef<EventSource | null>(null)
@@ -1075,7 +2274,14 @@ export default function CodeEditorPage() {
     loadTree()
     loadDatasets()
     loadWallet()
+    configApi.getUiConfig().then(c => setShowCostDebug(c.show_cost_debug)).catch(() => {})
   }, [loadTree, loadDatasets, loadWallet])
+
+  // Persist AI sessions to localStorage whenever they change
+  useEffect(() => {
+    try { localStorage.setItem(AI_SESSIONS_KEY, JSON.stringify(savedAiSessions.slice(0, 20))) }
+    catch {}
+  }, [savedAiSessions]) // eslint-disable-line
 
   // Auto-scroll logs
   useEffect(() => {
@@ -1249,6 +2455,7 @@ export default function CodeEditorPage() {
     setRunning(true)
     setLogOpen(true)
     setLogs([])
+    setErrorsExpanded(false)
 
     // Validate: check syntax + detect trainer name from `name = "..."` attribute
     addLog('● Validating file…', 'connected')
@@ -1474,17 +2681,54 @@ export default function CodeEditorPage() {
           </button>
         )}
 
-        {/* AI Workshop */}
+        {/* AI Workshop — new */}
         {!isViewer && (
           <button
             onClick={() => {
               setAiSession({ prompt: '', dsType: 'dataset', framework: 'auto', className: '', csvSchema: null })
+              setRestoreAiSession(undefined)
+              setAiWorkshopKey(k => k + 1)
               setAiMode(true)
             }}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-violet-900/50 border border-violet-700/60 text-violet-300 hover:bg-violet-800/60 hover:text-white rounded-lg transition-colors"
-            title="Generate a trainer using AI"
+            title="Generate a new trainer using AI"
           >
             <Sparkles size={12} /> Generate
+          </button>
+        )}
+
+        {/* Refine in AI Workshop — only when a file is open */}
+        {!isViewer && activeTabData && (
+          <button
+            onClick={() => {
+              setAiSession({
+                prompt: '',
+                dsType: 'dataset',
+                framework: 'auto',
+                className: '',
+                csvSchema: null,
+                existingCode: activeTabData.content,
+                existingFilename: activeTabData.name,
+              })
+              setRestoreAiSession(undefined)
+              setAiWorkshopKey(k => k + 1)
+              setAiMode(true)
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-800 border border-gray-700 text-gray-400 hover:bg-violet-900/40 hover:border-violet-700/60 hover:text-violet-300 rounded-lg transition-colors"
+            title="Refine this trainer with AI"
+          >
+            <Wand2 size={12} /> Refine
+          </button>
+        )}
+
+        {/* Resume last AI session — no remount, workshop is always mounted */}
+        {!isViewer && lastAiSession && !aiMode && (
+          <button
+            onClick={() => setAiMode(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-violet-950/50 border border-violet-800/50 text-violet-400 hover:bg-violet-900/50 hover:text-violet-200 rounded-lg transition-colors"
+            title={`Resume: ${lastAiSession.title}`}
+          >
+            <MessageSquare size={12} /> Resume AI
           </button>
         )}
 
@@ -1569,14 +2813,43 @@ export default function CodeEditorPage() {
         </button>
       </div>
 
-      {/* AI Workshop mode — replaces the entire body */}
-      {aiMode && (
-        <div className="flex-1 min-h-0">
-          <AiWorkshop
+      {/* AI Workshop — always mounted to preserve session state across editor↔AI navigation */}
+      <div className={aiMode ? 'flex-1 min-h-0' : 'hidden'}>
+        <AiWorkshop
+            key={aiWorkshopKey}
             session={aiSession}
             datasets={datasets}
+            savedSessions={savedAiSessions}
+            restoreSession={restoreAiSession}
+            showCostDebug={showCostDebug}
+            onSaveSession={snap => {
+              setLastAiSession(snap)
+              setSavedAiSessions(prev => {
+                const existing = prev.findIndex(s => s.id === snap.id)
+                return existing >= 0
+                  ? prev.map(s => s.id === snap.id ? snap : s)
+                  : [snap, ...prev].slice(0, 20)
+              })
+            }}
+            onRestoreSession={snap => {
+              // undefined = "New session"
+              setRestoreAiSession(snap ?? undefined)
+              setAiSession({ prompt: '', dsType: 'dataset', framework: 'auto', className: '', csvSchema: null })
+              setAiWorkshopKey(k => k + 1)
+            }}
+            onDeleteSession={id => {
+              setSavedAiSessions(prev => prev.filter(s => s.id !== id))
+              if (lastAiSession?.id === id) setLastAiSession(null)
+            }}
             onBack={() => setAiMode(false)}
-            onUseCode={(code, filename) => {
+            onUseCode={(code, filename, snap) => {
+              setLastAiSession(snap)
+              setSavedAiSessions(prev => {
+                const existing = prev.findIndex(s => s.id === snap.id)
+                return existing >= 0
+                  ? prev.map(s => s.id === snap.id ? snap : s)
+                  : [snap, ...prev].slice(0, 20)
+              })
               const path = filename.endsWith('.py') ? filename : `${filename}.py`
               const tab: OpenTab = { path, name: path.split('/').pop()!, content: code, dirty: true }
               setTabs(prev => {
@@ -1589,8 +2862,7 @@ export default function CodeEditorPage() {
               setAiMode(false)
             }}
           />
-        </div>
-      )}
+      </div>
 
       {/* Body: sidebar + editor */}
       <div className={clsx('flex flex-1 min-h-0', aiMode && 'hidden')}>
@@ -1752,22 +3024,45 @@ export default function CodeEditorPage() {
               <div className="flex-1 overflow-y-auto px-3 py-2 font-mono text-[11px] space-y-0.5">
                 {logs.length === 0 ? (
                   <span className="text-gray-600">Run a trainer to see output here.</span>
-                ) : (
-                  logs.map(line => (
-                    <div
-                      key={line.id}
-                      className={clsx(
-                        'whitespace-pre-wrap break-all leading-relaxed',
-                        line.type === 'error' ? 'text-red-400' :
-                        line.type === 'done' ? 'text-green-400' :
-                        line.type === 'connected' ? 'text-brand-400' :
-                        'text-gray-300',
+                ) : (() => {
+                  const errorLines = logs.filter(l => l.type === 'error')
+                  const otherLines = logs.filter(l => l.type !== 'error')
+                  return (
+                    <>
+                      {otherLines.map(line => (
+                        <div key={line.id} className={clsx(
+                          'whitespace-pre-wrap break-all leading-relaxed',
+                          line.type === 'done' ? 'text-green-400' :
+                          line.type === 'connected' ? 'text-brand-400' :
+                          'text-gray-300',
+                        )}>
+                          {line.text}
+                        </div>
+                      ))}
+                      {errorLines.length > 0 && (
+                        <div className="mt-1 border border-red-800/50 rounded-lg overflow-hidden">
+                          <button
+                            onClick={() => setErrorsExpanded(v => !v)}
+                            className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-red-950/40 hover:bg-red-900/40 text-left transition-colors"
+                          >
+                            <AlertCircle size={10} className="text-red-400 flex-shrink-0" />
+                            <span className="text-red-400 flex-1">{errorLines.length} error{errorLines.length !== 1 ? 's' : ''}</span>
+                            <ChevronDown size={10} className={clsx('text-red-500 transition-transform', errorsExpanded && 'rotate-180')} />
+                          </button>
+                          {errorsExpanded && (
+                            <div className="px-2.5 py-2 space-y-0.5 bg-red-950/20">
+                              {errorLines.map(line => (
+                                <div key={line.id} className="whitespace-pre-wrap break-all leading-relaxed text-red-400">
+                                  {line.text}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       )}
-                    >
-                      {line.text}
-                    </div>
-                  ))
-                )}
+                    </>
+                  )
+                })()}
                 {/* Empty dataset prompt */}
                 {emptyDatasetSlugRef.current && !running && !emptyDataset && (
                   <div className="mt-2 flex items-center gap-2 px-3 py-2 bg-amber-950/40 border border-amber-800/50 rounded-lg font-sans">
@@ -1787,6 +3082,34 @@ export default function CodeEditorPage() {
                       className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-medium rounded-lg transition-colors flex-shrink-0"
                     >
                       <Upload size={11} /> Upload Data
+                    </button>
+                  </div>
+                )}
+                {/* Fix with AI — shown when errors present after run */}
+                {!running && logs.some(l => l.type === 'error') && activeTabData && !isViewer && (
+                  <div className="mt-2 flex items-center gap-3 px-3 py-2 bg-red-950/30 border border-red-800/40 rounded-lg font-sans">
+                    <AlertCircle size={12} className="text-red-400 flex-shrink-0" />
+                    <span className="text-red-300 text-[11px] flex-1">Errors detected — send to AI for diagnosis</span>
+                    <button
+                      onClick={() => {
+                        const errorText = logs.filter(l => l.type === 'error').map(l => l.text).join('\n')
+                        setRestoreAiSession(undefined)
+                        setAiWorkshopKey(k => k + 1)
+                        setAiSession({
+                          prompt: '',
+                          dsType: 'dataset',
+                          framework: 'auto',
+                          className: '',
+                          csvSchema: null,
+                          existingCode: activeTabData.content,
+                          existingFilename: activeTabData.name,
+                          initialUserMessage: `I ran the trainer and got these errors:\n\`\`\`\n${errorText}\n\`\`\`\nPlease diagnose and fix the issue.`,
+                        })
+                        setAiMode(true)
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white text-[11px] font-medium rounded-lg transition-colors flex-shrink-0"
+                    >
+                      <Sparkles size={11} /> Fix with AI
                     </button>
                   </div>
                 )}

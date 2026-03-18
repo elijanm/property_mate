@@ -40,7 +40,13 @@ function isBboxList(val: unknown): boolean {
     ('label' in val[0] || 'class' in val[0])
 }
 
-type FieldType = 'image' | 'reading' | 'label' | 'confidence' | 'ranked_list' | 'bbox_list' | 'text' | 'json'
+type FieldType = 'image' | 'reading' | 'label' | 'confidence' | 'ranked_list' | 'bbox_list' | 'table_list' | 'text' | 'json'
+
+function isTableList(val: unknown): boolean {
+  return Array.isArray(val) && val.length > 0 &&
+    typeof val[0] === 'object' && val[0] !== null &&
+    !isRankedList(val) && !isBboxList(val)
+}
 
 function detectType(key: string, val: unknown): FieldType {
   if (isImageValue(val) || isImageKey(key)) return 'image'
@@ -49,6 +55,7 @@ function detectType(key: string, val: unknown): FieldType {
   if (/label|class|prediction|category|tag|type/i.test(key) && typeof val === 'string') return 'label'
   if (isRankedList(val)) return 'ranked_list'
   if (isBboxList(val)) return 'bbox_list'
+  if (isTableList(val)) return 'table_list'
   if (typeof val === 'number') return 'reading'
   if (typeof val === 'string' && val.length > 80) return 'text'
   if (typeof val === 'string') return 'label'
@@ -152,6 +159,56 @@ function BboxListField({ label, value }: { label: string; value: unknown }) {
   )
 }
 
+function TableListField({ label, value }: { label: string; value: unknown }) {
+  if (!Array.isArray(value) || value.length === 0) return null
+  const rows = value as Record<string, unknown>[]
+  const cols = Object.keys(rows[0])
+  return (
+    <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+      <p className="text-[10px] text-gray-500 px-3 py-2 border-b border-gray-800">
+        {label} <span className="ml-1 text-gray-600">({rows.length} rows)</span>
+      </p>
+      <div className="overflow-auto max-h-72">
+        <table className="w-full text-[11px] border-collapse">
+          <thead>
+            <tr className="border-b border-gray-800 sticky top-0 bg-gray-900">
+              {cols.map(c => (
+                <th key={c} className="text-left px-3 py-1.5 text-gray-500 font-medium whitespace-nowrap">
+                  {c.replace(/_/g, ' ')}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={i} className={`border-b border-gray-800/50 ${i % 2 === 0 ? '' : 'bg-gray-800/20'}`}>
+                {cols.map(c => {
+                  const v = row[c]
+                  const isNum = typeof v === 'number'
+                  const isLabel = /label|segment|class|status/i.test(c) && typeof v === 'string'
+                  return (
+                    <td key={c} className="px-3 py-1.5 whitespace-nowrap text-gray-300">
+                      {isLabel ? (
+                        <span className="px-1.5 py-0.5 rounded-full bg-brand-900/50 text-brand-300 text-[10px] font-medium">
+                          {String(v)}
+                        </span>
+                      ) : isNum ? (
+                        <span className="font-mono text-gray-400">{Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                      ) : (
+                        String(v ?? '—')
+                      )}
+                    </td>
+                  )
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 function TextField({ label, value }: { label: string; value: unknown }) {
   return (
     <div className="bg-gray-900 rounded-xl border border-gray-800 p-3">
@@ -182,6 +239,7 @@ function RenderField({ fieldType, label, value }: { fieldType: FieldType; label:
     case 'confidence':  return <ConfidenceField label={label} value={value} />
     case 'ranked_list': return <RankedListField label={label} value={value} />
     case 'bbox_list':   return <BboxListField label={label} value={value} />
+    case 'table_list':  return <TableListField label={label} value={value} />
     case 'text':        return <TextField label={label} value={value} />
     default:            return <JsonField label={label} value={value} />
   }
@@ -195,8 +253,8 @@ export default function InferenceResultRenderer({ outputs, displaySpec, compact 
   // ── Spec-driven mode ──────────────────────────────────────────────────────
   if (displaySpec.length > 0) {
     const images  = displaySpec.filter(s => s.type === 'image')
-    const scalars = displaySpec.filter(s => s.type !== 'image' && s.type !== 'ranked_list' && s.type !== 'bbox_list' && s.type !== 'json')
-    const lists   = displaySpec.filter(s => s.type === 'ranked_list' || s.type === 'bbox_list')
+    const scalars = displaySpec.filter(s => s.type !== 'image' && s.type !== 'ranked_list' && s.type !== 'bbox_list' && s.type !== 'table_list' && s.type !== 'json')
+    const lists   = displaySpec.filter(s => s.type === 'ranked_list' || s.type === 'bbox_list' || s.type === 'table_list')
     const raws    = displaySpec.filter(s => s.type === 'json')
 
     return (
@@ -236,7 +294,7 @@ export default function InferenceResultRenderer({ outputs, displaySpec, compact 
 
   const images  = entries.filter(e => e.type === 'image')
   const scalars = entries.filter(e => e.type === 'reading' || e.type === 'label' || e.type === 'confidence')
-  const lists   = entries.filter(e => e.type === 'ranked_list' || e.type === 'bbox_list')
+  const lists   = entries.filter(e => e.type === 'ranked_list' || e.type === 'bbox_list' || e.type === 'table_list')
   const texts   = entries.filter(e => e.type === 'text')
   const raws    = entries.filter(e => e.type === 'json')
 

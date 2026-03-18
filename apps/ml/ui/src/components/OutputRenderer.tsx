@@ -47,7 +47,7 @@ export default function OutputRenderer({ outputSchema, output, correctedOutput, 
       {/* Scalar fields */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
         {Object.entries(outputSchema)
-          .filter(([, f]) => f.type !== 'image_url' && f.type !== 'detections' && f.type !== 'json')
+          .filter(([, f]) => f.type !== 'image_url' && f.type !== 'detections' && f.type !== 'json' && f.type !== 'list')
           .map(([key, field]) => {
             const raw = data[key]
             const override = corrected[key]
@@ -97,6 +97,65 @@ export default function OutputRenderer({ outputSchema, output, correctedOutput, 
                   ))}
                 </tbody>
               </table>
+            </div>
+          )
+        })}
+
+      {/* List (table) fields */}
+      {Object.entries(outputSchema)
+        .filter(([, f]) => f.type === 'list')
+        .map(([key, field]) => {
+          const rows = data[key]
+          if (!Array.isArray(rows) || rows.length === 0) return null
+          const cols = Object.keys(rows[0] as Record<string, unknown>)
+          return (
+            <div key={key}>
+              <p className="text-xs text-gray-500 uppercase tracking-widest mb-2">
+                {field.label} <span className="normal-case text-gray-700">({rows.length} rows)</span>
+              </p>
+              <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+                <div className="overflow-auto max-h-72">
+                  <table className="w-full text-[11px] border-collapse">
+                    <thead>
+                      <tr className="border-b border-gray-800 sticky top-0 bg-gray-900">
+                        {cols.map(c => (
+                          <th key={c} className="text-left px-3 py-1.5 text-gray-500 font-medium whitespace-nowrap">
+                            {c.replace(/_/g, ' ')}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(rows as Record<string, unknown>[]).map((row, i) => (
+                        <tr key={i} className={`border-b border-gray-800/50 ${i % 2 === 0 ? '' : 'bg-gray-800/20'}`}>
+                          {cols.map(c => {
+                            const v = row[c]
+                            const isNum = typeof v === 'number'
+                            const isLabel = /label|segment|class|status/i.test(c) && typeof v === 'string'
+                            return (
+                              <td key={c} className="px-3 py-1.5 whitespace-nowrap text-gray-300">
+                                {isLabel ? (
+                                  <span className="px-1.5 py-0.5 rounded-full bg-brand-900/50 text-brand-300 text-[10px] font-medium">
+                                    {String(v)}
+                                  </span>
+                                ) : isNum ? (
+                                  <span className="font-mono text-gray-400">
+                                    {Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                                  </span>
+                                ) : typeof v === 'object' && v !== null ? (
+                                  <span className="text-gray-600 text-[10px] font-mono">{JSON.stringify(v)}</span>
+                                ) : (
+                                  String(v ?? '—')
+                                )}
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           )
         })}

@@ -19,10 +19,24 @@ Utility methods (no need to override — call from train()/predict())
   self.get_amp_context(config)            → torch.autocast or nullcontext
   self.move_to_device(obj, config)        → tensor/model → correct device
   self.build_dataloader(ds, config, ...)  → GPU-optimized DataLoader
-  self.normalize_output(raw)             → JSON-serializable types
-  self.auto_train_tabular(df, label, cfg) → sklearn best-model auto-selection
+  self.normalize_output(raw)              → JSON-serializable types
+  self.auto_train_tabular(df, label, cfg) → sklearn best-model auto-selection (returns Pipeline)
   self.auto_train_torch(model, tr, vl, c) → full GPU training loop
   self.log_device_info(config)            → logs GPU name, VRAM, CUDA version
+  self._fetch_bytes(file_key, file_url)   → bytes from S3 key (preferred) or URL fallback
+
+Artifact persistence rules
+--------------------------
+  NEVER store fitted transformers (scalers, encoders, etc.) on `self` in
+  preprocess() or train() and then access them in predict().  predict() runs
+  on a fresh instance — self.scaler / self.encoder etc. are GONE.
+
+  Two correct patterns:
+    A) Return a sklearn Pipeline from train() — scaler is a Pipeline step,
+       saved and loaded automatically.  auto_train_tabular() already does this.
+    B) Return a TrainerBundle from train() — bundles model + scaler + encoder
+       + feature_names + label_map + threshold into one joblib artifact.
+       predict(self, model, inputs) receives the loaded TrainerBundle as `model`.
 
 Example
 -------
@@ -130,11 +144,12 @@ class OutputFieldSpec:
     confidence  float 0-1 — progress bar + percentage
     ranked_list list of {label, confidence} dicts — compact ranked table
     bbox_list   list of {label, bbox, confidence} dicts — detection cards
+    table_list  list of arbitrary dicts — scrollable HTML table (use for segmentation groups, bulk results)
     text        multi-word string — plain paragraph
-    json        anything else — collapsible <pre>
+    json        plain dict / nested object — collapsible <pre> (use for summary stats)
     """
     key: str                # matches key returned by predict()
-    type: str               # image | reading | label | confidence | ranked_list | bbox_list | text | json
+    type: str               # image | reading | label | confidence | ranked_list | bbox_list | table_list | text | json
     label: str              # display name shown in the UI
     primary: bool = False   # True → this value is used as predicted_label_hint + feedback label
     hint: str = ""          # placeholder in the feedback "Actual value" input
@@ -201,6 +216,157 @@ class EvaluationResult:
     y_true: Optional[List] = None
     y_pred: Optional[List] = None
     extra_metrics: Dict[str, float] = field(default_factory=dict)
+
+
+# ── TrainerBundle ──────────────────────────────────────────────────────────────
+
+class TrainerBundle:
+    """
+    Standard container for returning multiple fitted artifacts from train().
+
+    Use TrainerBundle when you need to persist a scaler, encoder, vectorizer,
+    feature-name list, label map, or decision threshold alongside the model —
+    and wrapping everything in a sklearn Pipeline is not suitable (e.g. KMeans,
+    custom PyTorch wrappers, multi-output models, anomaly detectors).
+
+    MLflow saves the entire bundle as one joblib artifact (mlflow.sklearn flavor).
+    At inference time ``predict(self, model, inputs)`` receives the loaded
+    TrainerBundle as the ``model`` argument — access bundle.model, bundle.scaler,
+    etc. directly.
+
+    Attributes
+    ----------
+    model         — the trained estimator / neural net (required)
+    scaler        — fitted scaler (StandardScaler, MinMaxScaler, RobustScaler, …)
+    encoder       — fitted encoder (LabelEncoder, OrdinalEncoder, …)
+    vectorizer    — fitted text vectorizer (TfidfVectorizer, CountVectorizer, …)
+    feature_names — ordered list of column names used during training
+    label_map     — dict mapping raw output (int cluster/class) → human label
+    threshold     — fitted decision threshold (e.g. anomaly percentile)
+    extra         — arbitrary dict for anything else
+
+    Example — clustering (KMeans + StandardScaler)
+    ----------------------------------------------
+        def train(self, preprocessed: pd.DataFrame, config: TrainingConfig):
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.cluster import KMeans
+
+            feature_cols = [c for c in preprocessed.columns if c != 'customer_id']
+            X = preprocessed[feature_cols].values
+
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
+
+            kmeans = KMeans(n_clusters=4, random_state=config.random_seed)
+            kmeans.fit(X_scaled)
+
+            label_map = {0: "Low Value", 1: "Mid Value", 2: "High Value", 3: "VIP"}
+            return TrainerBundle(
+                model=kmeans,
+                scaler=scaler,
+                feature_names=feature_cols,
+                label_map=label_map,
+            )
+
+        def predict(self, model: "TrainerBundle", inputs: dict) -> dict:
+            import pandas as pd
+            row = pd.DataFrame([[inputs[f] for f in model.feature_names]],
+                               columns=model.feature_names)
+            X_scaled = model.scaler.transform(row)
+            cluster   = int(model.model.predict(X_scaled)[0])
+            label     = model.label_map.get(cluster, str(cluster))
+            return {"segment": cluster, "segment_label": label}
+
+    Example — anomaly detection (IsolationForest + threshold)
+    ----------------------------------------------------------
+        def train(self, preprocessed, config):
+            from sklearn.ensemble import IsolationForest
+            from sklearn.preprocessing import StandardScaler
+            import numpy as np
+
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(preprocessed)
+
+            iso = IsolationForest(contamination=0.05, random_state=config.random_seed)
+            iso.fit(X_scaled)
+            scores = iso.decision_function(X_scaled)
+            threshold = float(np.percentile(scores, 5))
+
+            return TrainerBundle(model=iso, scaler=scaler, threshold=threshold)
+
+        def predict(self, model: "TrainerBundle", inputs: dict) -> dict:
+            import numpy as np
+            row = np.array([[inputs[f] for f in model.feature_names]])
+            X_scaled = model.scaler.transform(row)
+            score = float(model.model.decision_function(X_scaled)[0])
+            is_anomaly = score < (model.threshold or 0.0)
+            return {"is_anomaly": is_anomaly, "anomaly_score": round(score, 4)}
+    """
+
+    def __init__(
+        self,
+        model: Any,
+        scaler: Any = None,
+        encoder: Any = None,
+        vectorizer: Any = None,
+        feature_names: Optional[List[str]] = None,
+        label_map: Optional[Dict[str, Any]] = None,
+        threshold: Optional[float] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.model = model
+        self.scaler = scaler
+        self.encoder = encoder
+        self.vectorizer = vectorizer
+        self.feature_names: List[str] = feature_names or []
+        self.label_map: Dict[str, Any] = label_map or {}
+        self.threshold = threshold
+        self.extra: Dict[str, Any] = extra or {}
+
+    # ── sklearn-compatible interface (required for mlflow.sklearn.log_model) ──
+
+    def predict(self, X: Any) -> Any:
+        """
+        Delegate to self.model.predict(), applying self.scaler when set.
+        This method makes TrainerBundle serialisable as a sklearn estimator by
+        MLflow.  Trainer.predict(model, inputs) should access model.model /
+        model.scaler directly — do NOT call model.predict() from trainer code.
+        """
+        X_in = X
+        if self.scaler is not None:
+            try:
+                X_in = self.scaler.transform(X_in)
+            except Exception:
+                pass
+        return self.model.predict(X_in)
+
+    def predict_proba(self, X: Any) -> Any:
+        """Delegate predict_proba to the wrapped model (classifiers only)."""
+        X_in = X
+        if self.scaler is not None:
+            try:
+                X_in = self.scaler.transform(X_in)
+            except Exception:
+                pass
+        if hasattr(self.model, "predict_proba"):
+            return self.model.predict_proba(X_in)
+        raise AttributeError(
+            f"{type(self.model).__name__} does not support predict_proba"
+        )
+
+    def __repr__(self) -> str:
+        parts = [f"model={type(self.model).__name__}"]
+        if self.scaler:
+            parts.append(f"scaler={type(self.scaler).__name__}")
+        if self.encoder:
+            parts.append(f"encoder={type(self.encoder).__name__}")
+        if self.vectorizer:
+            parts.append(f"vectorizer={type(self.vectorizer).__name__}")
+        if self.feature_names:
+            parts.append(f"features={len(self.feature_names)}")
+        if self.label_map:
+            parts.append(f"labels={len(self.label_map)}")
+        return f"TrainerBundle({', '.join(parts)})"
 
 
 # ── BaseTrainer ────────────────────────────────────────────────────────────────
@@ -365,6 +531,69 @@ class BaseTrainer(ABC):
             df_val = df_tmp.iloc[:0]  # empty, same schema
 
         return df_train, df_val, df_test
+
+    # ── Dataset file helper ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _fetch_bytes(file_key: Optional[str], file_url: Optional[str]) -> Optional[bytes]:
+        """Download file bytes from S3 key (preferred) or presigned/public URL (fallback).
+
+        Use this in preprocess() when loading files from a DatasetDataSource:
+
+            def preprocess(self, raw):
+                entry = next((e for e in raw if e.get('field_label') == 'Original Upload'
+                              and (e.get('file_key') or e.get('file_url'))), None)
+                if entry is None:
+                    raise ValueError("No file in dataset")
+                content = self._fetch_bytes(entry.get('file_key'), entry.get('file_url'))
+                df = pd.read_csv(io.BytesIO(content))
+                return df
+        """
+        if file_key:
+            try:
+                import asyncio
+                import aioboto3
+                from app.core.config import settings as _s
+
+                async def _get() -> bytes:
+                    session = aioboto3.Session()
+                    async with session.client(
+                        "s3",
+                        endpoint_url=_s.S3_ENDPOINT_URL,
+                        aws_access_key_id=_s.S3_ACCESS_KEY,
+                        aws_secret_access_key=_s.S3_SECRET_KEY,
+                    ) as s3:
+                        resp = await s3.get_object(Bucket=_s.S3_BUCKET, Key=file_key)
+                        return await resp["Body"].read()
+
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                            return ex.submit(asyncio.run, _get()).result()
+                    return loop.run_until_complete(_get())
+                except RuntimeError:
+                    return asyncio.run(_get())
+            except Exception as exc:
+                import structlog
+                structlog.get_logger(__name__).warning(
+                    "fetch_bytes_s3_failed", file_key=file_key, error=str(exc)
+                )
+
+        if file_url:
+            try:
+                import requests
+                resp = requests.get(file_url, timeout=120)
+                resp.raise_for_status()
+                return resp.content
+            except Exception as exc:
+                import structlog
+                structlog.get_logger(__name__).warning(
+                    "fetch_bytes_url_failed", file_url=file_url, error=str(exc)
+                )
+
+        return None
 
     # ── GPU / device helpers ──────────────────────────────────────────────────
 
