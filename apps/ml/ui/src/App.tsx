@@ -48,6 +48,9 @@ import GettingStartedPage from './pages/GettingStartedPage'
 import ApiDocsPage from './pages/ApiDocsPage'
 import PrivacyPolicyPage from './pages/PrivacyPolicyPage'
 import TermsPage from './pages/TermsPage'
+import DataScientistsPage from './pages/discover/DataScientistsPage'
+import ModelsMarketplacePage from './pages/discover/ModelsMarketplacePage'
+import PublicDatasetsPage from './pages/discover/PublicDatasetsPage'
 import CookieConsent from './components/CookieConsent'
 import {
   Brain, RefreshCw, Cpu, LayoutGrid, BookOpen,
@@ -197,7 +200,7 @@ export default function App() {
     setAnnotatorUser(null)
   }
   const [resetToken, setResetToken] = useState<string | null>(_RESET_TOKEN_FROM_URL)
-  const [authPage, setAuthPage] = useState<'login' | 'register' | 'landing' | 'getting-started' | 'api-docs' | 'privacy' | 'terms' | 'forgot-password' | 'reset-password'>(
+  const [authPage, setAuthPage] = useState<'login' | 'register' | 'landing' | 'getting-started' | 'api-docs' | 'privacy' | 'terms' | 'forgot-password' | 'reset-password' | 'discover-scientists' | 'discover-models' | 'discover-datasets'>(
     _RESET_TOKEN_FROM_URL ? 'reset-password' : _INVITE_TOKEN_FROM_URL ? 'register' : 'landing'
   )
   const [registerRole, setRegisterRole] = useState<'engineer' | 'annotator' | undefined>(undefined)
@@ -396,6 +399,28 @@ export default function App() {
     if (authPage === 'terms') {
       return <TermsPage onBack={() => setAuthPage('landing')} onPrivacy={() => setAuthPage('privacy')} />
     }
+    if (authPage === 'discover-scientists') {
+      return (
+        <DataScientistsPage
+          onBack={() => setAuthPage('landing')}
+        />
+      )
+    }
+    if (authPage === 'discover-models') {
+      return (
+        <ModelsMarketplacePage
+          onBack={() => setAuthPage('landing')}
+        />
+      )
+    }
+    if (authPage === 'discover-datasets') {
+      return (
+        <PublicDatasetsPage
+          onBack={() => setAuthPage('landing')}
+          onViewEngineer={() => setAuthPage('discover-scientists')}
+        />
+      )
+    }
     if (authPage === 'landing') {
       return (
         <>
@@ -407,6 +432,9 @@ export default function App() {
             onGettingStarted={() => setAuthPage('getting-started')}
             onPrivacy={() => setAuthPage('privacy')}
             onTerms={() => setAuthPage('terms')}
+            onDiscoverScientists={() => setAuthPage('discover-scientists')}
+            onDiscoverModels={() => setAuthPage('discover-models')}
+            onDiscoverDatasets={() => setAuthPage('discover-datasets')}
           />
           <CookieConsent onViewPolicy={() => setAuthPage('privacy')} />
         </>
@@ -701,7 +729,7 @@ export default function App() {
         </div>
 
         {/* Content */}
-        <div className={clsx('flex-1 min-h-0', (page === 'editor' || page === 'annotate') && !selected ? 'overflow-hidden flex flex-col' : 'overflow-y-auto')}>
+        <div className={clsx('flex-1 min-h-0', (page === 'editor' || page === 'annotate' || page === 'datasets') && !selected ? 'overflow-hidden flex flex-col' : 'overflow-y-auto')}>
           {selected ? (
             <ModelWorkspace deployment={selected} onClose={() => setSelected(null)} />
           ) : page === 'editor' && effectiveRole !== 'viewer' ? (
@@ -709,6 +737,10 @@ export default function App() {
           ) : page === 'annotate' ? (
             <div className="flex-1 min-h-0 p-6 overflow-hidden flex flex-col">
               <AnnotatePage />
+            </div>
+          ) : page === 'datasets' ? (
+            <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+              <DatasetPage />
             </div>
           ) : (
             <div className="p-6">
@@ -735,7 +767,6 @@ export default function App() {
               {page === 'audit' && <AuditLogPage />}
               {page === 'users' && <UsersPage />}
               {page === 'analytics' && <AdminAnalyticsPage />}
-              {page === 'datasets' && <DatasetPage />}
               {page === 'wallet' && <WalletPage />}
               {page === 'billing' && (effectiveRole === 'admin' ? <BillingSettingsPage /> : <UserBillingPage />)}
               {page === 'usage' && <UsageTrackerPage />}

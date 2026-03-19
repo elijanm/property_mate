@@ -1,12 +1,13 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   ArrowRight, Code2, Menu, X, CheckCircle2, Zap, Globe, Shield,
   BarChart2, GitBranch, Cpu, CloudLightning, Layers,
-  ChevronRight, Database, Monitor, Star,
+  ChevronRight, Database, Monitor, Star, Users, FlaskConical,
 } from 'lucide-react'
 import clsx from 'clsx'
 import Logo from '@/components/Logo'
 import { adminApi } from '@/api/admin'
+import { configApi } from '@/api/config'
 import type { MLPlan } from '@/types/plan'
 
 interface Props {
@@ -17,6 +18,9 @@ interface Props {
   onGettingStarted: () => void
   onPrivacy: () => void
   onTerms: () => void
+  onDiscoverScientists?: () => void
+  onDiscoverModels?: () => void
+  onDiscoverDatasets?: () => void
 }
 
 // ── Data ───────────────────────────────────────────────────────────────────────
@@ -176,11 +180,14 @@ function FaqAccordion({ items }: { items: { q: string; a: string }[] }) {
   )
 }
 
-export default function LandingPage({ onSignIn, onGetStarted, onGoContributor, onApiDocs, onGettingStarted, onPrivacy, onTerms }: Props) {
+export default function LandingPage({ onSignIn, onGetStarted, onGoContributor, onApiDocs, onGettingStarted, onPrivacy, onTerms, onDiscoverScientists, onDiscoverModels, onDiscoverDatasets }: Props) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [billingMode, setBillingMode] = useState<'ondemand' | 'monthly'>('monthly')
   const [rates, setRates] = useState(DEFAULT_ONDEMAND)
   const [dbPlans, setDbPlans] = useState<MLPlan[]>([])
+  const [discoveryEnabled, setDiscoveryEnabled] = useState(false)
+  const [discoverOpen, setDiscoverOpen] = useState(false)
+  const discoverRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     adminApi.getPublicPricing().then(data => {
@@ -192,6 +199,22 @@ export default function LandingPage({ onSignIn, onGetStarted, onGoContributor, o
       })
       setDbPlans(data.plans)
     }).catch(() => {})  // silently fall back to defaults
+
+    // Load discovery_enabled from public config
+    configApi.getUiConfig().then(cfg => {
+      if ('discovery_enabled' in cfg) setDiscoveryEnabled(!!(cfg as Record<string, unknown>).discovery_enabled)
+    }).catch(() => {})
+  }, [])
+
+  // Close discover dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (discoverRef.current && !discoverRef.current.contains(e.target as Node)) {
+        setDiscoverOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
   }, [])
 
   const displayPlans = dbPlans.length > 0 ? dbPlans : FALLBACK_PLANS
@@ -220,6 +243,56 @@ export default function LandingPage({ onSignIn, onGetStarted, onGoContributor, o
             <a href="#pricing" className="hover:text-white transition-colors">Pricing</a>
             <a href="#faq" className="hover:text-white transition-colors">FAQ</a>
             <button onClick={onGettingStarted} className="hover:text-white transition-colors">Docs</button>
+            {discoveryEnabled && (
+              <div className="relative" ref={discoverRef}>
+                <button
+                  onClick={() => setDiscoverOpen(v => !v)}
+                  className={clsx('flex items-center gap-1 hover:text-white transition-colors', discoverOpen && 'text-white')}
+                >
+                  Discover <ChevronRight size={12} className={clsx('transition-transform', discoverOpen && 'rotate-90')} />
+                </button>
+                {discoverOpen && (
+                  <div className="absolute top-full left-0 mt-2 w-56 bg-[#0d1117] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50">
+                    <button
+                      onClick={() => { setDiscoverOpen(false); onDiscoverScientists?.() }}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/5 transition-colors group"
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-violet-950/60 border border-violet-800/30 flex items-center justify-center flex-shrink-0">
+                        <Users size={14} className="text-violet-400" />
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-200 group-hover:text-white">Data Scientists</p>
+                        <p className="text-[11px] text-gray-600">Top contributors</p>
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => { setDiscoverOpen(false); onDiscoverModels?.() }}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/5 transition-colors group"
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-sky-950/60 border border-sky-800/30 flex items-center justify-center flex-shrink-0">
+                        <FlaskConical size={14} className="text-sky-400" />
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-200 group-hover:text-white">Trained Models</p>
+                        <p className="text-[11px] text-gray-600">Browse the marketplace</p>
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => { setDiscoverOpen(false); onDiscoverDatasets?.() }}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/5 transition-colors group"
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-emerald-950/60 border border-emerald-800/30 flex items-center justify-center flex-shrink-0">
+                        <Database size={14} className="text-emerald-400" />
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-200 group-hover:text-white">Datasets</p>
+                        <p className="text-[11px] text-gray-600">Public datasets</p>
+                      </div>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="hidden md:flex items-center gap-2">
@@ -244,6 +317,14 @@ export default function LandingPage({ onSignIn, onGetStarted, onGoContributor, o
             <a href="#pricing" onClick={() => setMenuOpen(false)} className="block text-sm text-gray-400 hover:text-white">Pricing</a>
             <a href="#faq" onClick={() => setMenuOpen(false)} className="block text-sm text-gray-400 hover:text-white">FAQ</a>
             <button onClick={onGettingStarted} className="block text-sm text-gray-400 hover:text-white">Docs</button>
+            {discoveryEnabled && (
+              <>
+                <div className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider pt-1">Discover</div>
+                <button onClick={() => { setMenuOpen(false); onDiscoverScientists?.() }} className="block text-sm text-gray-400 hover:text-white">Data Scientists</button>
+                <button onClick={() => { setMenuOpen(false); onDiscoverModels?.() }} className="block text-sm text-gray-400 hover:text-white">Trained Models</button>
+                <button onClick={() => { setMenuOpen(false); onDiscoverDatasets?.() }} className="block text-sm text-gray-400 hover:text-white">Datasets</button>
+              </>
+            )}
             <div className="flex gap-2 pt-1">
               <button onClick={onSignIn} className="flex-1 py-2 text-sm border border-gray-800 rounded-lg text-gray-300">Sign in</button>
               <button onClick={onGetStarted} className="flex-1 py-2 text-sm bg-sky-600 rounded-lg text-white font-semibold">Start free</button>

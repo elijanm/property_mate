@@ -132,6 +132,14 @@ class DatasetEntry(Document):
     # Validation model output — stored at submission time for feedback logging on review
     validation_prediction: Optional[str] = None  # model's top predicted label
     validation_confidence: Optional[float] = None
+    # Image quality metrics (computed at upload for image/video fields)
+    blur_score: Optional[float] = None
+    brightness: Optional[float] = None
+    quality_score: Optional[int] = None
+    quality_issues: List[str] = []
+    phash: Optional[str] = None                  # 64-bit dHash for similarity search
+    # Lifecycle
+    archived: bool = False
 
     class Settings:
         name = "dataset_entries"

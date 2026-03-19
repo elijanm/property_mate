@@ -87,6 +87,17 @@ async def scan_and_register_plugins(owner_email: Optional[str] = None, org_id: O
             register_class(cls, plugin_file=str(py_file))
             await _upsert_db_registration(cls, str(py_file), owner_email=owner_email, org_id=org_id)
             await _ensure_trainer_datasets(cls, org_id=org_id)
+            # Warn if any declared requirements aren't importable
+            for req in getattr(cls, "requirements", []):
+                pkg = req.split(">=")[0].split("==")[0].split("[")[0].strip()
+                try:
+                    importlib.util.find_spec(pkg.replace("-", "_"))
+                except Exception:
+                    logger.warning(
+                        "trainer_missing_requirement",
+                        trainer=cls.trainer_name(),
+                        package=pkg,
+                    )
             count += 1
 
     logger.info("trainer_plugins_scanned", count=count, dir=str(plugin_dir))

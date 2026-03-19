@@ -13,6 +13,8 @@ export interface AnnotationShape {
   source: 'manual' | 'model'
 }
 
+export type QualityIssue = 'blurry' | 'dark' | 'overexposed' | 'low_res'
+
 export interface AnnotationImage {
   id: string
   project_id: string
@@ -22,7 +24,18 @@ export interface AnnotationImage {
   height?: number
   status: ImageStatus
   annotations: AnnotationShape[]
+  blur_score?: number
+  brightness?: number
+  quality_score?: number
+  quality_issues: QualityIssue[]
+  phash?: string
+  archived: boolean
   added_at: string
+}
+
+export interface SimilarImage extends AnnotationImage {
+  similarity_distance: number
+  similarity_pct: number
 }
 
 export interface ModelVersion {
@@ -49,7 +62,12 @@ export interface AnnotationProject {
   image_count: number
   annotated_count: number
   approved_count: number
+  archived_count: number
   min_annotations_to_train: number
+  auto_finetune: boolean
+  finetune_lr: number
+  base_lr: number
+  train_imgsz: number
   active_model_version_id?: string
   model_versions: ModelVersion[]
   created_at: string

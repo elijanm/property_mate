@@ -1,0 +1,18 @@
+# Cloudflare Tunnel config — Machine 1 only
+# Place your tunnel credentials JSON at: cloudflared/credentials.json
+# Run: cloudflared tunnel login  →  cloudflared tunnel create pms-mongo
+#
+# This tunnel exposes MongoDB TCP so Linode nodes can reach Machine 1.
+# Add a DNS record in Cloudflare dashboard:
+#   Type: CNAME  |  Name: mongo  |  Target: <tunnel-id>.cfargotunnel.com  |  Proxy: OFF
+
+tunnel: <your-tunnel-id>
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  # MongoDB TCP — accessible at mongo.yourdomain.com:27017
+  - hostname: mongo.yourdomain.com
+    service: tcp://mongo1:27017
+
+  # Fallback
+  - service: http_status:404

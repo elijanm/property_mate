@@ -32,6 +32,14 @@ class AnnotationImage(BaseModel):
     # Frame info for video-extracted frames
     source_video_key: Optional[str] = None
     frame_index: Optional[int] = None
+    # Image quality metrics (computed at upload time)
+    blur_score: Optional[float] = None      # Laplacian edge variance — higher = sharper
+    brightness: Optional[float] = None      # Mean grayscale brightness 0-255
+    quality_score: Optional[int] = None     # 0-100 overall quality score
+    quality_issues: List[str] = []          # ['blurry', 'dark', 'overexposed', 'low_res']
+    phash: Optional[str] = None             # 64-bit perceptual dHash as 16-char hex string
+    # Lifecycle
+    archived: bool = False                  # hidden from annotation view; not deleted
     added_at: datetime = Field(default_factory=utc_now)
 
 
@@ -65,6 +73,11 @@ class AnnotationProject(Document):
     status: str = "collecting"             # collecting | training | predicting | done
     active_model_version_id: Optional[str] = None  # latest ready model
     min_annotations_to_train: int = 5
+    # Training hyper-parameters (admin configurable)
+    auto_finetune: bool = True          # reuse prev weights when available
+    finetune_lr: float = 0.0001         # lr0 when fine-tuning from prior weights
+    base_lr: float = 0.01               # lr0 for fresh training (YOLO default)
+    train_imgsz: int = 1280             # image size for training
     # Export
     last_export_key: Optional[str] = None  # S3 key for last exported dataset ZIP
     created_by: str = ""

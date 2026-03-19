@@ -32,6 +32,7 @@ async def init_db():
     from app.models.wallet import Wallet, WalletTransaction
     from app.models.dataset import DatasetProfile, DatasetCollector, DatasetEntry
     from app.models.annotation import AnnotationProject
+    from app.models.annotation_export_job import AnnotationExportJob
     from app.models.platform_ledger import PlatformLedger
     from app.models.ml_plan import MLPricingConfig, MLPlan, MLUserPlan
     from app.models.annotator import AnnotatorProfile, RewardRedemption
@@ -65,6 +66,7 @@ async def init_db():
             DatasetCollector,
             DatasetEntry,
             AnnotationProject,
+            AnnotationExportJob,
             PlatformLedger,
             MLPricingConfig,
             MLPlan,

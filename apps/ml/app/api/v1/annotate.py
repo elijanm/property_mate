@@ -23,6 +23,12 @@ class ProjectUpdateRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     classes: Optional[List[str]] = None
+    # Training hyper-parameters
+    auto_finetune: Optional[bool] = None
+    finetune_lr: Optional[float] = None
+    base_lr: Optional[float] = None
+    train_imgsz: Optional[int] = None
+    min_annotations_to_train: Optional[int] = None
 
 
 class AnnotationIn(BaseModel):
@@ -41,6 +47,13 @@ class SaveAnnotationsRequest(BaseModel):
 
 class ApprovePredictionsRequest(BaseModel):
     annotation_ids: Optional[List[str]] = None   # None = approve all
+
+
+class ExportDatasetRequest(BaseModel):
+    format: str = "yolo-detect"   # yolo-detect | yolo-obb | yolo-seg
+    train: float = 0.8
+    val: float = 0.2
+    test: float = 0.0             # 0.0 = no test split
 
 
 # ── projects ──────────────────────────────────────────────────────────────────
@@ -98,9 +111,11 @@ async def add_images(
 async def list_images(
     project_id: str,
     status: Optional[str] = None,
+    quality: Optional[str] = None,
+    include_archived: bool = False,
     user: MLUser = RequireEngineer,
 ):
-    return await svc.list_images(user.org_id, project_id, status)
+    return await svc.list_images(user.org_id, project_id, status, quality, include_archived)
 
 
 @router.get("/projects/{project_id}/images/{image_id}")
@@ -111,6 +126,30 @@ async def get_image(project_id: str, image_id: str, user: MLUser = RequireEngine
 @router.delete("/projects/{project_id}/images/{image_id}", status_code=204)
 async def delete_image(project_id: str, image_id: str, user: MLUser = RequireEngineer):
     await svc.delete_image(user.org_id, project_id, image_id)
+
+
+class ArchiveImageRequest(BaseModel):
+    archived: bool = True
+
+
+@router.post("/projects/{project_id}/images/{image_id}/archive")
+async def archive_image(
+    project_id: str,
+    image_id: str,
+    body: ArchiveImageRequest = ArchiveImageRequest(),
+    user: MLUser = RequireEngineer,
+):
+    return await svc.archive_image(user.org_id, project_id, image_id, body.archived)
+
+
+@router.get("/projects/{project_id}/images/{image_id}/similar")
+async def similar_images(
+    project_id: str,
+    image_id: str,
+    threshold: int = 12,
+    user: MLUser = RequireEngineer,
+):
+    return await svc.find_similar_images(user.org_id, project_id, image_id, threshold)
 
 
 # ── annotations ───────────────────────────────────────────────────────────────
@@ -184,8 +223,24 @@ async def predict_single_image(project_id: str, image_id: str, user: MLUser = Re
 # ── export ────────────────────────────────────────────────────────────────────
 
 @router.post("/projects/{project_id}/export/dataset")
-async def export_dataset(project_id: str, user: MLUser = RequireEngineer):
-    return await svc.export_dataset(user.org_id, project_id)
+async def export_dataset(
+    project_id: str,
+    body: ExportDatasetRequest = ExportDatasetRequest(),
+    user: MLUser = RequireEngineer,
+):
+    return await svc.export_dataset(
+        user.org_id, project_id,
+        fmt=body.format,
+        train_ratio=body.train,
+        val_ratio=body.val,
+        test_ratio=body.test,
+        requester_email=user.email,
+    )
+
+
+@router.get("/projects/{project_id}/export/jobs/{job_id}")
+async def get_export_job(project_id: str, job_id: str, user: MLUser = RequireEngineer):
+    return await svc.get_export_job(user.org_id, job_id)
 
 
 @router.post("/projects/{project_id}/export/model")

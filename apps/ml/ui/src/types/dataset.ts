@@ -67,6 +67,21 @@ export interface DatasetCollector {
   points_earned: number
 }
 
+export type QualityIssue = 'blurry' | 'dark' | 'overexposed' | 'low_res'
+
+export interface EntryLocation {
+  lat: number | null
+  lng: number | null
+  accuracy: number | null
+  source: 'gps' | 'ip'
+  ip_address: string | null
+  country: string | null
+  country_name: string | null
+  city: string | null
+  timezone: string | null
+  isp: string | null
+}
+
 export interface DatasetEntry {
   id: string
   dataset_id: string
@@ -75,12 +90,35 @@ export interface DatasetEntry {
   file_key: string | null
   file_url: string | null
   file_mime: string | null
+  file_size_bytes: number | null
   text_value: string | null
   description: string | null
   points_awarded: number
+  location: EntryLocation | null
   captured_at: string
   review_status: 'pending' | 'approved' | 'rejected'
   review_note: string | null
+  // quality metrics
+  blur_score: number | null
+  brightness: number | null
+  quality_score: number | null
+  quality_issues: QualityIssue[]
+  phash: string | null
+  archived: boolean
+}
+
+export interface SimilarDatasetEntry extends DatasetEntry {
+  similarity_distance: number
+  similarity_pct: number
+}
+
+export interface DatasetEntryListResponse {
+  items: DatasetEntry[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+  archived_count: number
 }
 
 // Collect page types (public)

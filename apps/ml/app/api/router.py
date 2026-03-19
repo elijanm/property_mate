@@ -4,6 +4,7 @@ from app.api.v1 import auth, api_keys, ab_tests, alert_rules, batch, audit, expe
 from app.api.v1 import datasets, collect, editor, annotate
 from app.api.v1 import staff, annotator_portal
 from app.api.v1 import billing
+from app.api.v1 import discover
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(editor.router)
@@ -34,3 +35,4 @@ api_router.include_router(admin.router)
 api_router.include_router(datasets.router)
 api_router.include_router(collect.router)
 api_router.include_router(billing.router)
+api_router.include_router(discover.router)

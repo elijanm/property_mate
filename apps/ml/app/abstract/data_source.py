@@ -139,11 +139,17 @@ class URLDataSource(DataSource):
         return "url"
 
     async def load(self, **kwargs) -> bytes:
-        import httpx
-        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-            resp = await client.get(self.url, headers=self.headers, auth=self.auth)
+        from app.core.safe_http import SafeHttpClient, HostNotAllowedError
+        try:
+            client = SafeHttpClient(connect_timeout=10.0, read_timeout=float(self.timeout))
+            resp = client.get(self.url, headers=self.headers)
             resp.raise_for_status()
             return resp.content
+        except HostNotAllowedError as exc:
+            raise PermissionError(
+                f"URLDataSource blocked: {exc}. "
+                "If this host is required, ask your admin to allowlist it."
+            ) from exc
 
     def describe(self) -> Dict:
         return {"type": "url", "url": self.url}

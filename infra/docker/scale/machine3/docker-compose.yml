@@ -1,0 +1,47 @@
+# ── Machine 3 — Linode VPS 2 (Secondary node) ────────────────────────────────
+# Runs: mongo3 (replica set secondary)
+#
+# Before starting:
+#   1. Copy the keyfile generated on machine1 to this machine:
+#      scp ../keyfile root@<linode2-ip>:/opt/pms-scale/keyfile
+#   2. Copy this docker-compose.yml + .env to the Linode:
+#      scp docker-compose.yml .env root@<linode2-ip>:/opt/pms-scale/
+#   3. On the Linode: cd /opt/pms-scale && docker compose up -d
+#
+# Firewall rules required on this Linode (via Linode Cloud Firewall):
+#   Allow inbound TCP 27017 from:
+#     - Machine 1 Cloudflare tunnel egress IPs (or 0.0.0.0/0 with keyfile auth)
+#     - Machine 2 public IP: ${MONGO2_HOST}
+
+services:
+
+  mongo3:
+    image: mongo:7.0
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo3_data:/data/db
+      - ./keyfile:/etc/mongodb/keyfile:ro
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+    command: >
+      mongod
+      --replSet ${MONGO_REPLICA_SET}
+      --keyFile /etc/mongodb/keyfile
+      --auth
+      --bind_ip_all
+    healthcheck:
+      test: >
+        mongosh --quiet
+        -u ${MONGO_ROOT_USERNAME} -p ${MONGO_ROOT_PASSWORD}
+        --authenticationDatabase admin
+        --eval "db.adminCommand('ping').ok"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  mongo3_data:

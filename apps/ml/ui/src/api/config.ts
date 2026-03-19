@@ -39,6 +39,10 @@ export interface TrainingConfig {
   // Debug
   nav_layout?: number
   show_cost_debug?: boolean
+
+  // Discovery
+  discovery_enabled?: boolean
+  demo_mode?: boolean
 }
 
 export interface CudaDeviceDetail {
@@ -64,6 +68,6 @@ export const configApi = {
   get:          ()                              => client.get<TrainingConfig>('/config').then(r => r.data),
   update:       (data: Partial<TrainingConfig>) => client.patch<TrainingConfig>('/config', data).then(r => r.data),
   getDevice:    ()                              => client.get<DeviceInfo>('/config/device').then(r => r.data),
-  getUiConfig:  ()                              => client.get<{ nav_layout: number; show_cost_debug: boolean }>('/config/ui').then(r => r.data),
+  getUiConfig:  ()                              => client.get<{ nav_layout: number; show_cost_debug: boolean; discovery_enabled: boolean; demo_mode: boolean }>('/config/ui').then(r => r.data),
   updateConfig: (data: Record<string, unknown>) => client.patch('/config', data).then(r => r.data),
 }

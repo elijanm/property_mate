@@ -1,4 +1,5 @@
 """Orchestrates training: config resolution, data loading, MLflow logging, model save."""
+import asyncio
 import io
 import time
 from datetime import datetime, timezone
@@ -174,9 +175,20 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
             raw_data = await trainer.data_source.load(injected_data=injected_data)
             await _log(job, f"Data loaded ({len(raw_data) if isinstance(raw_data, (bytes, list)) else 'n/a'} bytes/items)")
 
-            # Preprocess
+            # Preprocess (with timeout)
             await _log(job, "Preprocessing...")
-            preprocessed = trainer.preprocess(raw_data)
+            timeout_s = getattr(settings, "TRAINER_PREPROCESS_TIMEOUT", 300)
+            loop = asyncio.get_event_loop()
+            try:
+                preprocessed = await asyncio.wait_for(
+                    loop.run_in_executor(None, trainer.preprocess, raw_data),
+                    timeout=timeout_s,
+                )
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    f"preprocess() timed out after {timeout_s}s — "
+                    "reduce dataset size or optimize your preprocess() method."
+                )
 
             # Train
             await _log(job, f"Training on {config.device}...")

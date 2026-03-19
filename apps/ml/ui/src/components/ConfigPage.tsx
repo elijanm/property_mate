@@ -1,7 +1,14 @@
 import { useState, useEffect } from 'react'
 import { configApi, type TrainingConfig, type DeviceInfo, type CudaDeviceDetail } from '@/api/config'
-import { Cpu, Save, Loader2, CheckCircle2, Zap } from 'lucide-react'
+import { Cpu, Save, Loader2, CheckCircle2, Zap, Globe, Eye } from 'lucide-react'
 import clsx from 'clsx'
+
+type Tab = 'training' | 'discovery'
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'training',  label: 'Training' },
+  { id: 'discovery', label: 'Discovery' },
+]
 
 export default function ConfigPage() {
   const [config, setConfig] = useState<TrainingConfig | null>(null)
@@ -10,6 +17,7 @@ export default function ConfigPage() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [form, setForm] = useState<Partial<TrainingConfig>>({})
+  const [tab, setTab] = useState<Tab>('training')
 
   useEffect(() => {
     Promise.all([configApi.get(), configApi.getDevice()]).then(([cfg, dev]) => {
@@ -34,6 +42,92 @@ export default function ConfigPage() {
 
   return (
     <div className="max-w-3xl space-y-6">
+
+      {/* Tab strip */}
+      <div className="flex gap-1 bg-gray-900/60 border border-gray-800 rounded-xl p-1 w-fit">
+        {TABS.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={clsx('px-4 py-1.5 rounded-lg text-sm font-medium transition-colors',
+              tab === t.id ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-300'
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Discovery Tab ─────────────────────────────────────────────────── */}
+      {tab === 'discovery' && (
+        <div className="space-y-6">
+          <div className="bg-gray-900 rounded-2xl p-5 border border-gray-800 space-y-5">
+            <h3 className="text-sm font-semibold text-gray-200 flex items-center gap-2">
+              <Globe size={15} /> Discover Menu
+            </h3>
+            <p className="text-xs text-gray-500 leading-relaxed">
+              When enabled, a <strong className="text-gray-300">Discover</strong> dropdown appears on the public landing page,
+              letting visitors browse Data Scientists, Trained Models, and Datasets without logging in.
+            </p>
+
+            {/* discovery_enabled */}
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm text-gray-200">Enable Discover menu</p>
+                <p className="text-xs text-gray-500 mt-0.5">Show the Discover dropdown in the landing page navigation</p>
+              </div>
+              <button
+                onClick={() => set('discovery_enabled', !(form.discovery_enabled ?? false))}
+                className={clsx('w-11 h-6 rounded-full transition-colors relative flex-shrink-0',
+                  (form.discovery_enabled ?? false) ? 'bg-brand-600' : 'bg-gray-700'
+                )}
+              >
+                <div className={clsx('absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-all',
+                  (form.discovery_enabled ?? false) ? 'left-6' : 'left-1'
+                )} />
+              </button>
+            </div>
+
+            <div className="border-t border-gray-800" />
+
+            {/* demo_mode */}
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Eye size={13} className="text-amber-400" />
+                  <p className="text-sm text-gray-200">Demo mode</p>
+                </div>
+                <p className="text-xs text-gray-500 mt-0.5 ml-5">
+                  All engineers, models, and datasets are visible publicly — no per-item publish control needed.
+                  Turn off to hide content until engineers manually publish their work.
+                </p>
+              </div>
+              <button
+                onClick={() => set('demo_mode', !(form.demo_mode ?? false))}
+                className={clsx('w-11 h-6 rounded-full transition-colors relative flex-shrink-0',
+                  (form.demo_mode ?? false) ? 'bg-amber-600' : 'bg-gray-700'
+                )}
+              >
+                <div className={clsx('absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-all',
+                  (form.demo_mode ?? false) ? 'left-6' : 'left-1'
+                )} />
+              </button>
+            </div>
+          </div>
+
+          {/* Save */}
+          <div className="flex items-center gap-3">
+            <button onClick={save} disabled={saving}
+              className="flex items-center gap-2 px-6 py-2.5 bg-brand-600 hover:bg-brand-700 disabled:opacity-40 rounded-xl text-sm font-semibold text-white transition-colors">
+              {saving ? <Loader2 size={15} className="animate-spin" /> : saved ? <CheckCircle2 size={15} /> : <Save size={15} />}
+              {saving ? 'Saving…' : saved ? 'Saved!' : 'Save Config'}
+            </button>
+            {saved && <span className="text-xs text-green-400">Saved.</span>}
+          </div>
+        </div>
+      )}
+
+      {tab === 'training' && <div className="space-y-6">
 
       {/* Device info */}
       {device && (
@@ -263,6 +357,7 @@ export default function ConfigPage() {
         </button>
         {saved && <span className="text-xs text-green-400">Configuration saved — new training runs will use these defaults.</span>}
       </div>
+    </div>}  {/* end tab === 'training' */}
     </div>
   )
 }

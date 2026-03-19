@@ -395,6 +395,7 @@ class BaseTrainer(ABC):
     schedule: Optional[str] = None      # cron expression, e.g. "0 2 * * *"
     framework: str = "custom"           # sklearn | pytorch | tensorflow | custom
     tags: Dict[str, str] = {}
+    requirements: List[str] = []       # pip packages needed; registry warns if any are missing
     # UI rendering schemas — see UI docs for field type options
     input_schema: Dict[str, Any] = {}   # describes inputs: {field: {type, label, ...}}
     output_schema: Dict[str, Any] = {}  # describes outputs: {field: {type, label, editable, ...}}
@@ -583,8 +584,9 @@ class BaseTrainer(ABC):
 
         if file_url:
             try:
-                import requests
-                resp = requests.get(file_url, timeout=120)
+                from app.core.safe_http import SafeHttpClient
+                safe_client = SafeHttpClient(connect_timeout=10.0, read_timeout=120.0)
+                resp = safe_client.get(file_url)
                 resp.raise_for_status()
                 return resp.content
             except Exception as exc:

@@ -1,7 +1,33 @@
+import collections
+import threading
 import time
 from typing import Any, Optional
 
 import structlog
+
+# LRU cache for loaded models — keyed by (trainer_name, model_uri)
+# Evicts the least-recently-used entry when more than _MODEL_CACHE_MAX are loaded.
+_MODEL_CACHE_MAX = 8
+_model_cache: collections.OrderedDict = collections.OrderedDict()
+_model_cache_lock = threading.Lock()
+
+
+def _cache_get(key: tuple):
+    with _model_cache_lock:
+        if key in _model_cache:
+            _model_cache.move_to_end(key)
+            return _model_cache[key]
+    return None
+
+
+def _cache_set(key: tuple, model) -> None:
+    with _model_cache_lock:
+        if key in _model_cache:
+            _model_cache.move_to_end(key)
+        else:
+            _model_cache[key] = model
+            while len(_model_cache) > _MODEL_CACHE_MAX:
+                _model_cache.popitem(last=False)
 
 from app.models.inference_log import InferenceLog
 from app.models.model_deployment import ModelDeployment
@@ -61,50 +87,94 @@ def _trainer_has_predict(trainer) -> bool:
     return type(trainer).predict is not BaseTrainer.predict
 
 
+def _validate_inputs_against_schema(inputs: Any, schema: Optional[dict]) -> Optional[str]:
+    """
+    Validate inputs dict against the deployment's input_schema.
+    Returns an error message string if validation fails, None if valid.
+
+    Schema format: { "field_name": { "type": "text|number|image|...", "required": true|false } }
+    """
+    if not schema or not isinstance(inputs, dict):
+        return None
+    errors = []
+    for field_name, field_spec in schema.items():
+        if not isinstance(field_spec, dict):
+            continue
+        required = field_spec.get("required", False)
+        field_type = field_spec.get("type", "text")
+        value = inputs.get(field_name)
+        if required and (value is None or value == ""):
+            errors.append(f"'{field_name}' is required")
+            continue
+        if value is None:
+            continue
+        if field_type == "number" and not isinstance(value, (int, float)):
+            try:
+                float(value)
+            except (TypeError, ValueError):
+                errors.append(f"'{field_name}' must be a number, got {type(value).__name__}")
+    return "; ".join(errors) if errors else None
+
+
 def _load_raw_model(model_uri: str, source_type: str):
     """
     Load the underlying model object, bypassing MLflow pyfunc schema enforcement.
 
     Tries framework-specific loaders in order: sklearn → pytorch → tensorflow →
     keras → onnx → pyfunc (last resort — schema enforcement may apply).
+    Uses an in-process LRU cache (max 8 entries) to avoid reloading on every request.
     """
+    cache_key = ("raw", model_uri)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     import mlflow
 
+    model = None
     # sklearn / joblib
     try:
-        return mlflow.sklearn.load_model(model_uri)
+        model = mlflow.sklearn.load_model(model_uri)
     except Exception:
         pass
 
     # PyTorch
-    try:
-        return mlflow.pytorch.load_model(model_uri)
-    except Exception:
-        pass
+    if model is None:
+        try:
+            model = mlflow.pytorch.load_model(model_uri)
+        except Exception:
+            pass
 
     # TensorFlow SavedModel
-    try:
-        return mlflow.tensorflow.load_model(model_uri)
-    except Exception:
-        pass
+    if model is None:
+        try:
+            model = mlflow.tensorflow.load_model(model_uri)
+        except Exception:
+            pass
 
     # Keras .h5 / .keras
-    try:
-        import mlflow.keras
-        return mlflow.keras.load_model(model_uri)
-    except Exception:
-        pass
+    if model is None:
+        try:
+            import mlflow.keras
+            model = mlflow.keras.load_model(model_uri)
+        except Exception:
+            pass
 
     # ONNX Runtime — wrap in a thin predictor so trainer.predict() gets a standard object
-    try:
-        import mlflow.onnx
-        onnx_model = mlflow.onnx.load_model(model_uri)
-        return _OnnxPredictor(onnx_model)
-    except Exception:
-        pass
+    if model is None:
+        try:
+            import mlflow.onnx
+            onnx_model = mlflow.onnx.load_model(model_uri)
+            model = _OnnxPredictor(onnx_model)
+        except Exception:
+            pass
 
     # Last resort — pyfunc (schema enforcement still applies)
-    return mlflow.pyfunc.load_model(model_uri)
+    if model is None:
+        model = mlflow.pyfunc.load_model(model_uri)
+
+    _cache_set(cache_key, model)
+    return model
 
 
 class _OnnxPredictor:
@@ -198,6 +268,16 @@ async def predict(
     # Trainer class is optional — ZIP/pyfunc models handle everything inside predict()
     trainer_cls = get_trainer_class(trainer_name)
     trainer = trainer_cls() if trainer_cls else None
+
+    # Validate inputs against schema if defined
+    if dep.input_schema:
+        validation_error = _validate_inputs_against_schema(inputs, dep.input_schema)
+        if validation_error:
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=422,
+                detail={"error": {"code": "INVALID_INPUTS", "message": validation_error}},
+            )
 
     t0 = time.monotonic()
     error_msg = None

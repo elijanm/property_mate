@@ -32,6 +32,7 @@ from app.api.v1.move_out import router as move_out_router
 from app.api.v1.cctv import router as cctv_router
 from app.api.v1.entity_aliases import router as entity_aliases_router
 from app.api.v1.ai import router as ai_router
+from app.api.v1.admin_users import router as admin_users_router
 
 api_router = APIRouter(prefix="/api/v1")
 
@@ -72,3 +73,4 @@ api_router.include_router(move_out_router)
 api_router.include_router(cctv_router)
 api_router.include_router(entity_aliases_router)
 api_router.include_router(ai_router)
+api_router.include_router(admin_users_router)

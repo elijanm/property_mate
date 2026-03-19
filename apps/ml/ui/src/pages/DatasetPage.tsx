@@ -7,7 +7,7 @@ import { modelsApi } from '@/api/models'
 import { annotatorApi } from '@/api/annotator'
 import { walletApi } from '@/api/wallet'
 import type { ModelDeployment } from '@/types/trainer'
-import type { DatasetProfile, DatasetCollector, DatasetField, DatasetEntry, DatasetCreatePayload, FieldType, CaptureMode, DescriptionMode } from '@/types/dataset'
+import type { DatasetProfile, DatasetCollector, DatasetField, DatasetEntry, DatasetEntryListResponse, SimilarDatasetEntry, DatasetCreatePayload, FieldType, CaptureMode, DescriptionMode } from '@/types/dataset'
 
 const FIELD_TYPE_ICONS: Record<FieldType, typeof ImageIcon> = {
   image: ImageIcon,
@@ -1363,53 +1363,114 @@ function OverviewPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose:
   )
 }
 
-// ── Entries panel ─────────────────────────────────────────────────────────────
+// ── Dataset Workspace (full-screen AnnotatePage-style) ────────────────────────
 
-function EntriesPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: () => void }) {
-  const [entries, setEntries] = useState<DatasetEntry[]>([])
-  const [collectors, setCollectors] = useState<DatasetCollector[]>([])
-  const [loading, setLoading] = useState(true)
-  const [lightbox, setLightbox] = useState<DatasetEntry | null>(null)
-  const [actingId, setActingId] = useState<string | null>(null)
-  const [csvPreview, setCsvPreview] = useState<{ entry: DatasetEntry; rows: string[][]; cols: string[] } | null>(null)
-  const [csvLoading, setCsvLoading] = useState<string | null>(null)  // entry id being fetched
+function DatasetWorkspace({ dataset, onClose }: { dataset: DatasetProfile; onClose: () => void }) {
+  const [entries, setEntries]             = useState<DatasetEntry[]>([])
+  const [collectors, setCollectors]       = useState<DatasetCollector[]>([])
+  const [loading, setLoading]             = useState(true)
+  const [total, setTotal]                 = useState(0)
+  const [page, setPage]                   = useState(1)
+  const [totalPages, setTotalPages]       = useState(1)
+  const [archivedCount, setArchivedCount] = useState(0)
+  const PAGE_SIZE = 48
 
-  const [showFilters, setShowFilters] = useState(false)
-  const [filterField, setFilterField] = useState('')
+  const [selectedEntry, setSelectedEntry] = useState<DatasetEntry | null>(null)
+  const [selectedIds, setSelectedIds]     = useState<Set<string>>(new Set())
+
+  const [filterField, setFilterField]         = useState('')
   const [filterCollector, setFilterCollector] = useState('')
-  const [filterDateFrom, setFilterDateFrom] = useState('')
-  const [filterDateTo, setFilterDateTo] = useState('')
+  const [filterDateFrom, setFilterDateFrom]   = useState('')
+  const [filterDateTo, setFilterDateTo]       = useState('')
+  const [filterQuality, setFilterQuality]     = useState('')
+  const [filterReview, setFilterReview]       = useState('')
+  const [showArchived, setShowArchived]       = useState(false)
+
+  const [actingId, setActingId]   = useState<string | null>(null)
+  const [lightbox, setLightbox]   = useState<DatasetEntry | null>(null)
+  const [similarPanel, setSimilarPanel] = useState<{
+    entry: DatasetEntry; results: SimilarDatasetEntry[]; loading: boolean
+  } | null>(null)
+  const [exportModal, setExportModal] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null)
+  const [showUploadPicker, setShowUploadPicker] = useState(false)
+  const [uploadPickerField, setUploadPickerField] = useState<DatasetField | null>(null)
+  const uploadRef = useRef<HTMLInputElement>(null)
+
+  const fileFields = dataset.fields.filter(f => ['image', 'video', 'media', 'file'].includes(f.type))
+
+  const openUpload = (field: DatasetField) => {
+    setUploadPickerField(field)
+    setShowUploadPicker(false)
+    // accept based on field type
+    const accept = field.type === 'image' ? 'image/*' : field.type === 'video' ? 'video/*' : '*/*'
+    if (uploadRef.current) {
+      uploadRef.current.accept = accept
+      uploadRef.current.value = ''
+      uploadRef.current.click()
+    }
+  }
+
+  const handleBulkUpload = async (files: FileList) => {
+    if (!uploadPickerField || files.length === 0) return
+    const field = uploadPickerField
+    setUploadProgress({ done: 0, total: files.length })
+    let done = 0
+    for (const file of Array.from(files)) {
+      try {
+        await datasetsApi.uploadEntryDirect(dataset.id, field.id, file)
+      } catch { /* skip failed file, continue */ }
+      done++
+      setUploadProgress({ done, total: files.length })
+    }
+    setUploadProgress(null)
+    load()
+    if (uploadRef.current) uploadRef.current.value = ''
+  }
 
   const load = useCallback(() => {
     setLoading(true)
-    const params: Record<string, string> = {}
-    if (filterField) params.field_id = filterField
-    if (filterCollector) params.collector_id = filterCollector
-    if (filterDateFrom) params.date_from = filterDateFrom
-    if (filterDateTo) params.date_to = filterDateTo
-    datasetsApi.getEntries(dataset.id, params)
-      .then(setEntries).finally(() => setLoading(false))
-  }, [dataset.id, filterField, filterCollector, filterDateFrom, filterDateTo])
+    datasetsApi.getEntries(dataset.id, {
+      field_id: filterField || undefined,
+      collector_id: filterCollector || undefined,
+      date_from: filterDateFrom || undefined,
+      date_to: filterDateTo || undefined,
+      quality: filterQuality || undefined,
+      review_status: filterReview || undefined,
+      include_archived: showArchived,
+      page,
+      page_size: PAGE_SIZE,
+    }).then(r => {
+      setEntries(r.items)
+      setTotal(r.total)
+      setTotalPages(r.total_pages)
+      setArchivedCount(r.archived_count)
+      // keep selected entry in sync
+      setSelectedEntry(prev => prev ? (r.items.find(e => e.id === prev.id) ?? prev) : null)
+    }).finally(() => setLoading(false))
+  }, [dataset.id, filterField, filterCollector, filterDateFrom, filterDateTo,
+      filterQuality, filterReview, showArchived, page])
 
   useEffect(() => { load() }, [load])
-
+  useEffect(() => { setPage(1) }, [filterField, filterCollector, filterDateFrom, filterDateTo, filterQuality, filterReview, showArchived])
   useEffect(() => {
     datasetsApi.listCollectors(dataset.id).then(setCollectors).catch(() => {})
   }, [dataset.id])
 
-  const fieldName = (id: string) => dataset.fields.find(f => f.id === id)?.label ?? `Deleted field (${id.slice(0, 8)}…)`
+  const fieldName  = (id: string) => dataset.fields.find(f => f.id === id)?.label ?? `Field (${id.slice(0, 8)}…)`
   const collectorName = (id: string) => {
     if (id === '__admin__') return 'Admin'
     const c = collectors.find(c => c.id === id)
     return c?.name || c?.email || `Contributor (${id.slice(0, 8)}…)`
   }
 
-  const hasFilter = filterField || filterCollector || filterDateFrom || filterDateTo
-  const clearFilters = () => { setFilterField(''); setFilterCollector(''); setFilterDateFrom(''); setFilterDateTo('') }
+  const hasFilter = filterField || filterCollector || filterDateFrom || filterDateTo || filterQuality || filterReview
+  const clearFilters = () => {
+    setFilterField(''); setFilterCollector(''); setFilterDateFrom(''); setFilterDateTo('')
+    setFilterQuality(''); setFilterReview('')
+  }
 
-  // Resolve an entry's file_url for use in <img>, <a>, fetch(), etc.
-  // If the URL is the backend proxy path (/api/v1/datasets/…/file), append the
-  // JWT token as a query param so the browser's direct request is authenticated.
+
   const resolveFileUrl = (url: string | null | undefined): string | null => {
     if (!url) return null
     if (url.startsWith('/api/')) {
@@ -1419,367 +1480,996 @@ function EntriesPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose: 
     return url
   }
 
-  const isCsvLike = (e: DatasetEntry) =>
-    e.file_mime === 'text/csv' || e.file_mime === 'text/plain' ||
-    e.file_mime === 'application/vnd.ms-excel' ||
-    e.file_mime?.includes('spreadsheet') ||
-    (e.file_url?.split('?')[0].match(/\.(csv|tsv|txt)$/i) != null)
+  const toggleSelect = (id: string) => setSelectedIds(s => {
+    const n = new Set(s)
+    n.has(id) ? n.delete(id) : n.add(id)
+    return n
+  })
+  const toggleSelectAll = () => {
+    if (selectedIds.size === entries.length) setSelectedIds(new Set())
+    else setSelectedIds(new Set(entries.map(e => e.id)))
+  }
 
-  const openCsvPreview = async (e: DatasetEntry) => {
-    const url = resolveFileUrl(e.file_url)
-    if (!url) return
-    setCsvLoading(e.id)
+  const doReview = async (entry: DatasetEntry, status: 'approved' | 'rejected') => {
+    setActingId(entry.id)
     try {
-      const resp = await fetch(url)
-      const text = await resp.text()
-      const lines = text.split(/\r?\n/).filter(Boolean)
-      const cols = lines[0]?.split(',').map(c => c.trim().replace(/^"(.*)"$/, '$1')) ?? []
-      const rows = lines.slice(1, 201).map(l =>
-        l.split(',').map(c => c.trim().replace(/^"(.*)"$/, '$1'))
-      )
-      setCsvPreview({ entry: e, cols, rows })
+      const updated = await datasetsApi.reviewEntry(dataset.id, entry.id, status)
+      setEntries(es => es.map(x => x.id === entry.id ? updated : x))
+      setSelectedEntry(updated)
+    } finally { setActingId(null) }
+  }
+
+  const doArchive = async (entry: DatasetEntry, archived: boolean) => {
+    setActingId(entry.id)
+    try {
+      const updated = await datasetsApi.archiveEntry(dataset.id, entry.id, archived)
+      if (showArchived) {
+        setEntries(es => es.map(x => x.id === entry.id ? updated : x))
+        setSelectedEntry(updated)
+      } else {
+        setEntries(es => es.filter(x => x.id !== entry.id))
+        setArchivedCount(c => archived ? c + 1 : Math.max(0, c - 1))
+        setSelectedEntry(null)
+      }
+    } finally { setActingId(null) }
+  }
+
+  const doDelete = async (entry: DatasetEntry) => {
+    if (!confirm('Delete this entry? This cannot be undone.')) return
+    setActingId(entry.id)
+    try {
+      await datasetsApi.deleteEntry(dataset.id, entry.id)
+      setEntries(es => es.filter(x => x.id !== entry.id))
+      if (selectedEntry?.id === entry.id) setSelectedEntry(null)
+    } finally { setActingId(null) }
+  }
+
+  const doFindSimilar = async (entry: DatasetEntry) => {
+    setSimilarPanel({ entry, results: [], loading: true })
+    try {
+      const results = await datasetsApi.findSimilarEntries(dataset.id, entry.id)
+      setSimilarPanel({ entry, results, loading: false })
     } catch {
-      window.open(url, '_blank')
-    } finally {
-      setCsvLoading(null)
+      setSimilarPanel({ entry, results: [], loading: false })
     }
   }
 
+  const QUALITY_FILTERS = [
+    { value: '', label: 'All quality' },
+    { value: 'good', label: 'Good' },
+    { value: 'poor', label: 'Poor' },
+    { value: 'blurry', label: 'Blurry' },
+    { value: 'dark', label: 'Dark' },
+    { value: 'overexposed', label: 'Overexposed' },
+    { value: 'low_res', label: 'Low res' },
+  ]
+
   return (
-    <div className="fixed inset-0 z-50 flex">
-      <div className="flex-1 bg-black/50" onClick={onClose} />
-      <div className="w-full max-w-2xl bg-gray-900 shadow-2xl flex flex-col overflow-hidden">
-
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-          <div>
-            <h2 className="text-base font-semibold text-white">{dataset.name}</h2>
-            <p className="text-xs text-gray-500 mt-0.5">
-              {loading ? 'Loading…' : `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}${hasFilter ? ' (filtered)' : ''}`}
-            </p>
-          </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-400"><X size={16} /></button>
+    <div className="flex-1 flex flex-col overflow-hidden bg-gray-950">
+      {/* ── Top bar ── */}
+      <div className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-gray-800 bg-gray-900">
+        <button onClick={onClose}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-medium transition-colors">
+          <ChevronRight size={13} className="rotate-180" /> Back
+        </button>
+        <div className="flex-1 min-w-0">
+          <span className="text-sm font-semibold text-white truncate">{dataset.name}</span>
+          <span className="ml-3 text-[11px] text-gray-500">
+            {loading ? '…' : `${total} entr${total === 1 ? 'y' : 'ies'}`}
+            {archivedCount > 0 && ` · ${archivedCount} archived`}
+          </span>
         </div>
-
-        {/* Filters */}
-        <div className="px-6 py-2 border-b border-gray-800/50">
-          <button onClick={() => setShowFilters(s => !s)}
-            className="flex items-center gap-2 text-xs text-gray-400 hover:text-white py-1 transition-colors">
-            <ChevronRight size={12} className={clsx('transition-transform', showFilters && 'rotate-90')} />
-            Filters
-            {hasFilter && <span className="ml-1 w-1.5 h-1.5 rounded-full bg-indigo-400 inline-block" />}
+        <button
+          onClick={() => setShowArchived(s => !s)}
+          className={clsx('px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border',
+            showArchived
+              ? 'bg-amber-900/40 border-amber-700/60 text-amber-300'
+              : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white')}>
+          📦 {showArchived ? 'Archived' : `Archive (${archivedCount})`}
+        </button>
+        {selectedIds.size > 0 && (
+          <button onClick={() => setExportModal(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-colors">
+            <ExternalLink size={13} /> Export {selectedIds.size} to Annotation
           </button>
-        </div>
-        {showFilters && (
-        <div className="px-6 py-3 border-b border-gray-800/50 space-y-2">
-          <div className="grid grid-cols-2 gap-2">
-            {/* Field filter */}
-            <div>
-              <label className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-1 block">Field</label>
-              <select
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
-                value={filterField} onChange={e => setFilterField(e.target.value)}>
-                <option value="">All fields</option>
-                {dataset.fields.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
-              </select>
-            </div>
-
-            {/* Collector filter */}
-            <div>
-              <label className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-1 block">Collector</label>
-              <select
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
-                value={filterCollector} onChange={e => setFilterCollector(e.target.value)}>
-                <option value="">All collectors</option>
-                {collectors.map(c => (
-                  <option key={c.id} value={c.id}>{c.name || c.email}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Date from */}
-            <div>
-              <label className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-1 block">From date</label>
-              <input type="date"
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
-                value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)} />
-            </div>
-
-            {/* Date to */}
-            <div>
-              <label className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-1 block">To date</label>
-              <input type="date"
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
-                value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)} />
-            </div>
-          </div>
-
-          {hasFilter && (
-            <button onClick={clearFilters}
-              className="text-[10px] text-gray-500 hover:text-white flex items-center gap-1 transition-colors">
-              <X size={10} /> Clear filters
+        )}
+        {selectedIds.size === 0 && (
+          <button onClick={() => setExportModal(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 text-xs font-medium transition-colors">
+            <ExternalLink size={13} /> Export All
+          </button>
+        )}
+        <button onClick={() => datasetsApi.exportCsv(dataset.id, dataset.name)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 text-xs font-medium transition-colors">
+          <Download size={13} /> CSV
+        </button>
+        {fileFields.length > 0 && (
+          <>
+            <input ref={uploadRef} type="file" multiple className="hidden"
+              onChange={e => e.target.files && handleBulkUpload(e.target.files)} />
+            <button
+              onClick={() => fileFields.length === 1 ? openUpload(fileFields[0]) : setShowUploadPicker(true)}
+              disabled={!!uploadProgress}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-700 hover:bg-indigo-600 disabled:opacity-60 border border-indigo-600 text-white text-xs font-medium transition-colors">
+              {uploadProgress
+                ? <><Loader2 size={13} className="animate-spin" /> {uploadProgress.done}/{uploadProgress.total}</>
+                : <><Plus size={13} /> Upload</>
+              }
             </button>
+          </>
+        )}
+      </div>
+
+      {/* ── Filter row ── */}
+      <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b border-gray-800 bg-gray-900/70 flex-wrap">
+        <select value={filterField} onChange={e => setFilterField(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500">
+          <option value="">All fields</option>
+          {dataset.fields.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+        </select>
+        <select value={filterCollector} onChange={e => setFilterCollector(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500">
+          <option value="">All collectors</option>
+          {collectors.map(c => <option key={c.id} value={c.id}>{c.name || c.email}</option>)}
+        </select>
+        <select value={filterReview} onChange={e => setFilterReview(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500">
+          <option value="">All status</option>
+          <option value="pending">Pending</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
+        </select>
+        <select value={filterQuality} onChange={e => setFilterQuality(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500">
+          {QUALITY_FILTERS.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
+        </select>
+        <input type="date" value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500" />
+        <span className="text-gray-600 text-xs">—</span>
+        <input type="date" value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500" />
+        {hasFilter && (
+          <button onClick={clearFilters}
+            className="flex items-center gap-1 text-[11px] text-gray-500 hover:text-white px-2 py-1 rounded transition-colors">
+            <X size={10} /> Clear
+          </button>
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer select-none">
+            <input type="checkbox" checked={selectedIds.size > 0 && selectedIds.size === entries.length}
+              onChange={toggleSelectAll}
+              className="accent-indigo-500" />
+            {selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}
+          </label>
+        </div>
+      </div>
+
+      {/* ── Body: left sidebar + center grid ── */}
+      <div className="flex-1 flex min-h-0">
+
+        {/* Left sidebar */}
+        <div className="w-72 shrink-0 border-r border-gray-800 bg-gray-900 flex flex-col overflow-y-auto">
+          {selectedEntry ? (
+            <EntryInfoPanel
+              entry={selectedEntry}
+              dataset={dataset}
+              collectors={collectors}
+              fieldName={fieldName}
+              collectorName={collectorName}
+              resolveFileUrl={resolveFileUrl}
+              actingId={actingId}
+              onReview={doReview}
+              onArchive={doArchive}
+              onDelete={doDelete}
+              onFindSimilar={doFindSimilar}
+              onLightbox={() => setLightbox(selectedEntry)}
+            />
+          ) : (
+            <div className="flex-1 flex flex-col items-center justify-center text-center p-6">
+              <ImageIcon size={32} className="text-gray-700 mb-3" />
+              <p className="text-xs text-gray-500 font-medium">Select an entry</p>
+              <p className="text-[11px] text-gray-600 mt-1">Click any thumbnail to view details</p>
+            </div>
           )}
         </div>
-        )}
 
-        {/* Entries grid */}
-        <div className="flex-1 overflow-y-auto p-6">
-          {loading ? (
-            <p className="text-center text-xs text-gray-500 py-10">Loading…</p>
-          ) : entries.length === 0 ? (
-            <p className="text-center text-xs text-gray-500 py-10">No entries{hasFilter ? ' matching filters' : ' yet'}.</p>
-          ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              {entries.map(e => {
-                const isVideo = e.file_mime?.startsWith('video/')
-                const isImage = e.file_mime?.startsWith('image/')
-                const busy = actingId === e.id
-                const reviewColor = e.review_status === 'approved'
-                  ? 'border-emerald-600/60 bg-emerald-900/10'
-                  : e.review_status === 'rejected'
-                  ? 'border-red-600/60 bg-red-900/10'
-                  : 'border-gray-700/50'
+        {/* Center: entry grid */}
+        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+          <div className="flex-1 overflow-y-auto p-4">
+            {loading ? (
+              <div className="flex items-center justify-center h-full">
+                <Loader2 size={24} className="text-indigo-400 animate-spin" />
+              </div>
+            ) : entries.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full text-center">
+                <Database size={32} className="text-gray-700 mb-3" />
+                <p className="text-sm text-gray-400 font-medium">No entries{hasFilter ? ' matching filters' : ' yet'}</p>
+              </div>
+            ) : (
+              <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
+                {entries.map(e => {
+                  const isImage = e.file_mime?.startsWith('image/')
+                  const isVideo = e.file_mime?.startsWith('video/')
+                  const furl = resolveFileUrl(e.file_url)
+                  const isSel = selectedEntry?.id === e.id
+                  const isChecked = selectedIds.has(e.id)
 
-                const doReview = async (status: 'approved' | 'rejected') => {
-                  setActingId(e.id)
-                  try {
-                    const updated = await datasetsApi.reviewEntry(dataset.id, e.id, status)
-                    setEntries(es => es.map(x => x.id === e.id ? updated : x))
-                  } finally { setActingId(null) }
-                }
-                const doDelete = async () => {
-                  if (!confirm('Delete this entry? This cannot be undone.')) return
-                  setActingId(e.id)
-                  try {
-                    await datasetsApi.deleteEntry(dataset.id, e.id)
-                    setEntries(es => es.filter(x => x.id !== e.id))
-                  } finally { setActingId(null) }
-                }
-
-                return (
-                  <div key={e.id} className={clsx('border rounded-xl overflow-hidden group relative', reviewColor)}>
-                    {/* Media area */}
-                    {(() => {
-                      const furl = resolveFileUrl(e.file_url)
-                      return furl && isImage ? (
-                        <button onClick={() => setLightbox(e)} className="w-full">
-                          <img src={furl} alt="" className="w-full h-32 object-cover hover:opacity-90 transition-opacity" />
-                        </button>
-                      ) : furl && isVideo ? (
-                        <button onClick={() => setLightbox(e)} className="relative w-full h-32 bg-black block">
-                          <video src={furl} className="w-full h-full object-contain" preload="metadata" muted playsInline />
-                          <div className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/20 transition-colors">
-                            <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur flex items-center justify-center">
-                              <svg viewBox="0 0 24 24" fill="white" className="w-5 h-5 translate-x-0.5"><path d="M8 5v14l11-7z"/></svg>
+                  return (
+                    <div
+                      key={e.id}
+                      onClick={() => setSelectedEntry(e)}
+                      className={clsx(
+                        'relative rounded-xl overflow-hidden cursor-pointer border-2 transition-all',
+                        isSel ? 'border-indigo-500 ring-2 ring-indigo-500/30' : 'border-transparent hover:border-gray-600',
+                        e.archived && 'opacity-60',
+                      )}>
+                      <div className="aspect-square bg-gray-800">
+                        {furl && isImage ? (
+                          <img src={furl} alt="" className="w-full h-full object-cover" />
+                        ) : furl && isVideo ? (
+                          <div className="relative w-full h-full bg-black flex items-center justify-center">
+                            <video src={furl} className="w-full h-full object-contain" preload="metadata" muted playsInline />
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
+                                <svg viewBox="0 0 24 24" fill="white" className="w-4 h-4 translate-x-0.5"><path d="M8 5v14l11-7z"/></svg>
+                              </div>
                             </div>
                           </div>
-                        </button>
-                      ) : furl ? (
-                        <div className="flex flex-col items-center justify-center h-32 bg-gray-700/50 gap-2">
-                          <FileText size={20} className="text-gray-500" />
-                          <div className="flex items-center gap-1.5">
-                            {isCsvLike(e) ? (
-                              <button
-                                onClick={() => openCsvPreview(e)}
-                                disabled={csvLoading === e.id}
-                                className="px-2 py-1 text-[11px] bg-indigo-700 hover:bg-indigo-600 text-white rounded-md transition-colors disabled:opacity-50"
-                              >
-                                {csvLoading === e.id ? '…' : '📋 Preview'}
-                              </button>
-                            ) : (
-                              <a href={furl} target="_blank" rel="noreferrer"
-                                className="px-2 py-1 text-[11px] bg-gray-600 hover:bg-gray-500 text-white rounded-md transition-colors">
-                                View
-                              </a>
-                            )}
-                            <a
-                              href={furl}
-                              download
-                              className="px-2 py-1 text-[11px] bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white border border-gray-600 rounded-md transition-colors"
-                            >
-                              ⬇ Download
-                            </a>
+                        ) : furl ? (
+                          <div className="flex flex-col items-center justify-center h-full gap-1">
+                            <FileText size={24} className="text-gray-500" />
+                            <span className="text-[10px] text-gray-600">{e.file_mime?.split('/')[1]?.toUpperCase() ?? 'File'}</span>
                           </div>
+                        ) : (
+                          <div className="flex items-center justify-center h-full p-2">
+                            <p className="text-[10px] text-gray-400 text-center line-clamp-4">{e.text_value ?? '—'}</p>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Checkbox */}
+                      <div className="absolute top-1.5 left-1.5 pointer-events-none">
+                        <div className={clsx(
+                          'w-4 h-4 rounded border flex items-center justify-center',
+                          isChecked ? 'bg-indigo-500 border-indigo-500' : 'bg-black/50 border-white/40'
+                        )}>
+                          {isChecked && <Check size={10} className="text-white" />}
                         </div>
-                      ) : null
-                    })()}
-                    {!resolveFileUrl(e.file_url) && (
-                      <div className="flex items-center justify-center h-20 bg-gray-700/30 text-gray-500 text-xs px-2 text-center">
-                        {e.text_value ?? '—'}
                       </div>
-                    )}
+                      <div className="absolute top-0 left-0 w-6 h-6 cursor-pointer z-10"
+                        onClick={ev => { ev.stopPropagation(); toggleSelect(e.id) }} />
 
-                    {/* Action overlay — appears on hover */}
-                    <div className="absolute top-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button
-                        onClick={() => doReview('approved')}
-                        disabled={busy || e.review_status === 'approved'}
-                        title="Approve"
-                        className="w-7 h-7 rounded-lg bg-emerald-600/90 hover:bg-emerald-500 disabled:opacity-40 flex items-center justify-center shadow-lg"
-                      >
-                        <ThumbsUp size={12} className="text-white" />
-                      </button>
-                      <button
-                        onClick={() => doReview('rejected')}
-                        disabled={busy || e.review_status === 'rejected'}
-                        title="Reject"
-                        className="w-7 h-7 rounded-lg bg-red-600/90 hover:bg-red-500 disabled:opacity-40 flex items-center justify-center shadow-lg"
-                      >
-                        <ThumbsDown size={12} className="text-white" />
-                      </button>
-                      <button
-                        onClick={doDelete}
-                        disabled={busy}
-                        title="Delete entry"
-                        className="w-7 h-7 rounded-lg bg-gray-800/90 hover:bg-gray-700 disabled:opacity-40 flex items-center justify-center shadow-lg"
-                      >
-                        <Trash2 size={12} className="text-red-400" />
-                      </button>
-                    </div>
+                      {/* Review badge */}
+                      {e.review_status !== 'pending' && (
+                        <div className={clsx(
+                          'absolute top-1.5 right-1.5 text-[8px] font-bold uppercase px-1.5 py-0.5 rounded shadow',
+                          e.review_status === 'approved' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'
+                        )}>{e.review_status === 'approved' ? '✓' : '✗'}</div>
+                      )}
 
-                    {/* Review status badge */}
-                    {e.review_status !== 'pending' && (
-                      <div className={clsx(
-                        'absolute top-1.5 left-1.5 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shadow-lg',
-                        e.review_status === 'approved' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'
-                      )}>
-                        {e.review_status}
+                      {/* Quality badge */}
+                      {e.quality_score != null && (
+                        <div className={clsx(
+                          'absolute bottom-1.5 right-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded shadow',
+                          e.quality_score >= 70 ? 'bg-emerald-700/90 text-emerald-100'
+                          : e.quality_score >= 40 ? 'bg-amber-700/90 text-amber-100'
+                          : 'bg-red-700/90 text-red-100'
+                        )}>Q{e.quality_score}</div>
+                      )}
+
+                      {e.archived && (
+                        <div className="absolute bottom-1.5 left-1.5 text-[9px] bg-amber-700/90 text-amber-100 px-1.5 py-0.5 rounded shadow">📦</div>
+                      )}
+
+                      <div className="px-2 py-1.5 bg-gray-900/80">
+                        <p className="text-[10px] text-indigo-400 font-medium truncate">{fieldName(e.field_id)}</p>
+                        <p className="text-[9px] text-gray-500 truncate">{collectorName(e.collector_id)}</p>
                       </div>
-                    )}
-
-                    <div className="p-2 space-y-1">
-                      <p className="text-[10px] text-indigo-400 font-semibold truncate">{fieldName(e.field_id)}</p>
-                      <p className="text-[10px] text-gray-500 truncate">{collectorName(e.collector_id)}</p>
-                      {e.description && <p className="text-[10px] text-gray-400 truncate">{e.description}</p>}
-                      <p className="text-[10px] text-gray-600">{new Date(e.captured_at).toLocaleDateString()}</p>
-                      {e.points_awarded > 0 && <p className="text-[10px] text-amber-500">+{e.points_awarded} pts</p>}
                     </div>
-                  </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="shrink-0 flex items-center justify-center gap-1 py-3 border-t border-gray-800 bg-gray-900/50">
+              <button onClick={() => setPage(1)} disabled={page === 1}
+                className="px-2 py-1 rounded text-xs text-gray-400 hover:text-white disabled:opacity-30 transition-colors">«</button>
+              <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+                className="px-2 py-1 rounded text-xs text-gray-400 hover:text-white disabled:opacity-30 transition-colors">‹</button>
+              {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                const start = Math.max(1, Math.min(page - 2, totalPages - 4))
+                const pg = start + i
+                return (
+                  <button key={pg} onClick={() => setPage(pg)}
+                    className={clsx('w-7 h-7 rounded text-xs font-medium transition-colors',
+                      pg === page ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800')}>
+                    {pg}
+                  </button>
                 )
               })}
+              <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+                className="px-2 py-1 rounded text-xs text-gray-400 hover:text-white disabled:opacity-30 transition-colors">›</button>
+              <button onClick={() => setPage(totalPages)} disabled={page === totalPages}
+                className="px-2 py-1 rounded text-xs text-gray-400 hover:text-white disabled:opacity-30 transition-colors">»</button>
+              <span className="ml-2 text-[11px] text-gray-600">
+                Page {page} of {totalPages} · {total} total
+              </span>
             </div>
           )}
         </div>
       </div>
 
-      {/* CSV preview modal */}
-      {csvPreview && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80" onClick={() => setCsvPreview(null)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-5xl max-h-[85vh] flex flex-col mx-4" onClick={e => e.stopPropagation()}>
-            {/* Header */}
-            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-700 shrink-0">
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-white">{fieldName(csvPreview.entry.field_id)}</p>
-                <p className="text-[11px] text-gray-500 mt-0.5">
-                  {csvPreview.cols.length} columns · {csvPreview.rows.length} rows shown
-                  {csvPreview.rows.length === 200 && ' (first 200 rows)'}
-                </p>
+      {/* ── Upload field picker ── */}
+      {showUploadPicker && (
+        <div className="fixed inset-0 z-[65] flex items-end sm:items-center justify-center bg-black/60"
+          onClick={() => setShowUploadPicker(false)}>
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-sm mx-4 mb-4 sm:mb-0"
+            onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+              <div>
+                <h3 className="text-sm font-semibold text-white">Choose Field to Upload Into</h3>
+                <p className="text-[11px] text-gray-500 mt-0.5">Select which field your files belong to</p>
               </div>
-              <div className="flex items-center gap-3 ml-4 shrink-0">
-                <a href={resolveFileUrl(csvPreview.entry.file_url) ?? '#'} download
-                  onClick={e => e.stopPropagation()}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-indigo-700 hover:bg-indigo-600 text-white rounded-lg transition-colors">
-                  ⬇ Download
-                </a>
-                <button onClick={() => setCsvPreview(null)} className="text-gray-400 hover:text-white transition-colors">
-                  <X size={18} />
-                </button>
-              </div>
+              <button onClick={() => setShowUploadPicker(false)}
+                className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-400"><X size={15} /></button>
             </div>
-            {/* Table */}
-            <div className="flex-1 overflow-auto p-0">
-              <table className="min-w-full text-[11px]">
-                <thead className="sticky top-0 bg-gray-800 z-10">
-                  <tr>
-                    <th className="px-3 py-2 text-left text-gray-500 font-medium border-b border-gray-700 w-10">#</th>
-                    {csvPreview.cols.map((col, i) => (
-                      <th key={i} className="px-3 py-2 text-left text-gray-300 font-medium border-b border-gray-700 whitespace-nowrap max-w-[200px] truncate">
-                        {col}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {csvPreview.rows.map((row, ri) => (
-                    <tr key={ri} className={ri % 2 === 0 ? 'bg-gray-900' : 'bg-gray-800/50'}>
-                      <td className="px-3 py-1.5 text-gray-600 border-b border-gray-800">{ri + 1}</td>
-                      {csvPreview.cols.map((_, ci) => (
-                        <td key={ci} className="px-3 py-1.5 text-gray-300 border-b border-gray-800 max-w-[200px] truncate" title={row[ci] ?? ''}>
-                          {row[ci] ?? ''}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="p-3 space-y-2 max-h-80 overflow-y-auto">
+              {fileFields.map(f => (
+                <button key={f.id} onClick={() => openUpload(f)}
+                  className="w-full flex items-start gap-3 px-4 py-3 rounded-xl bg-gray-800/60 hover:bg-indigo-900/40 border border-gray-700/50 hover:border-indigo-600/60 text-left transition-all group">
+                  <div className={clsx('mt-0.5 p-1.5 rounded-lg shrink-0',
+                    f.type === 'image' ? 'bg-sky-900/50' : f.type === 'video' ? 'bg-rose-900/50' : 'bg-purple-900/50')}>
+                    {f.type === 'image' ? <ImageIcon size={13} className="text-sky-400" />
+                    : f.type === 'video' ? <Video size={13} className="text-rose-400" />
+                    : <FileText size={13} className="text-purple-400" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm text-white font-medium group-hover:text-indigo-300 transition-colors">{f.label}</span>
+                      <span className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded bg-gray-700 text-gray-400">{f.type}</span>
+                      {f.required && <span className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded bg-red-900/50 text-red-400">required</span>}
+                    </div>
+                    {f.instruction && <p className="text-[11px] text-gray-500 mt-0.5 truncate">{f.instruction}</p>}
+                    {f.capture_mode !== 'both' && (
+                      <p className="text-[10px] text-amber-500 mt-0.5">
+                        {f.capture_mode === 'camera_only' ? '📷 Camera only' : '⬆️ Upload only'}
+                      </p>
+                    )}
+                  </div>
+                  <ChevronRight size={14} className="text-gray-600 group-hover:text-indigo-400 shrink-0 mt-1 transition-colors" />
+                </button>
+              ))}
             </div>
           </div>
         </div>
       )}
 
-      {/* Media lightbox */}
+      {/* ── Similar entries slide-over ── */}
+      {similarPanel && (
+        <div className="fixed inset-0 z-[60] flex">
+          <div className="flex-1" onClick={() => setSimilarPanel(null)} />
+          <div className="w-full max-w-sm bg-gray-900 border-l border-gray-800 shadow-2xl flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+              <div>
+                <h3 className="text-sm font-semibold text-white">Similar Images</h3>
+                <p className="text-xs text-gray-500 mt-0.5">Perceptual hash similarity (dHash)</p>
+              </div>
+              <button onClick={() => setSimilarPanel(null)} className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-400"><X size={16} /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {similarPanel.loading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 size={20} className="text-indigo-400 animate-spin mr-2" />
+                  <span className="text-xs text-gray-500">Scanning…</span>
+                </div>
+              ) : similarPanel.results.length === 0 ? (
+                <div className="text-center py-12">
+                  <p className="text-xs text-gray-500">No similar images found</p>
+                </div>
+              ) : (
+                similarPanel.results.map(s => {
+                  const furl = resolveFileUrl(s.file_url)
+                  return (
+                    <div key={s.id}
+                      className="flex items-center gap-3 p-2 rounded-xl bg-gray-800/60 border border-gray-700/50 cursor-pointer hover:border-indigo-500/50 transition-colors"
+                      onClick={() => { setSelectedEntry(s); setSimilarPanel(null) }}>
+                      {furl && s.file_mime?.startsWith('image/') ? (
+                        <img src={furl} alt="" className="w-14 h-14 rounded-lg object-cover shrink-0" />
+                      ) : (
+                        <div className="w-14 h-14 rounded-lg bg-gray-700 flex items-center justify-center shrink-0">
+                          <FileText size={18} className="text-gray-500" />
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[11px] text-white font-medium">{fieldName(s.field_id)}</p>
+                        <p className="text-[10px] text-gray-400 truncate">{collectorName(s.collector_id)}</p>
+                        <p className={clsx('text-[10px] font-semibold mt-0.5',
+                          s.similarity_pct >= 90 ? 'text-red-400' : s.similarity_pct >= 70 ? 'text-amber-400' : 'text-emerald-400')}>
+                          {s.similarity_pct}% similar
+                        </p>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <button onClick={ev => { ev.stopPropagation(); doArchive(s, true) }}
+                          className="text-[10px] px-2 py-1 rounded bg-amber-900/40 text-amber-300 hover:bg-amber-900/60 transition-colors">
+                          Archive
+                        </button>
+                        <button onClick={ev => { ev.stopPropagation(); doDelete(s) }}
+                          className="text-[10px] px-2 py-1 rounded bg-red-900/40 text-red-400 hover:bg-red-900/60 transition-colors">
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Lightbox ── */}
       {lightbox && (
-        <div
-          className="fixed inset-0 z-[80] flex flex-col bg-black/95"
-          onClick={() => setLightbox(null)}
-        >
-          {/* Header */}
+        <div className="fixed inset-0 z-[70] flex flex-col bg-black/95" onClick={() => setLightbox(null)}>
           <div className="shrink-0 flex items-center justify-between px-5 py-3 border-b border-white/10" onClick={e => e.stopPropagation()}>
             <div className="min-w-0">
               <p className="text-sm font-semibold text-white truncate">{fieldName(lightbox.field_id)}</p>
               <p className="text-xs text-gray-400 truncate">{collectorName(lightbox.collector_id)} · {new Date(lightbox.captured_at).toLocaleString()}</p>
             </div>
-            <div className="flex items-center gap-3 ml-4 shrink-0">
-              <a
-                href={resolveFileUrl(lightbox.file_url) ?? '#'}
-                target="_blank"
-                rel="noreferrer"
-                onClick={e => e.stopPropagation()}
-                className="text-gray-400 hover:text-white transition-colors"
-                title="Open in new tab"
-              >
-                <ExternalLink size={16} />
-              </a>
-              <button onClick={() => setLightbox(null)} className="text-gray-400 hover:text-white transition-colors">
-                <X size={18} />
-              </button>
-            </div>
+            <button onClick={() => setLightbox(null)} className="text-gray-400 hover:text-white transition-colors ml-4"><X size={18} /></button>
           </div>
-
-          {/* Media */}
           <div className="flex-1 flex items-center justify-center p-4 min-h-0" onClick={e => e.stopPropagation()}>
             {lightbox.file_mime?.startsWith('video/') ? (
-              <video
-                src={resolveFileUrl(lightbox.file_url) ?? undefined}
-                controls
-                autoPlay
-                playsInline
-                className="max-w-full max-h-full rounded-lg"
-                style={{ maxHeight: 'calc(100vh - 140px)' }}
-              />
+              <video src={resolveFileUrl(lightbox.file_url) ?? undefined} controls autoPlay playsInline
+                className="max-w-full max-h-full rounded-lg" style={{ maxHeight: 'calc(100vh - 140px)' }} />
             ) : (
-              <img
-                src={resolveFileUrl(lightbox.file_url) ?? undefined}
-                alt={lightbox.description ?? ''}
-                className="max-w-full max-h-full rounded-lg object-contain"
-                style={{ maxHeight: 'calc(100vh - 140px)' }}
-              />
+              <img src={resolveFileUrl(lightbox.file_url) ?? undefined} alt=""
+                className="max-w-full max-h-full rounded-lg object-contain" style={{ maxHeight: 'calc(100vh - 140px)' }} />
             )}
           </div>
-
-          {/* Footer metadata */}
-          {(lightbox.description || lightbox.points_awarded > 0) && (
-            <div className="shrink-0 px-5 py-3 border-t border-white/10 flex items-center gap-4" onClick={e => e.stopPropagation()}>
-              {lightbox.description && <p className="text-sm text-gray-300 flex-1">{lightbox.description}</p>}
-              {lightbox.points_awarded > 0 && <p className="text-xs text-amber-400 shrink-0">+{lightbox.points_awarded} pts</p>}
-            </div>
-          )}
         </div>
+      )}
+
+      {exportModal && (
+        <ExportToAnnotationModal
+          dataset={dataset}
+          entryIds={selectedIds.size > 0 ? Array.from(selectedIds) : undefined}
+          onClose={() => setExportModal(false)}
+        />
       )}
     </div>
   )
 }
+
+// ── Entry info panel (left sidebar) ───────────────────────────────────────────
+
+function maskEmail(email: string): string {
+  const [local, domain] = email.split('@')
+  if (!domain) return email
+  const visible = local.slice(0, 2)
+  return `${visible}${'*'.repeat(Math.max(2, local.length - 2))}@${domain}`
+}
+
+function EntryInfoPanel({
+  entry, dataset, collectors, fieldName, collectorName, resolveFileUrl,
+  actingId, onReview, onArchive, onDelete, onFindSimilar, onLightbox,
+}: {
+  entry: DatasetEntry
+  dataset: DatasetProfile
+  collectors: DatasetCollector[]
+  fieldName: (id: string) => string
+  collectorName: (id: string) => string
+  resolveFileUrl: (url?: string | null) => string | null
+  actingId: string | null
+  onReview: (entry: DatasetEntry, status: 'approved' | 'rejected') => void
+  onArchive: (entry: DatasetEntry, archived: boolean) => void
+  onDelete: (entry: DatasetEntry) => void
+  onFindSimilar: (entry: DatasetEntry) => void
+  onLightbox: () => void
+}) {
+  const [tab, setTab] = useState<'details' | 'quality'>('details')
+  const busy = actingId === entry.id
+  const furl = resolveFileUrl(entry.file_url)
+  const isImage = entry.file_mime?.startsWith('image/')
+  const isVideo = entry.file_mime?.startsWith('video/')
+  const collector = collectors.find(c => c.id === entry.collector_id)
+  const hasQuality = entry.quality_score != null || entry.blur_score != null || entry.brightness != null || entry.quality_issues.length > 0 || !!entry.phash
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Thumbnail */}
+      <div className="shrink-0 relative bg-black cursor-pointer" onClick={onLightbox}>
+        {furl && isImage ? (
+          <img src={furl} alt="" className="w-full h-44 object-cover" />
+        ) : furl && isVideo ? (
+          <div className="relative h-44 bg-black flex items-center justify-center">
+            <video src={furl} className="w-full h-full object-contain" preload="metadata" muted playsInline />
+            <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+              <div className="w-12 h-12 rounded-full bg-white/20 backdrop-blur flex items-center justify-center">
+                <svg viewBox="0 0 24 24" fill="white" className="w-6 h-6 translate-x-0.5"><path d="M8 5v14l11-7z"/></svg>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="h-44 bg-gray-800 flex flex-col items-center justify-center gap-2">
+            <FileText size={28} className="text-gray-500" />
+            {entry.text_value && <p className="text-xs text-gray-400 px-4 text-center line-clamp-4">{entry.text_value}</p>}
+          </div>
+        )}
+      </div>
+
+      {/* Actions */}
+      <div className="shrink-0 flex gap-1.5 px-3 py-2.5 border-b border-gray-800 flex-wrap">
+        <button onClick={() => onReview(entry, 'approved')}
+          disabled={busy || entry.review_status === 'approved'}
+          className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 rounded-lg bg-emerald-800/50 hover:bg-emerald-700/60 text-emerald-300 text-[11px] font-medium disabled:opacity-40 transition-colors">
+          <ThumbsUp size={11} /> Approve
+        </button>
+        <button onClick={() => onReview(entry, 'rejected')}
+          disabled={busy || entry.review_status === 'rejected'}
+          className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 rounded-lg bg-red-900/40 hover:bg-red-800/50 text-red-400 text-[11px] font-medium disabled:opacity-40 transition-colors">
+          <ThumbsDown size={11} /> Reject
+        </button>
+        <button onClick={() => onFindSimilar(entry)}
+          className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 rounded-lg bg-sky-900/40 hover:bg-sky-800/50 text-sky-300 text-[11px] font-medium transition-colors">
+          🔍 Similar
+        </button>
+        <button onClick={() => onArchive(entry, !entry.archived)}
+          disabled={busy}
+          className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 rounded-lg bg-amber-900/30 hover:bg-amber-900/50 text-amber-300 text-[11px] font-medium disabled:opacity-40 transition-colors">
+          {entry.archived ? '📤 Unarchive' : '📦 Archive'}
+        </button>
+        <button onClick={() => onDelete(entry)}
+          disabled={busy}
+          className="flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-red-900/40 text-gray-400 hover:text-red-400 text-[11px] font-medium disabled:opacity-40 transition-colors">
+          <Trash2 size={11} />
+        </button>
+      </div>
+
+      {/* Tabs */}
+      <div className="shrink-0 flex border-b border-gray-800">
+        {(['details', 'quality'] as const).map(t => (
+          <button key={t} onClick={() => setTab(t)}
+            className={clsx('flex-1 py-2 text-[11px] font-medium transition-colors',
+              tab === t
+                ? 'text-indigo-400 border-b-2 border-indigo-500 -mb-px'
+                : 'text-gray-500 hover:text-gray-300')}>
+            {t === 'details' ? 'Details' : 'Quality'}
+            {t === 'quality' && hasQuality && entry.quality_score != null && (
+              <span className={clsx('ml-1.5 text-[9px] font-bold px-1 py-0.5 rounded',
+                entry.quality_score >= 70 ? 'bg-emerald-900/60 text-emerald-400'
+                : entry.quality_score >= 40 ? 'bg-amber-900/60 text-amber-400'
+                : 'bg-red-900/60 text-red-400')}>
+                {entry.quality_score}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab content */}
+      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4 text-[11px]">
+        {tab === 'details' ? (
+          <>
+            <div>
+              <p className="text-[9px] text-gray-500 font-semibold uppercase tracking-wider mb-0.5">Field</p>
+              <p className="text-indigo-400 font-medium">{fieldName(entry.field_id)}</p>
+            </div>
+
+            <div>
+              <p className="text-[9px] text-gray-500 font-semibold uppercase tracking-wider mb-0.5">Review Status</p>
+              <span className={clsx('px-2 py-0.5 rounded-full text-[10px] font-bold uppercase',
+                entry.review_status === 'approved' ? 'bg-emerald-900/50 text-emerald-400'
+                : entry.review_status === 'rejected' ? 'bg-red-900/50 text-red-400'
+                : 'bg-gray-800 text-gray-400')}>
+                {entry.review_status}
+              </span>
+              {entry.review_note && <p className="text-gray-400 mt-1 text-[10px]">{entry.review_note}</p>}
+            </div>
+
+            <div>
+              <p className="text-[9px] text-gray-500 font-semibold uppercase tracking-wider mb-1">Collector</p>
+              <p className="text-white font-medium">{collectorName(entry.collector_id)}</p>
+              {collector?.email && <p className="text-gray-500 mt-0.5 font-mono">{maskEmail(collector.email)}</p>}
+              {collector?.phone && <p className="text-gray-500">{'*'.repeat(6) + collector.phone.slice(-3)}</p>}
+              {collector && (
+                <div className="flex gap-2 mt-1">
+                  <span className={clsx('px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase',
+                    collector.status === 'active' ? 'bg-emerald-900/50 text-emerald-400' : 'bg-gray-800 text-gray-500')}>
+                    {collector.status}
+                  </span>
+                  <span className="text-gray-600">{collector.entry_count} entries</span>
+                  {collector.points_earned > 0 && <span className="text-amber-500">+{collector.points_earned} pts</span>}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <p className="text-[9px] text-gray-500 font-semibold uppercase tracking-wider mb-0.5">Captured At</p>
+              <p className="text-gray-300">{new Date(entry.captured_at).toLocaleString()}</p>
+            </div>
+
+            {entry.description && (
+              <div>
+                <p className="text-[9px] text-gray-500 font-semibold uppercase tracking-wider mb-0.5">Description</p>
+                <p className="text-gray-300">{entry.description}</p>
+              </div>
+            )}
+
+            {entry.points_awarded > 0 && (
+              <div>
+                <p className="text-[9px] text-gray-500 font-semibold uppercase tracking-wider mb-0.5">Points</p>
+                <p className="text-amber-400 font-semibold">+{entry.points_awarded} pts</p>
+              </div>
+            )}
+
+            {(entry.file_mime || entry.file_size_bytes != null) && (
+              <div>
+                <p className="text-[9px] text-gray-500 font-semibold uppercase tracking-wider mb-0.5">File</p>
+                {entry.file_mime && <p className="text-gray-400">{entry.file_mime}</p>}
+                {entry.file_size_bytes != null && (
+                  <p className="text-gray-500">{(entry.file_size_bytes / 1024).toFixed(1)} KB</p>
+                )}
+              </div>
+            )}
+
+            {entry.location && (entry.location.lat != null || entry.location.country) && (
+              <div>
+                <p className="text-[9px] text-gray-500 font-semibold uppercase tracking-wider mb-1 flex items-center gap-1">
+                  <MapPin size={9} /> Location
+                  <span className="normal-case text-gray-600 font-normal ml-1">({entry.location.source})</span>
+                </p>
+                {entry.location.lat != null && (
+                  <p className="text-gray-400 font-mono text-[10px]">{entry.location.lat.toFixed(5)}, {entry.location.lng?.toFixed(5)}</p>
+                )}
+                {entry.location.accuracy != null && (
+                  <p className="text-gray-500">±{entry.location.accuracy.toFixed(0)}m</p>
+                )}
+                {entry.location.country_name && (
+                  <p className="text-gray-300">{entry.location.city ? `${entry.location.city}, ` : ''}{entry.location.country_name}</p>
+                )}
+                {entry.location.timezone && <p className="text-gray-500">{entry.location.timezone}</p>}
+                {entry.location.isp && <p className="text-gray-600 truncate">{entry.location.isp}</p>}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {hasQuality ? (
+              <>
+                {/* Grade + score */}
+                {entry.quality_score != null && (() => {
+                  const score = entry.quality_score
+                  const issues = entry.quality_issues
+                  // Derive a human label — prefer the specific issue if any, else score-based
+                  const grade =
+                    issues.includes('blurry') ? { label: 'Blurry', cls: 'bg-orange-900/60 text-orange-300 border-orange-700/60' }
+                    : issues.includes('dark') ? { label: 'Too Dark', cls: 'bg-blue-900/60 text-blue-300 border-blue-700/60' }
+                    : issues.includes('overexposed') ? { label: 'Overexposed', cls: 'bg-yellow-900/60 text-yellow-300 border-yellow-700/60' }
+                    : issues.includes('low_res') ? { label: 'Low Res', cls: 'bg-purple-900/60 text-purple-300 border-purple-700/60' }
+                    : score >= 70 ? { label: 'Good', cls: 'bg-emerald-900/60 text-emerald-300 border-emerald-700/60' }
+                    : score >= 40 ? { label: 'Fair', cls: 'bg-amber-900/60 text-amber-300 border-amber-700/60' }
+                    : { label: 'Poor', cls: 'bg-red-900/60 text-red-300 border-red-700/60' }
+                  return (
+                    <div className="rounded-xl border border-gray-700/60 bg-gray-800/40 p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[9px] text-gray-500 font-semibold uppercase tracking-wider">Overall Quality</span>
+                        <span className={clsx('text-[10px] font-bold px-2 py-0.5 rounded-full border', grade.cls)}>
+                          {grade.label}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-2.5 bg-gray-700 rounded-full overflow-hidden">
+                          <div className={clsx('h-full rounded-full transition-all',
+                            score >= 70 ? 'bg-emerald-500' : score >= 40 ? 'bg-amber-500' : 'bg-red-500'
+                          )} style={{ width: `${score}%` }} />
+                        </div>
+                        <span className={clsx('text-sm font-bold tabular-nums',
+                          score >= 70 ? 'text-emerald-400' : score >= 40 ? 'text-amber-400' : 'text-red-400')}>
+                          {score}<span className="text-[10px] font-normal text-gray-600">/100</span>
+                        </span>
+                      </div>
+                    </div>
+                  )
+                })()}
+
+                {/* Issues */}
+                {(() => {
+                  const ALL_ISSUES: { key: string; label: string; icon: string; hint: string }[] = [
+                    { key: 'blurry',      label: 'Blurry',      icon: '🌫️', hint: 'Edge variance < 40 — image lacks sharpness' },
+                    { key: 'dark',        label: 'Too Dark',    icon: '🌑', hint: 'Mean brightness < 40 / 255' },
+                    { key: 'overexposed', label: 'Overexposed', icon: '☀️', hint: 'Mean brightness > 220 / 255' },
+                    { key: 'low_res',     label: 'Low Res',     icon: '🔲', hint: 'Width or height < 200 px' },
+                  ]
+                  return (
+                    <div>
+                      <p className="text-[9px] text-gray-500 font-semibold uppercase tracking-wider mb-2">Issue Checks</p>
+                      <div className="space-y-1">
+                        {ALL_ISSUES.map(({ key, label, icon, hint }) => {
+                          const flagged = entry.quality_issues.includes(key as typeof entry.quality_issues[number])
+                          return (
+                            <div key={key} className={clsx(
+                              'flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px]',
+                              flagged ? 'bg-red-900/30 border border-red-800/40' : 'bg-gray-800/50 border border-gray-700/30'
+                            )} title={hint}>
+                              <span>{icon}</span>
+                              <span className={flagged ? 'text-red-300 font-medium' : 'text-gray-500'}>{label}</span>
+                              <span className={clsx('ml-auto text-[9px] font-bold',
+                                flagged ? 'text-red-400' : 'text-emerald-600')}>
+                                {flagged ? '✗ FLAGGED' : '✓ OK'}
+                              </span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })()}
+
+                {/* Raw metrics */}
+                {(entry.blur_score != null || entry.brightness != null) && (
+                  <div>
+                    <p className="text-[9px] text-gray-500 font-semibold uppercase tracking-wider mb-2">Raw Metrics</p>
+                    <div className="space-y-2.5">
+                      {entry.blur_score != null && (
+                        <div>
+                          <div className="flex justify-between mb-1">
+                            <span className="text-[10px] text-gray-500">Sharpness <span className="text-gray-700">(edge variance)</span></span>
+                            <span className={clsx('text-[10px] font-mono font-semibold',
+                              entry.blur_score >= 100 ? 'text-emerald-400'
+                              : entry.blur_score >= 40 ? 'text-amber-400'
+                              : 'text-red-400')}>
+                              {entry.blur_score.toFixed(1)}
+                            </span>
+                          </div>
+                          <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                            <div className={clsx('h-full rounded-full',
+                              entry.blur_score >= 100 ? 'bg-emerald-500'
+                              : entry.blur_score >= 40 ? 'bg-amber-500' : 'bg-red-500'
+                            )} style={{ width: `${Math.min(100, entry.blur_score / 5)}%` }} />
+                          </div>
+                          <div className="flex justify-between mt-0.5">
+                            <span className="text-[9px] text-gray-700">0 blurry</span>
+                            <span className="text-[9px] text-gray-700">40 OK</span>
+                            <span className="text-[9px] text-gray-700">500 sharp</span>
+                          </div>
+                        </div>
+                      )}
+
+                      {entry.brightness != null && (
+                        <div>
+                          <div className="flex justify-between mb-1">
+                            <span className="text-[10px] text-gray-500">Brightness <span className="text-gray-700">(mean pixel)</span></span>
+                            <span className={clsx('text-[10px] font-mono font-semibold',
+                              entry.brightness < 40 || entry.brightness > 220 ? 'text-red-400'
+                              : entry.brightness >= 80 && entry.brightness <= 180 ? 'text-emerald-400'
+                              : 'text-amber-400')}>
+                              {entry.brightness.toFixed(1)}
+                            </span>
+                          </div>
+                          <div className="relative h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                            {/* ideal range shading */}
+                            <div className="absolute inset-y-0 bg-emerald-900/40 rounded-full"
+                              style={{ left: `${80/255*100}%`, width: `${(180-80)/255*100}%` }} />
+                            {/* cursor */}
+                            <div className="absolute top-0 bottom-0 w-1 rounded-full bg-white/80"
+                              style={{ left: `calc(${entry.brightness/255*100}% - 2px)` }} />
+                          </div>
+                          <div className="flex justify-between mt-0.5">
+                            <span className="text-[9px] text-gray-700">0 black</span>
+                            <span className="text-[9px] text-emerald-700">80–180 ideal</span>
+                            <span className="text-[9px] text-gray-700">255 white</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Perceptual hash */}
+                {entry.phash && (
+                  <div>
+                    <p className="text-[9px] text-gray-500 font-semibold uppercase tracking-wider mb-1">Perceptual Hash <span className="normal-case font-normal text-gray-700">(dHash 64-bit)</span></p>
+                    <p className="text-gray-600 font-mono text-[9px] break-all bg-gray-800/50 rounded px-2 py-1.5">{entry.phash}</p>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="flex flex-col items-center justify-center py-8 text-center">
+                <p className="text-xs text-gray-600">No quality metrics</p>
+                <p className="text-[10px] text-gray-700 mt-1">Only available for image entries</p>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Export to Annotation modal ─────────────────────────────────────────────────
+
+function ExportToAnnotationModal({
+  dataset, entryIds, onClose,
+}: {
+  dataset: DatasetProfile
+  entryIds?: string[]
+  onClose: () => void
+}) {
+  const [mode, setMode] = useState<'existing' | 'new'>('existing')
+  const [projects, setProjects] = useState<{ id: string; name: string }[]>([])
+  const [projectId, setProjectId] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ added: number; skipped: number; project_id: string } | null>(null)
+
+  // New project form
+  const [newName, setNewName] = useState(dataset.name)
+  const [newClasses, setNewClasses] = useState('')
+  const [newType, setNewType] = useState('classification')
+  const [creating, setCreating] = useState(false)
+  const [createErr, setCreateErr] = useState('')
+
+  useEffect(() => {
+    import('@/api/annotate').then(({ annotateApi }) =>
+      annotateApi.listProjects().then(ps => {
+        setProjects(ps)
+        if (ps.length) { setProjectId(ps[0].id) } else { setMode('new') }
+      }).catch(() => {}).finally(() => setLoading(false))
+    )
+  }, [])
+
+  const doExport = async (pid: string) => {
+    setBusy(true)
+    try {
+      const r = await datasetsApi.exportToAnnotation(dataset.id, pid, entryIds)
+      setResult(r)
+    } finally { setBusy(false) }
+  }
+
+  const doCreateAndExport = async () => {
+    const name = newName.trim()
+    if (!name) { setCreateErr('Project name is required'); return }
+    const classes = newClasses.split(',').map(s => s.trim()).filter(Boolean)
+    setCreateErr('')
+    setCreating(true)
+    try {
+      const { annotateApi } = await import('@/api/annotate')
+      const proj = await annotateApi.createProject({ name, classes, annotation_type: newType })
+      setProjects(ps => [...ps, proj])
+      await doExport(proj.id)
+    } catch (e: any) {
+      setCreateErr(e?.response?.data?.detail || e?.message || 'Failed to create project')
+    } finally { setCreating(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70">
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-md mx-4">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+          <div>
+            <h3 className="text-sm font-semibold text-white">Export to Annotation Project</h3>
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              {entryIds ? `${entryIds.length} selected entries` : 'All non-archived entries'} — no file duplication
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-400"><X size={16} /></button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          {result ? (
+            <div className="text-center py-4 space-y-3">
+              <div className="text-4xl">✅</div>
+              <p className="text-white font-semibold">Export complete</p>
+              <div className="flex justify-center gap-4 text-sm">
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-emerald-400">{result.added}</p>
+                  <p className="text-gray-500 text-xs">Added</p>
+                </div>
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-gray-400">{result.skipped}</p>
+                  <p className="text-gray-500 text-xs">Skipped (duplicates)</p>
+                </div>
+              </div>
+              <button onClick={onClose}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-xl transition-colors">
+                Done
+              </button>
+            </div>
+          ) : (
+            <>
+              {/* Mode tabs */}
+              <div className="flex rounded-lg bg-gray-800 p-1 gap-1">
+                {(['existing', 'new'] as const).map(m => (
+                  <button key={m} onClick={() => setMode(m)}
+                    className={clsx('flex-1 py-1.5 text-xs font-medium rounded-md transition-colors',
+                      mode === m ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white')}>
+                    {m === 'existing' ? 'Existing Project' : '+ New Project'}
+                  </button>
+                ))}
+              </div>
+
+              {mode === 'existing' ? (
+                <>
+                  <div>
+                    <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1.5 block">
+                      Target Annotation Project
+                    </label>
+                    {loading ? (
+                      <p className="text-xs text-gray-500">Loading projects…</p>
+                    ) : projects.length === 0 ? (
+                      <p className="text-xs text-amber-400">No projects yet — switch to "New Project" to create one.</p>
+                    ) : (
+                      <select value={projectId} onChange={e => setProjectId(e.target.value)}
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                        {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    )}
+                  </div>
+                  <div className="bg-sky-900/20 border border-sky-800/30 rounded-xl p-3 text-[11px] text-sky-300">
+                    Images are linked to the same S3 object — no storage is duplicated. Entries already in the target project are skipped.
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={onClose}
+                      className="flex-1 px-4 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition-colors">
+                      Cancel
+                    </button>
+                    <button onClick={() => doExport(projectId)} disabled={busy || !projectId || loading}
+                      className="flex-1 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold disabled:opacity-50 transition-colors">
+                      {busy ? 'Exporting…' : 'Export'}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Project Name *</label>
+                      <input value={newName} onChange={e => setNewName(e.target.value)}
+                        placeholder="e.g. Cow Disease Detection"
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">
+                        Classes <span className="normal-case font-normal text-gray-600">(comma-separated)</span>
+                      </label>
+                      <input value={newClasses} onChange={e => setNewClasses(e.target.value)}
+                        placeholder="e.g. healthy, sick, unknown"
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 block">Annotation Type</label>
+                      <select value={newType} onChange={e => setNewType(e.target.value)}
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                        <option value="classification">Classification</option>
+                        <option value="detection">Detection (bounding boxes)</option>
+                        <option value="segmentation">Segmentation</option>
+                      </select>
+                    </div>
+                    {createErr && <p className="text-xs text-red-400">{createErr}</p>}
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={onClose}
+                      className="flex-1 px-4 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition-colors">
+                      Cancel
+                    </button>
+                    <button onClick={doCreateAndExport} disabled={busy || creating || !newName.trim()}
+                      className="flex-1 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold disabled:opacity-50 transition-colors">
+                      {creating || busy ? <><Loader2 size={13} className="animate-spin inline mr-1" />{creating ? 'Creating…' : 'Exporting…'}</> : 'Create & Export'}
+                    </button>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
@@ -1842,8 +2532,27 @@ export default function DatasetPage() {
     } finally { setBusyId(null) }
   }
 
+  // When viewing a dataset's entries, render the workspace filling the content pane
+  if (viewTarget) {
+    return (
+      <>
+        <DatasetWorkspace dataset={viewTarget} onClose={() => setViewTarget(null)} />
+        {(showCreate || editTarget) && (
+          <DatasetSlideOver
+            initial={editTarget ?? undefined}
+            onClose={() => { setShowCreate(false); setEditTarget(null) }}
+            onSaved={saved => {
+              setDatasets(ds => editTarget ? ds.map(d => d.id === saved.id ? saved : d) : [saved, ...ds])
+              setShowCreate(false); setEditTarget(null)
+            }}
+          />
+        )}
+      </>
+    )
+  }
+
   return (
-    <div className="min-h-full">
+    <div className="flex-1 overflow-y-auto p-6 min-h-0">
       {/* Header */}
       <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
         <div>
@@ -1948,7 +2657,6 @@ export default function DatasetPage() {
         />
       )}
       {inviteTarget && <InviteModal dataset={inviteTarget} onClose={() => setInviteTarget(null)} />}
-      {viewTarget && <EntriesPanel dataset={viewTarget} onClose={() => setViewTarget(null)} />}
       {overviewTarget && <OverviewPanel dataset={overviewTarget} onClose={() => setOverviewTarget(null)} />}
       {contributorsTarget && (
         <CollectorsPanel

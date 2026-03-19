@@ -23,6 +23,8 @@ class UpdateConfigRequest(BaseModel):
     extra: Optional[Dict[str, Any]] = None
     nav_layout: Optional[int] = None
     show_cost_debug: Optional[bool] = None
+    discovery_enabled: Optional[bool] = None
+    demo_mode: Optional[bool] = None
 
 
 @router.get("", dependencies=[_admin])
@@ -70,16 +72,23 @@ async def update_config(body: UpdateConfigRequest):
         updates["nav_layout"] = body.nav_layout
     if body.show_cost_debug is not None:
         updates["show_cost_debug"] = body.show_cost_debug
+    if body.discovery_enabled is not None:
+        updates["discovery_enabled"] = body.discovery_enabled
+    if body.demo_mode is not None:
+        updates["demo_mode"] = body.demo_mode
     await cfg.set(updates)
     return cfg.model_dump()
 
 
-@router.get("/ui", dependencies=[Depends(get_current_user)])
+@router.get("/ui")
 async def get_ui_config():
+    """Public — no auth required (landing page needs discovery_enabled before login)."""
     cfg = await TrainingConfigDoc.find_one(TrainingConfigDoc.key == "global")
     return {
         "nav_layout": cfg.nav_layout if cfg else 3,
         "show_cost_debug": cfg.show_cost_debug if cfg else False,
+        "discovery_enabled": cfg.discovery_enabled if cfg else True,
+        "demo_mode": cfg.demo_mode if cfg else True,
     }
 
 

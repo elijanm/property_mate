@@ -57,4 +57,8 @@ class TrainingConfig(Document):
     # ── Debug / cost visibility ────────────────────────────────────────────────
     show_cost_debug: bool = False   # show token count + cost in AI chat + run output
 
+    # ── Discovery / public marketplace ─────────────────────────────────────────
+    discovery_enabled: bool = True  # show Discover menu on landing page
+    demo_mode: bool = True          # expose all engineers/models/datasets publicly (no per-item publish)
+
     updated_at: datetime = Field(default_factory=utc_now)

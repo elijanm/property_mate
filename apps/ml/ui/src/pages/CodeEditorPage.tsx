@@ -3093,18 +3093,35 @@ export default function CodeEditorPage() {
                     <button
                       onClick={() => {
                         const errorText = logs.filter(l => l.type === 'error').map(l => l.text).join('\n')
-                        setRestoreAiSession(undefined)
-                        setAiWorkshopKey(k => k + 1)
-                        setAiSession({
-                          prompt: '',
-                          dsType: 'dataset',
-                          framework: 'auto',
-                          className: '',
-                          csvSchema: null,
-                          existingCode: activeTabData.content,
-                          existingFilename: activeTabData.name,
-                          initialUserMessage: `I ran the trainer and got these errors:\n\`\`\`\n${errorText}\n\`\`\`\nPlease diagnose and fix the issue.`,
-                        })
+                        const errMsg = `I ran the trainer and got these errors:\n\`\`\`\n${errorText}\n\`\`\`\nPlease diagnose and fix the issue.`
+                        if (lastAiSession) {
+                          // Continue the existing session — inject the error as the next user message
+                          const patchedSession: SavedAiSession = {
+                            ...lastAiSession,
+                            session: {
+                              ...lastAiSession.session,
+                              existingCode: activeTabData?.content ?? lastAiSession.session.existingCode,
+                              existingFilename: activeTabData?.name ?? lastAiSession.session.existingFilename,
+                              initialUserMessage: errMsg,
+                            },
+                          }
+                          setRestoreAiSession(patchedSession)
+                          setAiWorkshopKey(k => k + 1)
+                        } else {
+                          // No prior session — start fresh with error context
+                          setRestoreAiSession(undefined)
+                          setAiWorkshopKey(k => k + 1)
+                          setAiSession({
+                            prompt: '',
+                            dsType: 'dataset',
+                            framework: 'auto',
+                            className: '',
+                            csvSchema: null,
+                            existingCode: activeTabData?.content,
+                            existingFilename: activeTabData?.name,
+                            initialUserMessage: errMsg,
+                          })
+                        }
                         setAiMode(true)
                       }}
                       className="flex items-center gap-1.5 px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white text-[11px] font-medium rounded-lg transition-colors flex-shrink-0"

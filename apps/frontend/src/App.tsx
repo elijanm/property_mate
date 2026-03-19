@@ -13,6 +13,7 @@ import AgentDashboard from '@/pages/agent/AgentDashboard'
 import TenantDashboard from '@/pages/tenant/TenantDashboard'
 // ServiceProviderDashboard replaced by VendorPortalPage
 import SuperAdminDashboard from '@/pages/superadmin/SuperAdminDashboard'
+import AdminUsersPage from '@/pages/superadmin/AdminUsersPage'
 import PortfolioPage from '@/pages/owner/portfolio/PortfolioPage'
 import PropertiesListPage from '@/pages/owner/properties/PropertiesListPage'
 import NewPropertyPage from '@/pages/owner/properties/NewPropertyPage'
@@ -266,10 +267,18 @@ export default function App() {
         }
       />
       <Route
-        path="/superadmin/*"
+        path="/superadmin"
         element={
           <ProtectedRoute allowedRoles={['superadmin']}>
             <SuperAdminDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/superadmin/users"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin']}>
+            <AdminUsersPage />
           </ProtectedRoute>
         }
       />

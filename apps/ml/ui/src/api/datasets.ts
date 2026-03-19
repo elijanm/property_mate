@@ -1,5 +1,5 @@
 import client from './client'
-import type { DatasetProfile, DatasetCollector, DatasetEntry, DatasetCreatePayload, CollectFormDefinition, DatasetOverview } from '@/types/dataset'
+import type { DatasetProfile, DatasetCollector, DatasetEntry, DatasetEntryListResponse, SimilarDatasetEntry, DatasetCreatePayload, CollectFormDefinition, DatasetOverview } from '@/types/dataset'
 
 export const datasetsApi = {
   list: () =>
@@ -29,8 +29,30 @@ export const datasetsApi = {
   removeCollector: (datasetId: string, collectorId: string) =>
     client.delete(`/datasets/${datasetId}/collectors/${collectorId}`),
 
-  getEntries: (id: string, params?: { field_id?: string; collector_id?: string; date_from?: string; date_to?: string }) =>
-    client.get<DatasetEntry[]>(`/datasets/${id}/entries`, { params }).then(r => r.data),
+  getEntries: (id: string, params?: {
+    field_id?: string
+    collector_id?: string
+    date_from?: string
+    date_to?: string
+    review_status?: string
+    quality?: string
+    include_archived?: boolean
+    page?: number
+    page_size?: number
+  }) =>
+    client.get<DatasetEntryListResponse>(`/datasets/${id}/entries`, { params }).then(r => r.data),
+
+  archiveEntry: (datasetId: string, entryId: string, archived = true) =>
+    client.post<DatasetEntry>(`/datasets/${datasetId}/entries/${entryId}/archive`, { archived }).then(r => r.data),
+
+  findSimilarEntries: (datasetId: string, entryId: string, threshold = 12) =>
+    client.get<SimilarDatasetEntry[]>(`/datasets/${datasetId}/entries/${entryId}/similar`, { params: { threshold } }).then(r => r.data),
+
+  exportToAnnotation: (datasetId: string, projectId: string, entryIds?: string[]) =>
+    client.post<{ added: number; skipped: number; project_id: string }>(
+      `/datasets/${datasetId}/export-to-annotation`,
+      { project_id: projectId, entry_ids: entryIds ?? null }
+    ).then(r => r.data),
 
   reviewEntry: (datasetId: string, entryId: string, status: 'approved' | 'rejected', note?: string) =>
     client.patch<DatasetEntry>(`/datasets/${datasetId}/entries/${entryId}/review`, { status, note }).then(r => r.data),

@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     # Plugin directory
     TRAINER_PLUGIN_DIR: str = "/app/trainers"
 
+    # Preprocess timeout (seconds) — applied to trainer.preprocess() in training runs
+    TRAINER_PREPROCESS_TIMEOUT: int = 300
+
     # Admin password — required for destructive security operations (ban/unban/delete)
     ADMIN_PASSWORD: str = "changeme"
 

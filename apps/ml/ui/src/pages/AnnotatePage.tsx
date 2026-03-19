@@ -40,6 +40,8 @@ function StatusBadge({ status }: { status: string }) {
   )
 }
 
+const PAGE_SIZE = 12
+
 // ── project list view ─────────────────────────────────────────────────────────
 function ProjectList({
   projects, loading, onCreate, onOpen, onDelete,
@@ -50,86 +52,294 @@ function ProjectList({
   onOpen: (p: AnnotationProject) => void
   onDelete: (id: string) => void
 }) {
+  const [query,    setQuery]    = useState('')
+  const [view,     setView]     = useState<'grid' | 'table'>('grid')
+  const [page,     setPage]     = useState(1)
+  const [statusFilter, setStatusFilter] = useState<string>('all')
+
+  // Filter
+  const filtered = projects.filter(p => {
+    const q = query.toLowerCase()
+    const matchesQuery = !q || p.name.toLowerCase().includes(q) ||
+      p.description.toLowerCase().includes(q) ||
+      p.classes.some(c => c.toLowerCase().includes(q))
+    const matchesStatus = statusFilter === 'all' || p.status === statusFilter
+    return matchesQuery && matchesStatus
+  })
+
+  // Reset page when filter changes
+  useEffect(() => { setPage(1) }, [query, statusFilter])
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const paginated  = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+
+  const STATUS_OPTS = ['all', 'collecting', 'training', 'predicting', 'done']
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-zinc-200">Annotation Projects</h2>
-        <button
-          onClick={onCreate}
-          className="flex items-center gap-1.5 text-xs bg-violet-600 hover:bg-violet-500 text-white px-3 py-1.5 rounded-lg transition-colors"
+    <div className="flex flex-col gap-4 h-full min-h-0">
+
+      {/* ── Toolbar ──────────────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-2 flex-wrap flex-shrink-0">
+        <div className="flex-1 min-w-0 relative">
+          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none">
+            <BarChart2 size={13} className="rotate-90" />
+          </span>
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search projects, classes…"
+            className="w-full bg-zinc-800 border border-zinc-700 rounded-lg pl-8 pr-3 py-1.5 text-xs text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 transition-colors"
+          />
+          {query && (
+            <button onClick={() => setQuery('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300">
+              <X size={11} />
+            </button>
+          )}
+        </div>
+
+        {/* Status filter */}
+        <select
+          value={statusFilter}
+          onChange={e => setStatusFilter(e.target.value)}
+          className="bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1.5 text-xs text-zinc-300 outline-none focus:border-violet-500 transition-colors cursor-pointer"
         >
+          {STATUS_OPTS.map(s => (
+            <option key={s} value={s}>{s === 'all' ? 'All statuses' : s}</option>
+          ))}
+        </select>
+
+        {/* View toggle */}
+        <div className="flex rounded-lg overflow-hidden border border-zinc-700 flex-shrink-0">
+          <button onClick={() => setView('grid')}
+            className={`px-2 py-1.5 transition-colors ${view === 'grid' ? 'bg-violet-600 text-white' : 'bg-zinc-800 text-zinc-500 hover:text-zinc-300'}`}
+            title="Grid view">
+            <Layers size={13} />
+          </button>
+          <button onClick={() => setView('table')}
+            className={`px-2 py-1.5 transition-colors ${view === 'table' ? 'bg-violet-600 text-white' : 'bg-zinc-800 text-zinc-500 hover:text-zinc-300'}`}
+            title="Table view">
+            <Tag size={13} />
+          </button>
+        </div>
+
+        <button onClick={onCreate}
+          className="flex items-center gap-1.5 text-xs bg-violet-600 hover:bg-violet-500 text-white px-3 py-1.5 rounded-lg transition-colors flex-shrink-0">
           <Plus size={13} /> New Project
         </button>
       </div>
 
+      {/* ── Results summary ───────────────────────────────────────────────────── */}
+      {!loading && projects.length > 0 && (
+        <p className="text-[11px] text-zinc-600 flex-shrink-0 -mt-2">
+          {filtered.length} project{filtered.length !== 1 ? 's' : ''}
+          {query || statusFilter !== 'all' ? ` matching filters` : ''}
+          {filtered.length > PAGE_SIZE && ` · page ${page}/${totalPages}`}
+        </p>
+      )}
+
+      {/* ── Loading ───────────────────────────────────────────────────────────── */}
       {loading && (
-        <div className="flex items-center gap-2 text-zinc-400 text-sm py-8 justify-center">
+        <div className="flex items-center gap-2 text-zinc-400 text-sm py-8 justify-center flex-shrink-0">
           <Loader2 size={16} className="animate-spin" /> Loading…
         </div>
       )}
 
+      {/* ── Empty states ──────────────────────────────────────────────────────── */}
       {!loading && projects.length === 0 && (
-        <div className="text-center py-16 text-zinc-500">
+        <div className="text-center py-16 text-zinc-500 flex-shrink-0">
           <Layers size={32} className="mx-auto mb-3 opacity-40" />
           <p className="text-sm">No annotation projects yet.</p>
           <p className="text-xs mt-1">Create one to start auto-annotating images.</p>
         </div>
       )}
+      {!loading && projects.length > 0 && filtered.length === 0 && (
+        <div className="text-center py-12 text-zinc-500 flex-shrink-0">
+          <p className="text-sm">No projects match your search.</p>
+          <button onClick={() => { setQuery(''); setStatusFilter('all') }}
+            className="text-xs text-violet-400 hover:text-violet-300 mt-1 transition-colors">
+            Clear filters
+          </button>
+        </div>
+      )}
 
-      <div className="grid grid-cols-1 gap-3">
-        {projects.map(p => {
-          const pct = p.image_count ? Math.round((p.annotated_count / p.image_count) * 100) : 0
-          const latestModel = p.model_versions[p.model_versions.length - 1]
-          return (
-            <div
-              key={p.id}
-              className="bg-zinc-800/60 border border-zinc-700/50 rounded-xl p-4 hover:border-zinc-600 transition-colors cursor-pointer"
-              onClick={() => onOpen(p)}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-sm font-medium text-zinc-100 truncate">{p.name}</span>
-                    <StatusBadge status={p.status} />
+      {/* ── Grid view ─────────────────────────────────────────────────────────── */}
+      {!loading && view === 'grid' && paginated.length > 0 && (
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 pb-2">
+            {paginated.map(p => {
+              const pct = p.image_count ? Math.round((p.annotated_count / p.image_count) * 100) : 0
+              const latestModel = p.model_versions[p.model_versions.length - 1]
+              return (
+                <div key={p.id}
+                  className="bg-zinc-800/60 border border-zinc-700/50 rounded-xl p-4 hover:border-violet-600/50 hover:bg-zinc-800/80 transition-all cursor-pointer group"
+                  onClick={() => onOpen(p)}>
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-zinc-100 truncate">{p.name}</p>
+                      {p.description && <p className="text-[11px] text-zinc-500 truncate mt-0.5">{p.description}</p>}
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <StatusBadge status={p.status} />
+                      <button onClick={e => { e.stopPropagation(); onDelete(p.id) }}
+                        className="text-zinc-700 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 p-0.5">
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
                   </div>
-                  {p.description && (
-                    <p className="text-xs text-zinc-500 truncate mb-2">{p.description}</p>
-                  )}
+
+                  {/* Classes */}
                   <div className="flex flex-wrap gap-1 mb-3">
-                    {p.classes.map(c => (
-                      <span key={c} className="text-[10px] bg-zinc-700 text-zinc-300 px-1.5 py-0.5 rounded">{c}</span>
+                    {p.classes.slice(0, 5).map(c => (
+                      <span key={c} className="text-[10px] bg-zinc-700/80 text-zinc-300 px-1.5 py-0.5 rounded">{c}</span>
                     ))}
+                    {p.classes.length > 5 && (
+                      <span className="text-[10px] text-zinc-600">+{p.classes.length - 5}</span>
+                    )}
                   </div>
-                  {/* progress bar */}
-                  <div className="space-y-1">
+
+                  {/* Progress */}
+                  <div className="space-y-1 mb-2">
                     <div className="flex justify-between text-[10px] text-zinc-500">
                       <span>{p.annotated_count}/{p.image_count} annotated</span>
-                      <span>{pct}%</span>
+                      <span className={pct === 100 ? 'text-green-400' : ''}>{pct}%</span>
                     </div>
-                    <div className="h-1.5 bg-zinc-700 rounded-full overflow-hidden">
-                      <div className="h-full bg-violet-500 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                    <div className="h-1 bg-zinc-700 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full transition-all ${pct === 100 ? 'bg-green-500' : 'bg-violet-500'}`}
+                        style={{ width: `${pct}%` }} />
                     </div>
                   </div>
-                  {latestModel && (
-                    <div className="mt-2 text-[10px] text-zinc-500">
-                      Model v{latestModel.version} — <StatusBadge status={latestModel.status} />
+
+                  {/* Model info */}
+                  {latestModel ? (
+                    <div className="flex items-center gap-2 text-[10px] text-zinc-500">
+                      <span>v{latestModel.version}</span>
+                      <StatusBadge status={latestModel.status} />
                       {latestModel.map50 != null && (
-                        <span className="ml-2 text-green-400">mAP50: {(latestModel.map50 * 100).toFixed(1)}%</span>
+                        <span className="text-green-400 font-medium ml-auto">
+                          {(latestModel.map50 * 100).toFixed(1)}% mAP50
+                        </span>
                       )}
                     </div>
+                  ) : (
+                    <p className="text-[10px] text-zinc-700">No model yet</p>
                   )}
                 </div>
-                <button
-                  onClick={e => { e.stopPropagation(); onDelete(p.id) }}
-                  className="text-zinc-600 hover:text-red-400 transition-colors p-1"
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            </div>
-          )
-        })}
-      </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Table view ────────────────────────────────────────────────────────── */}
+      {!loading && view === 'table' && paginated.length > 0 && (
+        <div className="flex-1 min-h-0 overflow-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead className="sticky top-0 z-10">
+              <tr className="bg-zinc-800/90 backdrop-blur text-zinc-400 text-[10px] uppercase tracking-wider">
+                <th className="text-left px-3 py-2 font-semibold rounded-tl-lg">Project</th>
+                <th className="text-left px-3 py-2 font-semibold">Type</th>
+                <th className="text-left px-3 py-2 font-semibold">Classes</th>
+                <th className="text-right px-3 py-2 font-semibold">Images</th>
+                <th className="text-right px-3 py-2 font-semibold">Annotated</th>
+                <th className="text-left px-3 py-2 font-semibold">Progress</th>
+                <th className="text-left px-3 py-2 font-semibold">Status</th>
+                <th className="text-right px-3 py-2 font-semibold">mAP50</th>
+                <th className="px-3 py-2 rounded-tr-lg" />
+              </tr>
+            </thead>
+            <tbody>
+              {paginated.map((p, i) => {
+                const pct = p.image_count ? Math.round((p.annotated_count / p.image_count) * 100) : 0
+                const activeModel = p.model_versions.find(v => v.id === p.active_model_version_id)
+                  ?? p.model_versions[p.model_versions.length - 1]
+                return (
+                  <tr key={p.id}
+                    className={`border-b border-zinc-700/40 hover:bg-zinc-800/60 cursor-pointer transition-colors group ${i % 2 === 0 ? 'bg-zinc-900/20' : ''}`}
+                    onClick={() => onOpen(p)}>
+                    <td className="px-3 py-2.5">
+                      <p className="font-medium text-zinc-100 truncate max-w-[160px]">{p.name}</p>
+                      {p.description && <p className="text-[10px] text-zinc-600 truncate max-w-[160px]">{p.description}</p>}
+                    </td>
+                    <td className="px-3 py-2.5 text-zinc-500 capitalize">{p.annotation_type}</td>
+                    <td className="px-3 py-2.5">
+                      <div className="flex flex-wrap gap-1 max-w-[120px]">
+                        {p.classes.slice(0, 3).map(c => (
+                          <span key={c} className="text-[10px] bg-zinc-700 text-zinc-300 px-1.5 py-0.5 rounded">{c}</span>
+                        ))}
+                        {p.classes.length > 3 && <span className="text-[10px] text-zinc-600">+{p.classes.length - 3}</span>}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-zinc-400">{p.image_count}</td>
+                    <td className="px-3 py-2.5 text-right text-zinc-400">{p.annotated_count}</td>
+                    <td className="px-3 py-2.5 w-28">
+                      <div className="flex items-center gap-1.5">
+                        <div className="flex-1 h-1 bg-zinc-700 rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${pct === 100 ? 'bg-green-500' : 'bg-violet-500'}`}
+                            style={{ width: `${pct}%` }} />
+                        </div>
+                        <span className="text-[10px] text-zinc-500 w-7 text-right">{pct}%</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2.5"><StatusBadge status={p.status} /></td>
+                    <td className="px-3 py-2.5 text-right">
+                      {activeModel?.map50 != null
+                        ? <span className="text-green-400 font-medium">{(activeModel.map50 * 100).toFixed(1)}%</span>
+                        : <span className="text-zinc-700">—</span>}
+                    </td>
+                    <td className="px-3 py-2.5 text-right">
+                      <button onClick={e => { e.stopPropagation(); onDelete(p.id) }}
+                        className="text-zinc-700 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 p-0.5">
+                        <Trash2 size={12} />
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* ── Pagination ────────────────────────────────────────────────────────── */}
+      {!loading && filtered.length > PAGE_SIZE && (
+        <div className="flex items-center justify-between gap-3 flex-shrink-0 pt-1 border-t border-zinc-700/40">
+          <span className="text-[11px] text-zinc-600">
+            {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length}
+          </span>
+          <div className="flex items-center gap-1">
+            <button onClick={() => setPage(1)} disabled={page === 1}
+              className="px-2 py-1 text-[11px] bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 text-zinc-400 rounded transition-colors">
+              «
+            </button>
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+              className="px-2.5 py-1 text-[11px] bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 text-zinc-400 rounded transition-colors">
+              ‹
+            </button>
+            {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
+              // Window of 5 pages centered on current
+              const half = 2
+              let start = Math.max(1, page - half)
+              const end = Math.min(totalPages, start + 4)
+              start = Math.max(1, end - 4)
+              return start + i
+            }).filter(n => n >= 1 && n <= totalPages).map(n => (
+              <button key={n} onClick={() => setPage(n)}
+                className={`px-2.5 py-1 text-[11px] rounded transition-colors ${n === page ? 'bg-violet-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'}`}>
+                {n}
+              </button>
+            ))}
+            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+              className="px-2.5 py-1 text-[11px] bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 text-zinc-400 rounded transition-colors">
+              ›
+            </button>
+            <button onClick={() => setPage(totalPages)} disabled={page === totalPages}
+              className="px-2 py-1 text-[11px] bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 text-zinc-400 rounded transition-colors">
+              »
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -231,18 +441,49 @@ function AnnotationCanvas({
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [drawing, setDrawing] = useState(false)
   const [drawState, setDrawState] = useState<DrawState | null>(null)
-  // local tool override (box/polygon switchable in toolbar regardless of project default)
   const [activeAnnotationType, setActiveAnnotationType] = useState<AnnotationType>(annotationType)
   const forceAnnotationType = (t: AnnotationType) => setActiveAnnotationType(t)
-  // drag-move state
+  // box drag/resize/rotate
   const [dragId, setDragId] = useState<string | null>(null)
   const [dragOffset, setDragOffset] = useState<[number, number]>([0, 0])
-  // resize state: which handle corner (tl/tr/bl/br)
   const [resizeId, setResizeId] = useState<string | null>(null)
   const [resizeHandle, setResizeHandle] = useState<string>('')
-  // rotation state
   const [rotatingId, setRotatingId] = useState<string | null>(null)
+  // polygon vertex editing
+  const [polyDragId, setPolyDragId] = useState<string | null>(null)
+  const [polyDragVertIdx, setPolyDragVertIdx] = useState<number>(-2) // -1=body, >=0=vertex
+  const [polyBodyOffset, setPolyBodyOffset] = useState<[number, number][]>([])
+  // freehand polygon
+  const [freehand, setFreehand] = useState(false)
+  const [freehandDrawing, setFreehandDrawing] = useState(false)
+  // undo/redo via refs (avoid stale closures)
+  const historyRef = useRef<AnnotationShape[][]>([[...image.annotations]])
+  const histIdxRef = useRef(0)
   const [cursor, setCursor] = useState<string>('crosshair')
+
+  // ── history ──────────────────────────────────────────────────────────────────
+  const pushHistory = useCallback((anns: AnnotationShape[]) => {
+    historyRef.current = historyRef.current.slice(0, histIdxRef.current + 1)
+    historyRef.current.push([...anns])
+    histIdxRef.current = historyRef.current.length - 1
+  }, [])
+
+  const undo = useCallback(() => {
+    if (histIdxRef.current <= 0) return
+    histIdxRef.current--
+    const anns = [...historyRef.current[histIdxRef.current]]
+    setAnnotations(anns)
+    setSelectedId(null)
+    onChange(anns)
+  }, [onChange])
+
+  const redo = useCallback(() => {
+    if (histIdxRef.current >= historyRef.current.length - 1) return
+    histIdxRef.current++
+    const anns = [...historyRef.current[histIdxRef.current]]
+    setAnnotations(anns)
+    onChange(anns)
+  }, [onChange])
 
   // ── rotation helpers (all pixel-space) ──────────────────────────────────────
   /** Rotate a pixel-space vector by angle */
@@ -273,6 +514,57 @@ function AnnotationCanvas({
   const [zoom, setZoom] = useState(1)
   const canvasSize = { w: Math.round(baseSize.w * zoom), h: Math.round(baseSize.h * zoom) }
 
+  // ── polygon hit testing (needs canvasSize) ────────────────────────────────────
+  /** Ray-casting polygon hit (normalised 0-1 coords). Returns ann id or null. */
+  const hitPolygon = useCallback((nx: number, ny: number, anns: AnnotationShape[]): string | null => {
+    for (let i = anns.length - 1; i >= 0; i--) {
+      const ann = anns[i]
+      if (ann.type !== 'polygon') continue
+      const pts = ann.coords as number[][]
+      if (pts.length < 3) continue
+      let inside = false
+      for (let j = 0, k = pts.length - 1; j < pts.length; k = j++) {
+        const xi = pts[j][0], yi = pts[j][1], xk = pts[k][0], yk = pts[k][1]
+        if (((yi > ny) !== (yk > ny)) && (nx < (xk - xi) * (ny - yi) / (yk - yi) + xi)) inside = !inside
+      }
+      if (inside) return ann.id
+    }
+    return null
+  }, [])
+
+  /** Which polygon vertex index is within 9px of cursor (-1 = none) */
+  const hitPolyVertex = useCallback((ann: AnnotationShape, nx: number, ny: number): number => {
+    if (ann.type !== 'polygon') return -1
+    const { w, h } = canvasSize
+    const pts = ann.coords as number[][]
+    for (let i = 0; i < pts.length; i++) {
+      if (Math.hypot(pts[i][0] * w - nx * w, pts[i][1] * h - ny * h) < 9) return i
+    }
+    return -1
+  }, [canvasSize])
+
+  /** Which polygon edge midpoint index is within 8px of cursor (-1 = none) */
+  const hitPolyEdgeMid = useCallback((ann: AnnotationShape, nx: number, ny: number): number => {
+    if (ann.type !== 'polygon') return -1
+    const { w, h } = canvasSize
+    const pts = ann.coords as number[][]
+    for (let i = 0; i < pts.length; i++) {
+      const j = (i + 1) % pts.length
+      const mx = (pts[i][0] + pts[j][0]) / 2 * w
+      const my = (pts[i][1] + pts[j][1]) / 2 * h
+      if (Math.hypot(mx - nx * w, my - ny * h) < 8) return i
+    }
+    return -1
+  }, [canvasSize])
+
+  /** True if cursor is within 15px of first polygon point (snap-to-close) */
+  const nearPolyClose = (nx: number, ny: number, ds: DrawState): boolean => {
+    if (ds.points.length < 3) return false
+    const { w, h } = canvasSize
+    const [fx, fy] = ds.points[0]
+    return Math.hypot((nx - fx) * w, (ny - fy) * h) < 15
+  }
+
   const ZOOM_STEP = 0.25
   const ZOOM_MIN = 0.25
   const ZOOM_MAX = 4
@@ -280,6 +572,27 @@ function AnnotationCanvas({
   const zoomIn  = () => setZoom(z => Math.min(+(z + ZOOM_STEP).toFixed(2), ZOOM_MAX))
   const zoomOut = () => setZoom(z => Math.max(+(z - ZOOM_STEP).toFixed(2), ZOOM_MIN))
   const zoomFit = () => setZoom(1)
+
+  // ── keyboard shortcuts ────────────────────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).tagName === 'INPUT') return
+      if (e.key === 'Escape') {
+        setDrawState(null); setDrawing(false); setFreehandDrawing(false); return
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
+        setAnnotations(prev => {
+          const next = prev.filter(a => a.id !== selectedId)
+          onChange(next); pushHistory(next); return next
+        })
+        setSelectedId(null); return
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [selectedId, onChange, pushHistory, undo, redo])
 
   /** Recalculate base canvas size to fit container while preserving image aspect ratio */
   const recalcSize = useCallback(() => {
@@ -300,6 +613,8 @@ function AnnotationCanvas({
     setDrawState(null)
     setImgLoaded(false)
     setZoom(1)
+    historyRef.current = [[...image.annotations]]
+    histIdxRef.current = 0
   }, [image.id])
 
   // Load image
@@ -408,10 +723,49 @@ function AnnotationCanvas({
         }
       } else if (ann.type === 'polygon' && Array.isArray(ann.coords) && (ann.coords as number[][]).length > 0) {
         const pts = ann.coords as number[][]
+        ctx.setLineDash([])
         ctx.beginPath()
         pts.forEach(([px, py], i) => i === 0 ? ctx.moveTo(px * w, py * h) : ctx.lineTo(px * w, py * h))
         ctx.closePath()
+        // Semi-transparent fill
+        ctx.fillStyle = col + '22'
+        ctx.fill()
+        ctx.strokeStyle = ann.source === 'model' && !ann.approved ? col + '99' : col
+        ctx.lineWidth = ann.id === selectedId ? 2.5 : 1.5
+        ctx.setLineDash(ann.source === 'model' && !ann.approved ? [5, 4] : [])
         ctx.stroke()
+        ctx.setLineDash([])
+        // Label at centroid
+        if (pts.length >= 3) {
+          const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length * w
+          const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length * h
+          ctx.fillStyle = col
+          ctx.font = 'bold 10px monospace'
+          const txt = ann.confidence != null ? `${ann.label} ${(ann.confidence * 100).toFixed(0)}%` : ann.label
+          const tw = ctx.measureText(txt).width
+          ctx.fillRect(cx - tw / 2 - 4, cy - 10, tw + 8, 14)
+          ctx.fillStyle = '#000'
+          ctx.fillText(txt, cx - tw / 2, cy)
+        }
+        // Vertex & edge-midpoint handles for selected polygon
+        if (ann.id === selectedId) {
+          // Edge midpoints (diamond)
+          for (let i = 0; i < pts.length; i++) {
+            const j = (i + 1) % pts.length
+            const mx = (pts[i][0] + pts[j][0]) / 2 * w
+            const my = (pts[i][1] + pts[j][1]) / 2 * h
+            ctx.save(); ctx.translate(mx, my); ctx.rotate(Math.PI / 4)
+            ctx.strokeStyle = col; ctx.fillStyle = '#fff'; ctx.lineWidth = 1.5
+            ctx.strokeRect(-4, -4, 8, 8); ctx.fillRect(-3, -3, 6, 6)
+            ctx.restore()
+          }
+          // Vertex dots
+          pts.forEach(([px, py]) => {
+            ctx.beginPath(); ctx.arc(px * w, py * h, 5, 0, Math.PI * 2)
+            ctx.fillStyle = '#fff'; ctx.fill()
+            ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke()
+          })
+        }
       }
     })
 
@@ -429,16 +783,34 @@ function AnnotationCanvas({
           (liveEnd[0] - ds.startX) * w, (liveEnd[1] - ds.startY) * h,
         )
       } else if (activeAnnotationType === 'polygon' && ds.points.length > 0) {
+        // Fill preview
+        if (ds.points.length >= 3 && liveEnd) {
+          ctx.beginPath()
+          ds.points.forEach(([px, py], i) => i === 0 ? ctx.moveTo(px * w, py * h) : ctx.lineTo(px * w, py * h))
+          ctx.lineTo(liveEnd[0] * w, liveEnd[1] * h)
+          ctx.closePath(); ctx.fillStyle = col + '22'; ctx.fill()
+        }
+        // Path
         ctx.beginPath()
         ds.points.forEach(([px, py], i) => i === 0 ? ctx.moveTo(px * w, py * h) : ctx.lineTo(px * w, py * h))
         if (liveEnd) ctx.lineTo(liveEnd[0] * w, liveEnd[1] * h)
         ctx.stroke()
-        ds.points.forEach(([px, py]) => {
-          ctx.beginPath()
-          ctx.arc(px * w, py * h, 3, 0, Math.PI * 2)
-          ctx.fillStyle = col
-          ctx.fill()
+        // Vertex dots (first point bigger)
+        ds.points.forEach(([px, py], i) => {
+          ctx.beginPath(); ctx.arc(px * w, py * h, i === 0 ? 6 : 3, 0, Math.PI * 2)
+          ctx.fillStyle = col; ctx.fill()
         })
+        // Snap-to-close ring near first point
+        if (liveEnd && ds.points.length >= 3) {
+          const [fx, fy] = ds.points[0]
+          const dist = Math.hypot((liveEnd[0] - fx) * w, (liveEnd[1] - fy) * h)
+          if (dist < 15) {
+            ctx.beginPath(); ctx.arc(fx * w, fy * h, 11, 0, Math.PI * 2)
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke()
+            ctx.beginPath(); ctx.arc(fx * w, fy * h, 11, 0, Math.PI * 2)
+            ctx.fillStyle = col + '44'; ctx.fill()
+          }
+        }
       }
     }
   }, [canvasSize, classes, selectedId, selectedLabel, activeAnnotationType])
@@ -501,54 +873,66 @@ function AnnotationCanvas({
     if (e.button !== 0) return
     const [nx, ny] = normalise(e)
 
-    // Check rotation handle first (only on selected box)
+    // ── selected annotation handles ──────────────────────────────────────────
     if (selectedId) {
       const ann = annotations.find(a => a.id === selectedId)
-      if (ann && hitRotHandle(ann, nx, ny)) {
-        setRotatingId(selectedId)
-        return
-      }
-    }
-
-    // Check resize handles (only on selected box)
-    if (selectedId) {
-      const ann = annotations.find(a => a.id === selectedId)
-      if (ann) {
+      if (ann && ann.type === 'box') {
+        if (hitRotHandle(ann, nx, ny)) { setRotatingId(selectedId); return }
         const handle = hitHandle(ann, nx, ny)
-        if (handle) {
-          setResizeId(selectedId)
-          setResizeHandle(handle)
-          return
+        if (handle) { setResizeId(selectedId); setResizeHandle(handle); return }
+      }
+      if (ann && ann.type === 'polygon') {
+        const vIdx = hitPolyVertex(ann, nx, ny)
+        if (vIdx >= 0) { setPolyDragId(selectedId); setPolyDragVertIdx(vIdx); return }
+        const eIdx = hitPolyEdgeMid(ann, nx, ny)
+        if (eIdx >= 0) {
+          // Insert midpoint vertex then start dragging it
+          const pts = [...(ann.coords as number[][])]
+          const j = (eIdx + 1) % pts.length
+          const newPt: [number, number] = [(pts[eIdx][0] + pts[j][0]) / 2, (pts[eIdx][1] + pts[j][1]) / 2]
+          pts.splice(eIdx + 1, 0, newPt)
+          const updated = annotations.map(a => a.id === ann.id ? { ...a, coords: pts } : a)
+          setAnnotations(updated)
+          setPolyDragId(selectedId); setPolyDragVertIdx(eIdx + 1); return
         }
       }
     }
 
-    // Check if clicking inside an existing box → drag
-    const hit = hitBox(nx, ny)
-    if (hit) {
-      const ann = annotations.find(a => a.id === hit)!
+    // ── box drag ─────────────────────────────────────────────────────────────
+    const hitB = hitBox(nx, ny)
+    if (hitB) {
+      const ann = annotations.find(a => a.id === hitB)!
       const [cx, cy] = unpackBox(ann.coords)
-      setDragId(hit)
-      setDragOffset([nx - cx, ny - cy])
-      setSelectedId(hit)
+      setDragId(hitB); setDragOffset([nx - cx, ny - cy]); setSelectedId(hitB); return
+    }
+
+    // ── polygon select + body drag ────────────────────────────────────────────
+    const hitP = hitPolygon(nx, ny, annotations)
+    if (hitP && !drawState) {
+      setSelectedId(hitP)
+      const ann = annotations.find(a => a.id === hitP)!
+      const pts = ann.coords as number[][]
+      setPolyDragId(hitP); setPolyDragVertIdx(-1)
+      setPolyBodyOffset(pts.map(([px, py]) => [px - nx, py - ny] as [number, number]))
       return
     }
 
-    // Otherwise draw
+    // ── draw ──────────────────────────────────────────────────────────────────
     if (activeAnnotationType === 'box') {
-      setDrawing(true)
-      setSelectedId(null)
+      setDrawing(true); setSelectedId(null)
       setDrawState({ startX: nx, startY: ny, points: [[nx, ny]] })
     } else if (activeAnnotationType === 'polygon') {
-      if (drawState && drawState.points.length >= 3) {
-        const [fx, fy] = drawState.points[0]
-        if (Math.hypot(nx - fx, ny - fy) < 0.02) { finishPolygon(); return }
+      if (freehand) {
+        setFreehandDrawing(true); setSelectedId(null)
+        setDrawState({ startX: nx, startY: ny, points: [[nx, ny]] }); return
       }
-      setSelectedId(null)
-      setDrawState(prev => ({
-        startX: nx, startY: ny,
-        points: prev ? [...prev.points, [nx, ny]] : [[nx, ny]],
-      }))
+      if (drawState) {
+        if (nearPolyClose(nx, ny, drawState)) { finishPolygon(); return }
+        setDrawState(prev => ({ startX: nx, startY: ny, points: prev ? [...prev.points, [nx, ny] as [number, number]] : [[nx, ny]] }))
+      } else {
+        setSelectedId(null)
+        setDrawState({ startX: nx, startY: ny, points: [[nx, ny]] })
+      }
     }
   }
 
@@ -613,54 +997,89 @@ function AnnotationCanvas({
       return
     }
 
-    // Live draw
-    if (drawState) {
-      redraw(annotations, drawState, [nx, ny])
+    // ── polygon vertex/body drag ─────────────────────────────────────────────
+    if (polyDragId) {
+      const ann = annotations.find(a => a.id === polyDragId)
+      if (!ann || ann.type !== 'polygon') return
+      let updated: AnnotationShape[]
+      if (polyDragVertIdx === -1) {
+        const pts = (ann.coords as number[][]).map((_, i) => [
+          Math.max(0, Math.min(1, nx + polyBodyOffset[i][0])),
+          Math.max(0, Math.min(1, ny + polyBodyOffset[i][1])),
+        ])
+        updated = annotations.map(a => a.id === polyDragId ? { ...a, coords: pts } : a)
+      } else {
+        const pts = (ann.coords as number[][]).map((pt, i) =>
+          i === polyDragVertIdx ? [Math.max(0, Math.min(1, nx)), Math.max(0, Math.min(1, ny))] : pt
+        )
+        updated = annotations.map(a => a.id === polyDragId ? { ...a, coords: pts } : a)
+      }
+      setAnnotations(updated); redraw(updated, drawState); return
+    }
+
+    // ── freehand drawing ─────────────────────────────────────────────────────
+    if (freehandDrawing && drawState) {
+      const pts = drawState.points
+      const last = pts[pts.length - 1]
+      const { w, h } = canvasSize
+      if (Math.hypot((nx - last[0]) * w, (ny - last[1]) * h) > 3) {
+        const newDs = { ...drawState, points: [...pts, [nx, ny] as [number, number]] }
+        setDrawState(newDs); redraw(annotations, newDs, [nx, ny])
+      }
       return
     }
 
-    // Update cursor based on hover
+    // ── live draw preview ────────────────────────────────────────────────────
+    if (drawState) {
+      redraw(annotations, drawState, [nx, ny])
+      // snap-to-close cursor hint
+      if (activeAnnotationType === 'polygon' && nearPolyClose(nx, ny, drawState)) {
+        setCursor('cell'); return
+      }
+      setCursor('crosshair'); return
+    }
+
+    // ── cursor hints ─────────────────────────────────────────────────────────
     if (selectedId) {
       const ann = annotations.find(a => a.id === selectedId)
       if (ann) {
-        if (hitRotHandle(ann, nx, ny)) { setCursor('grab'); return }
-        const handle = hitHandle(ann, nx, ny)
-        if (handle === 'tl' || handle === 'br') { setCursor('nwse-resize'); return }
-        if (handle === 'tr' || handle === 'bl') { setCursor('nesw-resize'); return }
+        if (ann.type === 'box') {
+          if (hitRotHandle(ann, nx, ny)) { setCursor('grab'); return }
+          const handle = hitHandle(ann, nx, ny)
+          if (handle === 'tl' || handle === 'br') { setCursor('nwse-resize'); return }
+          if (handle === 'tr' || handle === 'bl') { setCursor('nesw-resize'); return }
+        }
+        if (ann.type === 'polygon') {
+          if (hitPolyVertex(ann, nx, ny) >= 0) { setCursor('grab'); return }
+          if (hitPolyEdgeMid(ann, nx, ny) >= 0) { setCursor('copy'); return }
+        }
       }
     }
-    const hit = hitBox(nx, ny)
-    setCursor(hit ? 'move' : 'crosshair')
+    const hitB = hitBox(nx, ny)
+    if (hitB) { setCursor('move'); return }
+    const hitP = hitPolygon(nx, ny, annotations)
+    setCursor(hitP ? 'move' : 'crosshair')
   }
 
   const handleMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    // Finish rotation
-    if (rotatingId) {
-      onChange(annotations)
-      setRotatingId(null)
+    if (rotatingId) { onChange(annotations); pushHistory(annotations); setRotatingId(null); return }
+    if (resizeId) { onChange(annotations); pushHistory(annotations); setResizeId(null); setResizeHandle(''); return }
+    if (dragId) { onChange(annotations); pushHistory(annotations); setDragId(null); return }
+    if (polyDragId) {
+      onChange(annotations); pushHistory(annotations)
+      setPolyDragId(null); setPolyDragVertIdx(-2); setPolyBodyOffset([]); return
+    }
+    if (freehandDrawing) {
+      setFreehandDrawing(false)
+      if (drawState && drawState.points.length >= 3) finishPolygon()
+      else setDrawState(null)
       return
     }
-    // Finish resize
-    if (resizeId) {
-      onChange(annotations)
-      setResizeId(null)
-      setResizeHandle('')
-      return
-    }
-    // Finish drag
-    if (dragId) {
-      onChange(annotations)
-      setDragId(null)
-      return
-    }
-    // Finish draw
     if (!drawing || activeAnnotationType !== 'box' || !drawState) return
     setDrawing(false)
     const [nx, ny] = normalise(e)
-    const x1 = Math.min(drawState.startX, nx)
-    const y1 = Math.min(drawState.startY, ny)
-    const x2 = Math.max(drawState.startX, nx)
-    const y2 = Math.max(drawState.startY, ny)
+    const x1 = Math.min(drawState.startX, nx), y1 = Math.min(drawState.startY, ny)
+    const x2 = Math.max(drawState.startX, nx), y2 = Math.max(drawState.startY, ny)
     const bw = x2 - x1, bh = y2 - y1
     if (bw < 0.01 || bh < 0.01) { setDrawState(null); return }
     const id = crypto.randomUUID()
@@ -670,10 +1089,7 @@ function AnnotationCanvas({
       approved: true, source: 'manual',
     }
     const next = [...annotations, ann]
-    setAnnotations(next)
-    setSelectedId(id)
-    onChange(next)
-    setDrawState(null)
+    setAnnotations(next); setSelectedId(id); onChange(next); pushHistory(next); setDrawState(null)
   }
 
   const finishPolygon = () => {
@@ -685,9 +1101,7 @@ function AnnotationCanvas({
       approved: true, source: 'manual',
     }
     const next = [...annotations, ann]
-    setAnnotations(next)
-    onChange(next)
-    setDrawState(null)
+    setAnnotations(next); setSelectedId(id); onChange(next); pushHistory(next); setDrawState(null)
   }
 
   const handleDoubleClick = () => {
@@ -696,9 +1110,23 @@ function AnnotationCanvas({
 
   const removeAnnotation = (id: string) => {
     const next = annotations.filter(a => a.id !== id)
-    setAnnotations(next)
-    onChange(next)
-    setSelectedId(null)
+    setAnnotations(next); onChange(next); pushHistory(next); setSelectedId(null)
+  }
+
+  /** Right-click on polygon vertex = delete that vertex (or whole shape if <3 left) */
+  const handleContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault()
+    if (!selectedId) return
+    const ann = annotations.find(a => a.id === selectedId)
+    if (!ann || ann.type !== 'polygon') return
+    const [nx, ny] = normalise(e)
+    const vIdx = hitPolyVertex(ann, nx, ny)
+    if (vIdx < 0) return
+    const pts = ann.coords as number[][]
+    if (pts.length <= 3) { removeAnnotation(selectedId); return }
+    const newPts = pts.filter((_, i) => i !== vIdx)
+    const updated = annotations.map(a => a.id === selectedId ? { ...a, coords: newPts } : a)
+    setAnnotations(updated); onChange(updated); pushHistory(updated)
   }
 
   const approveAll = () => {
@@ -722,6 +1150,13 @@ function AnnotationCanvas({
               </button>
             ))}
           </div>
+          {/* Freehand toggle (polygon mode only) */}
+          {activeAnnotationType === 'polygon' && (
+            <button onClick={() => setFreehand(f => !f)} title="Hold and drag to trace outline continuously"
+              className={`px-2.5 py-1 text-[11px] rounded-lg border transition-colors flex-shrink-0 ${freehand ? 'bg-violet-800 border-violet-500 text-violet-200' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:text-zinc-200'}`}>
+              ✏ Freehand
+            </button>
+          )}
           {/* Class labels */}
           {classes.map((c, i) => (
             <button key={c} onClick={() => setSelectedLabel(c)}
@@ -731,7 +1166,11 @@ function AnnotationCanvas({
             </button>
           ))}
           <span className="ml-auto text-zinc-500 text-[10px]">
-            {activeAnnotationType === 'box' ? 'Drag to draw · click box to move/resize' : 'Click points · dbl-click to close'}
+            {activeAnnotationType === 'box'
+              ? 'Drag · click to select · Del removes · Ctrl+Z undo'
+              : freehand
+                ? 'Hold & drag to trace · release to finish · Esc cancel'
+                : 'Click points · near ● to close · dbl-click finish · right-click vertex to delete'}
           </span>
           {/* Zoom controls */}
           <div className="flex items-center gap-0.5 border border-zinc-700 rounded-lg overflow-hidden flex-shrink-0">
@@ -770,8 +1209,16 @@ function AnnotationCanvas({
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
-            onMouseLeave={() => { if (dragId || resizeId || rotatingId) { onChange(annotations); setDragId(null); setResizeId(null); setRotatingId(null) } }}
+            onMouseLeave={() => {
+              if (dragId || resizeId || rotatingId) { onChange(annotations); pushHistory(annotations) }
+              if (polyDragId) { onChange(annotations); pushHistory(annotations) }
+              if (freehandDrawing && drawState && drawState.points.length >= 3) finishPolygon()
+              setDragId(null); setResizeId(null); setRotatingId(null)
+              setPolyDragId(null); setPolyDragVertIdx(-2); setPolyBodyOffset([])
+              if (freehandDrawing) setFreehandDrawing(false)
+            }}
             onDoubleClick={handleDoubleClick}
+            onContextMenu={handleContextMenu}
           />
           {!imgLoaded && (
             <div className="flex items-center justify-center h-48 text-zinc-500 text-sm">
@@ -800,6 +1247,7 @@ function AnnotationCanvas({
                 <div className="flex-1 min-w-0">
                   <p className="text-[11px] text-zinc-300 truncate">{ann.label}</p>
                   <p className="text-[10px] text-zinc-600">
+                    {ann.type === 'polygon' ? `⬡ ${(ann.coords as number[][]).length}pt · ` : '⬜ · '}
                     {ann.source === 'model' ? (ann.approved ? '✓ approved' : `pred ${((ann.confidence ?? 0) * 100).toFixed(0)}%`) : 'manual'}
                   </p>
                 </div>
@@ -816,6 +1264,289 @@ function AnnotationCanvas({
   )
 }
 
+// ── video capture overlay ─────────────────────────────────────────────────────
+function VideoCapture({
+  file,
+  projectId,
+  onFramesCaptured,
+  onClose,
+}: {
+  file: File
+  projectId: string
+  onFramesCaptured: (imgs: AnnotationImage[]) => void
+  onClose: () => void
+}) {
+  const videoRef   = useRef<HTMLVideoElement>(null)
+  const captureRef = useRef<HTMLCanvasElement>(null)
+
+  const [videoSrc,    setVideoSrc]    = useState('')
+  const [duration,    setDuration]    = useState(0)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [playing,     setPlaying]     = useState(false)
+  const [videoSize,   setVideoSize]   = useState({ w: 0, h: 0 })
+  const [extractFps,  setExtractFps]  = useState(1)
+  const [extracting,  setExtracting]  = useState(false)
+  const [extractPct,  setExtractPct]  = useState(0)
+  const [capturedCount, setCapturedCount] = useState(0)
+  const [notices, setNotices]         = useState<string[]>([])
+
+  // Create blob URL in effect so React StrictMode double-mount doesn't revoke a live URL
+  useEffect(() => {
+    const url = URL.createObjectURL(file)
+    setVideoSrc(url)
+    return () => URL.revokeObjectURL(url)
+  }, [file])
+
+  // Keyboard shortcuts: Space = play/pause, C = capture, ←→ = step frame
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).tagName === 'INPUT') return
+      if (e.key === ' ') { e.preventDefault(); playing ? videoRef.current?.pause() : videoRef.current?.play() }
+      if (e.key === 'c' || e.key === 'C') handleCapture()
+      if (e.key === 'ArrowLeft') { e.preventDefault(); stepFrame(-1) }
+      if (e.key === 'ArrowRight') { e.preventDefault(); stepFrame(1) }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing])
+
+  // ── capture helpers ──────────────────────────────────────────────────────────
+  const captureFrame = (videoEl: HTMLVideoElement, canvasEl: HTMLCanvasElement): Promise<Blob> =>
+    new Promise((resolve, reject) => {
+      canvasEl.width  = videoEl.videoWidth
+      canvasEl.height = videoEl.videoHeight
+      const ctx = canvasEl.getContext('2d')!
+      ctx.drawImage(videoEl, 0, 0)
+      canvasEl.toBlob(b => b ? resolve(b) : reject(new Error('capture failed')), 'image/jpeg', 0.92)
+    })
+
+  const seekTo = (videoEl: HTMLVideoElement, t: number): Promise<void> =>
+    new Promise(resolve => {
+      videoEl.currentTime = t
+      const h = () => { videoEl.removeEventListener('seeked', h); resolve() }
+      videoEl.addEventListener('seeked', h)
+    })
+
+  const uploadBlob = async (blob: Blob, name: string): Promise<AnnotationImage[]> => {
+    const file = new File([blob], name, { type: 'image/jpeg' })
+    const res  = await annotateApi.addImages(projectId, [file])
+    return res.images
+  }
+
+  // ── single frame capture ─────────────────────────────────────────────────────
+  const handleCapture = async () => {
+    const vid = videoRef.current, cvs = captureRef.current
+    if (!vid || !cvs) return
+    try {
+      const blob = await captureFrame(vid, cvs)
+      const t    = vid.currentTime
+      const name = `${file.name.replace(/\.[^.]+$/, '')}_t${t.toFixed(3)}s.jpg`
+      const imgs = await uploadBlob(blob, name)
+      onFramesCaptured(imgs)
+      setCapturedCount(c => c + imgs.length)
+      setNotices(n => [`Frame @ ${t.toFixed(2)}s captured`, ...n].slice(0, 4))
+    } catch {
+      setNotices(n => ['Capture failed', ...n].slice(0, 4))
+    }
+  }
+
+  // ── auto-extract ─────────────────────────────────────────────────────────────
+  const handleExtract = async () => {
+    const vid = videoRef.current, cvs = captureRef.current
+    if (!vid || !cvs || !duration) return
+    setExtracting(true)
+    setExtractPct(0)
+    const interval = 1 / extractFps
+    const times: number[] = []
+    for (let t = 0; t < duration; t += interval) times.push(parseFloat(t.toFixed(3)))
+
+    let done = 0
+    const BATCH = 5
+    for (let i = 0; i < times.length; i++) {
+      try {
+        await seekTo(vid, times[i])
+        const blob = await captureFrame(vid, cvs)
+        const name = `${file.name.replace(/\.[^.]+$/, '')}_f${String(i).padStart(5, '0')}.jpg`
+        const imgs = await uploadBlob(blob, name)
+        onFramesCaptured(imgs)
+        setCapturedCount(c => c + imgs.length)
+      } catch { /* skip bad frame */ }
+      done++
+      setExtractPct(Math.round((done / times.length) * 100))
+      // Yield to UI every BATCH frames
+      if (done % BATCH === 0) await new Promise(r => setTimeout(r, 0))
+    }
+    setExtracting(false)
+    setNotices(n => [`Auto-extract complete — ${done} frames`, ...n].slice(0, 4))
+  }
+
+  // ── step one frame using video.requestVideoFrameCallback or ±1/30s fallback ──
+  const stepFrame = (dir: 1 | -1) => {
+    const vid = videoRef.current
+    if (!vid) return
+    vid.currentTime = Math.max(0, Math.min(duration, vid.currentTime + dir * (1 / 30)))
+  }
+
+  return (
+    <div className="fixed inset-0 z-[10000] bg-zinc-950 flex flex-col">
+      {/* Header */}
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-zinc-800 flex-shrink-0">
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-zinc-100 truncate">Video: {file.name}</p>
+          <p className="text-[11px] text-zinc-500">
+            {videoSize.w > 0 ? `${videoSize.w}×${videoSize.h} · ` : ''}{duration.toFixed(1)}s
+            {capturedCount > 0 && <span className="text-violet-400 ml-2">· {capturedCount} frame{capturedCount !== 1 ? 's' : ''} added</span>}
+          </p>
+        </div>
+        <button onClick={onClose}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg border border-zinc-700 transition-colors">
+          <Check size={13} /> Done
+        </button>
+      </div>
+
+      <div className="flex-1 min-h-0 flex gap-0">
+
+        {/* ── Video player ─────────────────────────────────────────────────────── */}
+        <div className="flex-1 min-w-0 flex flex-col bg-black">
+          <div className="flex-1 min-h-0 flex items-center justify-center overflow-hidden">
+            {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+            <video
+              ref={videoRef}
+              src={videoSrc || undefined}
+              className="max-w-full max-h-full object-contain"
+              onLoadedMetadata={e => {
+                const v = e.currentTarget
+                setDuration(v.duration)
+                setVideoSize({ w: v.videoWidth, h: v.videoHeight })
+              }}
+              onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
+              onPlay={() => setPlaying(true)}
+              onPause={() => setPlaying(false)}
+            />
+          </div>
+
+          {/* Custom controls */}
+          <div className="flex-shrink-0 bg-zinc-900 border-t border-zinc-800 px-4 py-3 space-y-2.5">
+            {/* Scrubber */}
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-mono text-zinc-500 w-12 text-right flex-shrink-0">
+                {currentTime.toFixed(2)}s
+              </span>
+              <input
+                type="range" min={0} max={duration || 1} step={0.001}
+                value={currentTime}
+                onChange={e => {
+                  const t = parseFloat(e.target.value)
+                  if (videoRef.current) videoRef.current.currentTime = t
+                }}
+                className="flex-1 accent-violet-500 h-1.5 cursor-pointer"
+              />
+              <span className="text-[10px] font-mono text-zinc-500 w-12 flex-shrink-0">
+                {duration.toFixed(2)}s
+              </span>
+            </div>
+
+            {/* Play/step/capture row */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <button onClick={() => stepFrame(-1)}
+                className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded text-[11px] transition-colors">
+                ← Frame
+              </button>
+              <button
+                onClick={() => playing ? videoRef.current?.pause() : videoRef.current?.play()}
+                className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600 text-zinc-100 rounded text-[11px] font-medium transition-colors w-16 text-center">
+                {playing ? '⏸ Pause' : '▶ Play'}
+              </button>
+              <button onClick={() => stepFrame(1)}
+                className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded text-[11px] transition-colors">
+                Frame →
+              </button>
+
+              <div className="mx-1 w-px h-5 bg-zinc-700 flex-shrink-0" />
+
+              <button onClick={handleCapture}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-500 text-white rounded text-[11px] font-semibold transition-colors">
+                📷 Capture Frame
+              </button>
+
+              {/* Keyboard hint */}
+              <span className="text-[10px] text-zinc-600 ml-auto">
+                Space play/pause · ← → step frame · C capture
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Right panel: auto-extract + log ──────────────────────────────────── */}
+        <div className="w-64 flex-shrink-0 flex flex-col border-l border-zinc-800 bg-zinc-900">
+          {/* Auto-extract settings */}
+          <div className="p-4 border-b border-zinc-800 space-y-3">
+            <p className="text-[11px] font-semibold text-zinc-300 uppercase tracking-wider">Auto-Extract Frames</p>
+
+            <div>
+              <label className="text-[10px] text-zinc-500 block mb-1">Extract rate (fps)</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range" min={0.1} max={10} step={0.1}
+                  value={extractFps}
+                  onChange={e => setExtractFps(parseFloat(e.target.value))}
+                  className="flex-1 accent-violet-500"
+                  disabled={extracting}
+                />
+                <span className="text-[11px] font-mono text-zinc-300 w-12 text-right">{extractFps.toFixed(1)} fps</span>
+              </div>
+              {duration > 0 && (
+                <p className="text-[10px] text-zinc-600 mt-1">
+                  ≈ {Math.ceil(duration * extractFps)} frame{Math.ceil(duration * extractFps) !== 1 ? 's' : ''} total
+                </p>
+              )}
+            </div>
+
+            {extracting ? (
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-[10px] text-zinc-400">
+                  <span>Extracting…</span>
+                  <span>{extractPct}%</span>
+                </div>
+                <div className="h-1.5 bg-zinc-700 rounded-full overflow-hidden">
+                  <div className="h-full bg-violet-500 rounded-full transition-all" style={{ width: `${extractPct}%` }} />
+                </div>
+              </div>
+            ) : (
+              <button onClick={handleExtract} disabled={!duration}
+                className="w-full py-2 text-[11px] bg-violet-700 hover:bg-violet-600 disabled:opacity-40 text-white rounded-lg font-semibold transition-colors">
+                Extract All Frames
+              </button>
+            )}
+          </div>
+
+          {/* Activity log */}
+          <div className="flex-1 overflow-y-auto p-3 space-y-1">
+            <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-2">Activity</p>
+            {notices.length === 0 && (
+              <p className="text-[10px] text-zinc-700">Capture frames to start annotating</p>
+            )}
+            {notices.map((n, i) => (
+              <p key={i} className="text-[10px] text-zinc-400 leading-relaxed">{n}</p>
+            ))}
+            {capturedCount > 0 && (
+              <div className="mt-3 pt-3 border-t border-zinc-800">
+                <p className="text-[11px] text-violet-300 font-medium">{capturedCount} frame{capturedCount !== 1 ? 's' : ''} added to project</p>
+                <p className="text-[10px] text-zinc-600 mt-0.5">Click Done to annotate them</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Hidden capture canvas */}
+      <canvas ref={captureRef} className="hidden" />
+    </div>
+  )
+}
+
+
 // ── annotation workspace ───────────────────────────────────────────────────────
 function AnnotationWorkspace({ project, onBack, onProjectUpdate }: {
   project: AnnotationProject
@@ -824,12 +1555,30 @@ function AnnotationWorkspace({ project, onBack, onProjectUpdate }: {
 }) {
   const [images, setImages] = useState<AnnotationImage[]>([])
   const [currentIdx, setCurrentIdx] = useState(0)
+  const [stripFilter, setStripFilter] = useState<'all' | 'unannotated' | 'annotated' | 'predicted'>('all')
+  const [qualityFilter, setQualityFilter] = useState<'all' | 'good' | 'poor' | 'blurry' | 'dark' | 'overexposed' | 'low_res'>('all')
+  const [showArchived, setShowArchived] = useState(false)
+  const [archivedCount, setArchivedCount] = useState(project.archived_count ?? 0)
+  const [similarPanel, setSimilarPanel] = useState<{ targetId: string; results: import('@/types/annotate').SimilarImage[] } | null>(null)
+  const [similarLoading, setSimilarLoading] = useState(false)
+  const [selectedSimilar, setSelectedSimilar] = useState<Set<string>>(new Set())
+  const [videoMode, setVideoMode] = useState<File | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [pendingAnns, setPendingAnns] = useState<AnnotationShape[] | null>(null)
   const [trainingVersionId, setTrainingVersionId] = useState<string | null>(null)
   const [trainPoll, setTrainPoll] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [showExportModal, setShowExportModal] = useState(false)
+  const [exportFormat, setExportFormat] = useState<'yolo-detect' | 'yolo-obb' | 'yolo-seg'>('yolo-detect')
+  const [exportSplitMode, setExportSplitMode] = useState<'two' | 'three'>('two')
+  const [exportTrain, setExportTrain] = useState(80)
+  const [exportVal, setExportVal] = useState(20)
+  const [exportTest, setExportTest] = useState(10)
+  const [exportJobId, setExportJobId] = useState<string | null>(null)
+  const [exportJobStatus, setExportJobStatus] = useState<string>('')
+  const [exportJobPct, setExportJobPct] = useState(0)
+  const exportPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   // predict progress
   const [predictPoll, setPredictPoll] = useState(false)
   const [predictTotal, setPredictTotal] = useState(0)
@@ -851,14 +1600,76 @@ function AnnotationWorkspace({ project, onBack, onProjectUpdate }: {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const imgs = await annotateApi.listImages(project.id)
+      const [imgs, archivedImgs] = await Promise.all([
+        annotateApi.listImages(project.id, undefined, undefined, showArchived),
+        // Always fetch archived count (only ids needed, but reuse full list)
+        showArchived ? Promise.resolve(null) : annotateApi.listImages(project.id, undefined, undefined, true),
+      ])
       setImages(imgs)
+      if (!showArchived && archivedImgs) setArchivedCount(archivedImgs.length)
     } finally {
       setLoading(false)
     }
-  }, [project.id])
+  }, [project.id, showArchived])
 
   useEffect(() => { load() }, [load])
+
+  // ── image actions ──────────────────────────────────────────────────────────
+  const handleDeleteImage = async (imageId: string) => {
+    if (!confirm('Delete this image and all its annotations?')) return
+    await annotateApi.deleteImage(project.id, imageId)
+    setImages(prev => {
+      const next = prev.filter(i => i.id !== imageId)
+      setCurrentIdx(idx => Math.min(idx, Math.max(0, next.length - 1)))
+      return next
+    })
+  }
+
+  const handleArchiveImage = async (imageId: string, archived: boolean) => {
+    await annotateApi.archiveImage(project.id, imageId, archived)
+    setArchivedCount(c => archived ? c + 1 : Math.max(0, c - 1))
+    // Remove from current view (since we show either archived or active, not both)
+    setImages(prev => {
+      const next = prev.filter(i => i.id !== imageId)
+      setCurrentIdx(idx => Math.min(idx, Math.max(0, next.length - 1)))
+      return next
+    })
+  }
+
+  const handleFindSimilar = async (imageId: string) => {
+    setSimilarLoading(true)
+    setSimilarPanel(null)
+    setSelectedSimilar(new Set())
+    try {
+      const results = await annotateApi.findSimilar(project.id, imageId)
+      setSimilarPanel({ targetId: imageId, results })
+    } finally {
+      setSimilarLoading(false)
+    }
+  }
+
+  const handleBulkDeleteSimilar = async () => {
+    if (!similarPanel || selectedSimilar.size === 0) return
+    if (!confirm(`Delete ${selectedSimilar.size} selected image(s)?`)) return
+    for (const id of selectedSimilar) {
+      await annotateApi.deleteImage(project.id, id)
+    }
+    setImages(prev => prev.filter(i => !selectedSimilar.has(i.id)))
+    setSimilarPanel(prev => prev ? { ...prev, results: prev.results.filter(r => !selectedSimilar.has(r.id)) } : null)
+    setSelectedSimilar(new Set())
+  }
+
+  const handleBulkArchiveSimilar = async () => {
+    if (!similarPanel || selectedSimilar.size === 0) return
+    const count = selectedSimilar.size
+    for (const id of selectedSimilar) {
+      await annotateApi.archiveImage(project.id, id, true)
+    }
+    setImages(prev => prev.filter(i => !selectedSimilar.has(i.id)))
+    setArchivedCount(c => c + count)
+    setSimilarPanel(prev => prev ? { ...prev, results: prev.results.filter(r => !selectedSimilar.has(r.id)) } : null)
+    setSelectedSimilar(new Set())
+  }
 
   // Poll training status
   useEffect(() => {
@@ -914,11 +1725,37 @@ function AnnotationWorkspace({ project, onBack, onProjectUpdate }: {
 
   const currentImage = images[currentIdx]
   const annotatedCount = images.filter(i => i.annotations?.length > 0).length
+
+  // Strip filtered view (indices map back to full images array)
+  const filteredStrip = images.reduce<{ img: AnnotationImage; realIdx: number }[]>((acc, img, realIdx) => {
+    const hasAnns = img.annotations?.length > 0
+    const hasPred = img.annotations?.some(a => a.source === 'model' && !a.approved)
+    if (stripFilter === 'unannotated' && hasAnns) return acc
+    if (stripFilter === 'annotated' && (!hasAnns || hasPred)) return acc
+    if (stripFilter === 'predicted' && !hasPred) return acc
+    // Quality filters
+    if (qualityFilter === 'good' && ((img.quality_score ?? 0) < 70 || (img.quality_issues?.length ?? 0) > 0)) return acc
+    if (qualityFilter === 'poor' && (img.quality_score ?? 100) >= 70 && !(img.quality_issues?.length ?? 0)) return acc
+    if (qualityFilter === 'blurry' && !img.quality_issues?.includes('blurry')) return acc
+    if (qualityFilter === 'dark' && !img.quality_issues?.includes('dark')) return acc
+    if (qualityFilter === 'overexposed' && !img.quality_issues?.includes('overexposed')) return acc
+    if (qualityFilter === 'low_res' && !img.quality_issues?.includes('low_res')) return acc
+    acc.push({ img, realIdx })
+    return acc
+  }, [])
+
+  // Count of similar-panel results to highlight in strip
+  const similarImageIds = new Set(similarPanel?.results.map(r => r.id) ?? [])
   const canTrain = annotatedCount >= project.min_annotations_to_train
 
   const handleUpload = async (files: FileList) => {
     const arr = Array.from(files)
     if (!arr.length) return
+
+    // Detect video files — show VideoCapture view for the first video found
+    const videoFile = arr.find(f => f.type.startsWith('video/'))
+    if (videoFile) { setVideoMode(videoFile); return }
+
     try {
       const res = await annotateApi.addImages(project.id, arr)
       const wasEmpty = images.length === 0
@@ -1023,12 +1860,48 @@ function AnnotationWorkspace({ project, onBack, onProjectUpdate }: {
   }
 
   const handleExportDataset = async () => {
+    const trainR = exportTrain / 100
+    const valR   = exportVal / 100
+    const testR  = exportSplitMode === 'three' ? exportTest / 100 : 0
+    const total  = trainR + valR + testR
+    if (Math.abs(total - 1) > 0.01) {
+      addNotice('error', `Split ratios must sum to 100% (currently ${Math.round(total * 100)}%)`)
+      return
+    }
     setExporting(true)
+    setShowExportModal(false)
     try {
-      const res = await annotateApi.exportDataset(project.id)
-      window.open(res.url, '_blank')
-    } finally {
+      const res = await annotateApi.exportDataset(project.id, {
+        format: exportFormat, train: trainR, val: valR, test: testR,
+      })
+      setExportJobId(res.job_id)
+      setExportJobStatus('queued')
+      setExportJobPct(0)
+      addNotice('success', `Export started — ${res.total_images} images queued. You'll be notified by email when ready.`)
+
+      // Poll for progress
+      exportPollRef.current = setInterval(async () => {
+        try {
+          const job = await annotateApi.getExportJob(project.id, res.job_id)
+          setExportJobPct(job.progress_pct)
+          setExportJobStatus(job.status)
+          if (job.status === 'completed') {
+            clearInterval(exportPollRef.current!)
+            exportPollRef.current = null
+            setExporting(false)
+            addNotice('success', 'Export complete — downloading now.')
+            if (job.download_url) window.open(job.download_url, '_blank')
+          } else if (job.status === 'failed') {
+            clearInterval(exportPollRef.current!)
+            exportPollRef.current = null
+            setExporting(false)
+            addNotice('error', `Export failed: ${job.error ?? 'unknown error'}`)
+          }
+        } catch { /* keep polling */ }
+      }, 3000)
+    } catch (e: any) {
       setExporting(false)
+      addNotice('error', e?.response?.data?.detail ?? 'Export failed')
     }
   }
 
@@ -1075,6 +1948,25 @@ function AnnotationWorkspace({ project, onBack, onProjectUpdate }: {
     }
   }
 
+  // ── video capture overlay ────────────────────────────────────────────────────
+  if (videoMode) {
+    return (
+      <VideoCapture
+        file={videoMode}
+        projectId={project.id}
+        onFramesCaptured={newImgs => {
+          setImages(prev => {
+            const wasEmpty = prev.length === 0
+            const next = [...prev, ...newImgs]
+            if (wasEmpty) setCurrentIdx(0)
+            return next
+          })
+        }}
+        onClose={() => { setVideoMode(null); fileInputRef.current && (fileInputRef.current.value = '') }}
+      />
+    )
+  }
+
   return (
     <div className="flex flex-col h-full gap-0">
 
@@ -1087,7 +1979,7 @@ function AnnotationWorkspace({ project, onBack, onProjectUpdate }: {
           <h2 className="text-sm font-semibold text-zinc-100 truncate">{project.name}</h2>
           <p className="text-[11px] text-zinc-500">{annotatedCount}/{images.length} annotated</p>
         </div>
-        <input ref={fileInputRef} type="file" multiple accept="image/*" className="hidden"
+        <input ref={fileInputRef} type="file" multiple accept="image/*,video/*" className="hidden"
           onChange={e => e.target.files && handleUpload(e.target.files)} />
         <button onClick={() => fileInputRef.current?.click()}
           className="flex items-center gap-1.5 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-100 px-3 py-1.5 rounded-lg transition-colors flex-shrink-0">
@@ -1163,7 +2055,8 @@ function AnnotationWorkspace({ project, onBack, onProjectUpdate }: {
         <div className="flex-1 min-h-0 flex gap-3 pt-3">
 
           {/* ── LEFT: Model sidebar ─────────────────────────────────────────── */}
-          <div className="w-52 flex-shrink-0 flex flex-col gap-3 overflow-y-auto pr-1">
+          <div className="w-52 flex-shrink-0 flex flex-col gap-0 min-h-0">
+          <div className="flex-1 min-h-0 overflow-y-auto pr-1 flex flex-col gap-3 pb-2">
 
             {/* Model metrics */}
             <div className="bg-zinc-800/60 border border-zinc-700/50 rounded-xl p-3 space-y-2.5">
@@ -1315,15 +2208,38 @@ function AnnotationWorkspace({ project, onBack, onProjectUpdate }: {
                   {predictPoll ? <><Loader2 size={11} className="animate-spin" /> {predictDone}/{predictTotal}</> : <><RefreshCw size={11} /> Auto-Predict All</>}
                 </button>
               )}
-              <button onClick={handleExportDataset} disabled={exporting}
-                className="w-full flex items-center gap-2 px-3 py-2 text-[11px] bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 text-zinc-300 rounded-lg transition-colors">
-                {exporting ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />} Export Dataset
+              <button onClick={() => setShowExportModal(true)} disabled={exporting}
+                className="w-full flex items-center gap-2 px-3 py-2 text-[11px] bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 text-zinc-300 rounded-lg transition-colors disabled:opacity-60">
+                {exporting ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+                {exporting ? 'Exporting…' : 'Export Dataset'}
               </button>
+              {exporting && exportJobId && (
+                <div className="px-1">
+                  <div className="flex justify-between text-[9px] text-zinc-500 mb-0.5">
+                    <span className="capitalize">{exportJobStatus}</span>
+                    <span>{exportJobPct}%</span>
+                  </div>
+                  <div className="h-1 bg-zinc-700 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-indigo-500 rounded-full transition-all duration-500"
+                      style={{ width: `${exportJobPct}%` }}
+                    />
+                  </div>
+                </div>
+              )}
               <button onClick={handleExportModel}
                 className="w-full flex items-center gap-2 px-3 py-2 text-[11px] bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 text-zinc-300 rounded-lg transition-colors">
                 <Download size={11} /> Export Model .pt
               </button>
             </div>
+
+            {/* Training Config — end of scrollable block */}
+          </div>
+
+          {/* Training Config — pinned at bottom, always visible */}
+          <div className="flex-shrink-0 pt-1">
+            <TrainingConfigPanel project={project} onSaved={onProjectUpdate} />
+          </div>
           </div>
 
           {/* ── MIDDLE: Annotation canvas ───────────────────────────────────── */}
@@ -1339,6 +2255,45 @@ function AnnotationWorkspace({ project, onBack, onProjectUpdate }: {
                     className="disabled:opacity-30 hover:text-zinc-300 transition-colors"><ChevronRight size={14} /></button>
                   <span className="text-zinc-600 truncate">{currentImage.filename}</span>
                   <StatusBadge status={currentImage.status} />
+                  {currentImage.quality_score != null && (
+                    <span
+                      title={currentImage.quality_issues?.length ? `Issues: ${currentImage.quality_issues.join(', ')}` : 'Good quality'}
+                      className={`px-1.5 py-0.5 rounded text-[9px] font-semibold ${
+                        currentImage.quality_score >= 70
+                          ? 'bg-emerald-900/60 text-emerald-400'
+                          : currentImage.quality_score >= 40
+                          ? 'bg-amber-900/60 text-amber-400'
+                          : 'bg-red-900/60 text-red-400'
+                      }`}
+                    >
+                      Q{currentImage.quality_score}
+                    </span>
+                  )}
+                  {/* ── Image actions ── */}
+                  <button
+                    onClick={() => handleFindSimilar(currentImage.id)}
+                    disabled={similarLoading}
+                    title="Find visually similar images"
+                    className="flex items-center gap-1 text-blue-400 hover:text-blue-300 disabled:opacity-40 transition-colors font-medium"
+                  >
+                    {similarLoading ? <Loader2 size={12} className="animate-spin" /> : '🔍'}
+                    Similar
+                  </button>
+                  <button
+                    onClick={() => handleArchiveImage(currentImage.id, !currentImage.archived)}
+                    title={currentImage.archived ? 'Unarchive image' : 'Archive image'}
+                    className={`flex items-center gap-1 transition-colors font-medium ${currentImage.archived ? 'text-amber-400 hover:text-amber-300' : 'text-zinc-500 hover:text-zinc-300'}`}
+                  >
+                    {currentImage.archived ? '📤' : '📦'}
+                    {currentImage.archived ? 'Unarchive' : 'Archive'}
+                  </button>
+                  <button
+                    onClick={() => handleDeleteImage(currentImage.id)}
+                    title="Delete this image"
+                    className="flex items-center gap-1 text-red-500 hover:text-red-400 transition-colors font-medium"
+                  >
+                    <Trash2 size={12} /> Delete
+                  </button>
                   <div className="ml-auto flex gap-2">
                     {project.active_model_version_id && (
                       <button onClick={() => handlePredictSingle(currentImage.id)}
@@ -1381,35 +2336,447 @@ function AnnotationWorkspace({ project, onBack, onProjectUpdate }: {
           </div>
 
           {/* ── RIGHT: Vertical image strip ─────────────────────────────────── */}
-          <div className="w-[72px] flex-shrink-0 flex flex-col gap-1.5 overflow-y-auto">
-            {images.map((img, idx) => {
-              const hasPredictions = img.annotations?.some(a => a.source === 'model' && !a.approved)
-              const isAnnotated = img.annotations?.length > 0
-              return (
-                <button key={img.id}
-                  onClick={() => { if (pendingAnns !== null) handleSave(); setCurrentIdx(idx); setPendingAnns(null) }}
-                  className={`flex-shrink-0 relative rounded-md overflow-hidden border-2 transition-colors ${idx === currentIdx ? 'border-violet-500' : 'border-zinc-700 hover:border-zinc-500'}`}
-                  style={{ width: 64, height: 48 }}>
-                  {img.url
-                    ? <img src={img.url} alt={img.filename} className="w-full h-full object-cover" />
-                    : <div className="w-full h-full bg-zinc-800 flex items-center justify-center"><Square size={14} className="text-zinc-600" /></div>
-                  }
-                  <div className={`absolute top-0.5 right-0.5 w-2 h-2 rounded-full ${hasPredictions ? 'bg-amber-400' : isAnnotated ? 'bg-green-400' : 'bg-zinc-600'}`} />
-                  {predictingImageId === img.id && (
-                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                      <Loader2 size={14} className="animate-spin text-amber-400" />
-                    </div>
-                  )}
-                </button>
-              )
-            })}
+          <div className="w-[80px] flex-shrink-0 flex flex-col gap-1.5">
+            {/* Annotation status filter */}
+            <div className="flex flex-col gap-0.5">
+              {([
+                { key: 'all',          label: `All`,   dot: 'bg-zinc-500' },
+                { key: 'unannotated',  label: `—`,     dot: 'bg-zinc-600' },
+                { key: 'annotated',    label: `✓`,     dot: 'bg-green-500' },
+                { key: 'predicted',    label: `⬡`,     dot: 'bg-amber-400' },
+              ] as const).map(({ key, label, dot }) => {
+                const count = key === 'all' ? images.length
+                  : key === 'unannotated' ? images.filter(i => !i.annotations?.length).length
+                  : key === 'annotated' ? images.filter(i => i.annotations?.length && !i.annotations.some(a => a.source === 'model' && !a.approved)).length
+                  : images.filter(i => i.annotations?.some(a => a.source === 'model' && !a.approved)).length
+                return (
+                  <button key={key} onClick={() => setStripFilter(key)}
+                    className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] transition-colors ${stripFilter === key ? 'bg-zinc-700 text-zinc-200' : 'text-zinc-500 hover:text-zinc-300'}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${dot}`} />
+                    <span className="truncate">{label}</span>
+                    <span className="ml-auto text-zinc-600">{count}</span>
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* Quality filter — only shown when at least one image has quality data */}
+            {images.some(i => i.quality_score != null) && (
+              <div className="flex flex-col gap-0.5 border-t border-zinc-800 pt-1.5">
+                <p className="text-[9px] uppercase tracking-wider text-zinc-600 px-2 pb-0.5">Quality</p>
+                {([
+                  { key: 'all',         label: 'All',  dot: 'bg-zinc-500' },
+                  { key: 'good',        label: '✓ Good',  dot: 'bg-emerald-500' },
+                  { key: 'poor',        label: '⚠ Poor',  dot: 'bg-red-500' },
+                  { key: 'blurry',      label: 'Blur',    dot: 'bg-orange-400' },
+                  { key: 'dark',        label: 'Dark',    dot: 'bg-zinc-500' },
+                  { key: 'overexposed', label: 'Bright',  dot: 'bg-yellow-400' },
+                  { key: 'low_res',     label: 'Low res', dot: 'bg-purple-400' },
+                ] as const).map(({ key, label, dot }) => {
+                  const count = key === 'all' ? images.length
+                    : key === 'good' ? images.filter(i => (i.quality_score ?? 0) >= 70 && !i.quality_issues?.length).length
+                    : key === 'poor' ? images.filter(i => (i.quality_score ?? 100) < 70 || (i.quality_issues?.length ?? 0) > 0).length
+                    : images.filter(i => i.quality_issues?.includes(key)).length
+                  if (key !== 'all' && key !== 'good' && key !== 'poor' && count === 0) return null
+                  return (
+                    <button key={key} onClick={() => setQualityFilter(key)}
+                      className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] transition-colors ${qualityFilter === key ? 'bg-zinc-700 text-zinc-200' : 'text-zinc-500 hover:text-zinc-300'}`}>
+                      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${dot}`} />
+                      <span className="truncate">{label}</span>
+                      <span className="ml-auto text-zinc-600">{count}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* Archived toggle */}
+            <button
+              onClick={() => { setShowArchived(v => !v); setCurrentIdx(0) }}
+              className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] transition-colors ${showArchived ? 'bg-zinc-700 text-zinc-200' : 'text-zinc-500 hover:text-zinc-300'}`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 bg-zinc-500" />
+              <span className="truncate">Archived</span>
+              <span className="ml-auto text-zinc-600">{archivedCount}</span>
+            </button>
+
+            {/* Strip thumbnails — click to select; 🔍 bar on hover */}
+            <div className="flex-1 overflow-y-auto flex flex-col gap-1.5 min-h-0">
+              {filteredStrip.length === 0 && (
+                <p className="text-[10px] text-zinc-600 text-center py-4">None</p>
+              )}
+              {filteredStrip.map(({ img, realIdx }) => {
+                const hasPredictions = img.annotations?.some(a => a.source === 'model' && !a.approved)
+                const isAnnotated = img.annotations?.length > 0
+                const isPoor = img.quality_issues?.length ? true : (img.quality_score != null && img.quality_score < 70)
+                const isSimilarTarget = similarPanel?.targetId === img.id
+                const isSimilarMatch = similarImageIds.has(img.id)
+                return (
+                  <div
+                    key={img.id}
+                    className={`group flex-shrink-0 relative rounded-md overflow-hidden border-2 transition-colors cursor-pointer ${
+                      realIdx === currentIdx ? 'border-violet-500'
+                      : isSimilarTarget ? 'border-blue-400'
+                      : isSimilarMatch ? 'border-blue-600'
+                      : 'border-zinc-700 hover:border-zinc-500'
+                    }`}
+                    style={{ width: 64, height: 48 }}
+                    onClick={() => { if (pendingAnns !== null) handleSave(); setCurrentIdx(realIdx); setPendingAnns(null) }}
+                  >
+                    {img.url
+                      ? <img src={img.url} alt={img.filename} className="w-full h-full object-cover pointer-events-none" />
+                      : <div className="w-full h-full bg-zinc-800 flex items-center justify-center pointer-events-none"><Square size={14} className="text-zinc-600" /></div>
+                    }
+                    {/* Status dot */}
+                    <div className={`absolute top-0.5 right-0.5 w-2 h-2 rounded-full pointer-events-none ${hasPredictions ? 'bg-amber-400' : isAnnotated ? 'bg-green-400' : 'bg-zinc-600'}`} />
+                    {/* Quality score badge */}
+                    {isPoor && img.quality_score != null && (
+                      <div className="absolute top-0.5 left-0.5 bg-red-500/80 text-white text-[8px] font-bold px-0.5 rounded pointer-events-none">
+                        {img.quality_score}
+                      </div>
+                    )}
+                    {/* Similarity % badge */}
+                    {isSimilarMatch && (() => {
+                      const match = similarPanel?.results.find(r => r.id === img.id)
+                      return match ? (
+                        <div className="absolute bottom-0.5 left-0.5 bg-blue-600/90 text-white text-[8px] font-bold px-0.5 rounded pointer-events-none">
+                          {match.similarity_pct}%
+                        </div>
+                      ) : null
+                    })()}
+                    {/* 🔍 Find Similar bar — only action in strip; doesn't block main click area */}
+                    <button
+                      className="absolute inset-x-0 bottom-0 opacity-0 group-hover:opacity-100 bg-black/80 text-blue-300 text-[9px] py-0.5 text-center transition-opacity"
+                      onClick={e => { e.stopPropagation(); handleFindSimilar(img.id) }}
+                      title="Find similar images"
+                    >
+                      🔍
+                    </button>
+                    {predictingImageId === img.id && (
+                      <div className="absolute inset-0 bg-black/50 flex items-center justify-center pointer-events-none">
+                        <Loader2 size={14} className="animate-spin text-amber-400" />
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
           </div>
 
+        </div>
+      )}
+
+      {/* ── Similar Images Panel ──────────────────────────────────────────────── */}
+      {similarPanel && (
+        <div className="fixed inset-0 z-[10000] flex">
+          <div className="flex-1 bg-black/50" onClick={() => setSimilarPanel(null)} />
+          <div className="w-full max-w-sm bg-zinc-900 border-l border-zinc-700 flex flex-col overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+              <div>
+                <h2 className="text-sm font-semibold text-white">Similar Images</h2>
+                <p className="text-[10px] text-zinc-500 mt-0.5">
+                  {similarPanel.results.length === 0
+                    ? 'No visually similar images found'
+                    : `${similarPanel.results.length} match${similarPanel.results.length !== 1 ? 'es' : ''} found`}
+                </p>
+              </div>
+              <button onClick={() => setSimilarPanel(null)} className="text-zinc-500 hover:text-zinc-300">
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Bulk actions */}
+            {selectedSimilar.size > 0 && (
+              <div className="flex items-center gap-2 px-4 py-2 bg-zinc-800 border-b border-zinc-700">
+                <span className="text-[10px] text-zinc-400">{selectedSimilar.size} selected</span>
+                <button
+                  onClick={handleBulkArchiveSimilar}
+                  className="text-[10px] px-2 py-1 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded transition-colors"
+                >📦 Archive</button>
+                <button
+                  onClick={handleBulkDeleteSimilar}
+                  className="text-[10px] px-2 py-1 bg-red-900/60 hover:bg-red-800/60 text-red-400 rounded transition-colors"
+                >🗑 Delete</button>
+                <button
+                  onClick={() => setSelectedSimilar(new Set())}
+                  className="text-[10px] text-zinc-500 hover:text-zinc-300 ml-auto"
+                >Clear</button>
+              </div>
+            )}
+
+            {/* Select all row */}
+            {similarPanel.results.length > 0 && (
+              <div className="flex items-center gap-2 px-4 py-2 border-b border-zinc-800">
+                <input
+                  type="checkbox"
+                  checked={selectedSimilar.size === similarPanel.results.length}
+                  onChange={e => setSelectedSimilar(e.target.checked ? new Set(similarPanel.results.map(r => r.id)) : new Set())}
+                  className="accent-violet-500"
+                />
+                <span className="text-[10px] text-zinc-500">Select all</span>
+                <span className="ml-auto text-[10px] text-zinc-600">Similarity</span>
+              </div>
+            )}
+
+            {/* Results list */}
+            <div className="flex-1 overflow-y-auto divide-y divide-zinc-800">
+              {similarPanel.results.length === 0 && (
+                <div className="px-4 py-10 text-center text-zinc-600 text-xs">
+                  No similar images found within the current threshold.
+                </div>
+              )}
+              {similarPanel.results.map(r => (
+                <div
+                  key={r.id}
+                  className={`flex items-center gap-3 px-4 py-2.5 hover:bg-zinc-800 transition-colors ${selectedSimilar.has(r.id) ? 'bg-zinc-800' : ''}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedSimilar.has(r.id)}
+                    onChange={e => setSelectedSimilar(prev => {
+                      const next = new Set(prev)
+                      e.target.checked ? next.add(r.id) : next.delete(r.id)
+                      return next
+                    })}
+                    className="accent-violet-500 flex-shrink-0"
+                  />
+                  {/* Thumbnail */}
+                  <div
+                    className="flex-shrink-0 w-12 h-9 rounded overflow-hidden border border-zinc-700 cursor-pointer"
+                    onClick={() => {
+                      const idx = images.findIndex(i => i.id === r.id)
+                      if (idx >= 0) { setCurrentIdx(idx); setSimilarPanel(null) }
+                    }}
+                  >
+                    {r.url
+                      ? <img src={r.url} alt={r.filename} className="w-full h-full object-cover" />
+                      : <div className="w-full h-full bg-zinc-800" />
+                    }
+                  </div>
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[10px] text-zinc-300 truncate">{r.filename}</p>
+                    <p className="text-[9px] text-zinc-600 mt-0.5">{r.status}</p>
+                  </div>
+                  {/* Similarity score */}
+                  <div className="flex-shrink-0 text-right">
+                    <div className={`text-[11px] font-bold ${r.similarity_pct >= 90 ? 'text-red-400' : r.similarity_pct >= 75 ? 'text-amber-400' : 'text-zinc-400'}`}>
+                      {r.similarity_pct}%
+                    </div>
+                    <div className="text-[9px] text-zinc-600">{r.similarity_distance}/64 bits</div>
+                  </div>
+                  {/* Quick actions */}
+                  <div className="flex-shrink-0 flex gap-1">
+                    <button onClick={() => handleArchiveImage(r.id, true)} title="Archive" className="p-1 hover:text-zinc-300 text-zinc-600 transition-colors text-[11px]">📦</button>
+                    <button onClick={() => handleDeleteImage(r.id)} title="Delete" className="p-1 hover:text-red-400 text-zinc-600 transition-colors"><Trash2 size={11} /></button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Footer note */}
+            <div className="px-4 py-2 border-t border-zinc-800 text-[9px] text-zinc-600">
+              Similarity via 64-bit perceptual hash (dHash). ≥90% = near-duplicate.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Export Modal ──────────────────────────────────────────────────────── */}
+      {showExportModal && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60">
+          <div className="bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-5">
+            <h2 className="text-sm font-semibold text-white">Export Dataset</h2>
+
+            {/* Format */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold">Format</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {(['yolo-detect', 'yolo-obb', 'yolo-seg'] as const).map(f => (
+                  <button key={f} onClick={() => setExportFormat(f)}
+                    className={`px-2 py-1.5 text-[10px] rounded-lg border font-mono transition-colors ${
+                      exportFormat === f
+                        ? 'bg-indigo-600 border-indigo-500 text-white'
+                        : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-zinc-500'
+                    }`}>
+                    {f}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[9px] text-zinc-600 leading-relaxed">
+                {exportFormat === 'yolo-detect' && 'Axis-aligned boxes [cx cy w h]. Polygons converted to bounding box.'}
+                {exportFormat === 'yolo-obb'    && 'Oriented boxes [cx cy w h angle°]. Polygons converted to minimum-area rectangle.'}
+                {exportFormat === 'yolo-seg'    && 'Polygon masks [x1 y1 x2 y2 …]. Boxes converted to 4-corner polygon.'}
+              </p>
+            </div>
+
+            {/* Split mode */}
+            <div className="space-y-2">
+              <label className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold">Split</label>
+              <div className="flex gap-2">
+                {(['two', 'three'] as const).map(m => (
+                  <button key={m} onClick={() => {
+                    setExportSplitMode(m)
+                    if (m === 'two') { setExportTrain(80); setExportVal(20) }
+                    else             { setExportTrain(70); setExportVal(20); setExportTest(10) }
+                  }}
+                    className={`flex-1 py-1.5 text-[10px] rounded-lg border transition-colors ${
+                      exportSplitMode === m
+                        ? 'bg-indigo-600 border-indigo-500 text-white'
+                        : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-zinc-500'
+                    }`}>
+                    {m === 'two' ? 'Train / Val' : 'Train / Val / Test'}
+                  </button>
+                ))}
+              </div>
+              <div className="space-y-2 pt-1">
+                {[
+                  { label: 'Train', val: exportTrain, set: setExportTrain },
+                  { label: 'Val',   val: exportVal,   set: setExportVal },
+                  ...(exportSplitMode === 'three' ? [{ label: 'Test', val: exportTest, set: setExportTest }] : []),
+                ].map(({ label, val, set }) => (
+                  <div key={label} className="flex items-center gap-3">
+                    <span className="text-[10px] text-zinc-400 w-8">{label}</span>
+                    <input type="range" min={5} max={90} value={val}
+                      onChange={e => set(Number(e.target.value))}
+                      className="flex-1 accent-indigo-500 h-1" />
+                    <span className="text-[10px] text-zinc-300 w-7 text-right font-mono">{val}%</span>
+                  </div>
+                ))}
+                {(() => {
+                  const sum = exportTrain + exportVal + (exportSplitMode === 'three' ? exportTest : 0)
+                  return sum !== 100
+                    ? <p className="text-[9px] text-amber-400">Ratios sum to {sum}% — must equal 100%</p>
+                    : <p className="text-[9px] text-emerald-600">Ratios sum to 100% ✓</p>
+                })()}
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => setShowExportModal(false)}
+                className="flex-1 py-2 text-[11px] bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-400 rounded-lg transition-colors">
+                Cancel
+              </button>
+              <button onClick={handleExportDataset}
+                className="flex-1 py-2 text-[11px] bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-semibold transition-colors">
+                Start Export
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
   )
 }
+
+// ── training config panel ─────────────────────────────────────────────────────
+function TrainingConfigPanel({
+  project,
+  onSaved,
+}: {
+  project: AnnotationProject
+  onSaved: (p: AnnotationProject) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [autoFinetune, setAutoFinetune] = useState(project.auto_finetune)
+  const [finetuneLr, setFinetuneLr] = useState(String(project.finetune_lr))
+  const [baseLr, setBaseLr] = useState(String(project.base_lr))
+  const [imgsz, setImgsz] = useState(String(project.train_imgsz))
+  const [saving, setSaving] = useState(false)
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      const updated = await annotateApi.updateProject(project.id, {
+        auto_finetune: autoFinetune,
+        finetune_lr: parseFloat(finetuneLr) || project.finetune_lr,
+        base_lr: parseFloat(baseLr) || project.base_lr,
+        train_imgsz: parseInt(imgsz) || project.train_imgsz,
+      })
+      onSaved(updated)
+      setOpen(false)
+    } catch {
+      // keep open
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="bg-zinc-800/60 border border-zinc-700/50 rounded-xl overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-3 py-2 text-[10px] font-semibold text-zinc-400 uppercase tracking-wider hover:text-zinc-200 transition-colors"
+      >
+        <span>Train Config</span>
+        <span className="text-zinc-600">{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div className="px-3 pb-3 space-y-2.5 border-t border-zinc-700/50 pt-2.5">
+          {/* Auto fine-tune toggle */}
+          <label className="flex items-center justify-between gap-2 cursor-pointer">
+            <span className="text-[10px] text-zinc-400">Auto fine-tune</span>
+            <button
+              onClick={() => setAutoFinetune(v => !v)}
+              className={`relative w-8 h-4 rounded-full transition-colors ${autoFinetune ? 'bg-violet-600' : 'bg-zinc-600'}`}
+            >
+              <span className={`absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-all ${autoFinetune ? 'left-4.5' : 'left-0.5'}`} />
+            </button>
+          </label>
+          <p className="text-[9px] text-zinc-600 -mt-1.5">
+            {autoFinetune ? 'Reuses prev weights with lower LR' : 'Always trains from COCO base'}
+          </p>
+
+          {/* Fine-tune LR */}
+          <div>
+            <label className="text-[10px] text-zinc-400 block mb-0.5">Fine-tune LR</label>
+            <input
+              type="number" step="0.00001" min="0.000001" max="0.01"
+              value={finetuneLr}
+              onChange={e => setFinetuneLr(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-[10px] text-zinc-200 focus:outline-none focus:border-violet-500"
+            />
+          </div>
+
+          {/* Base LR */}
+          <div>
+            <label className="text-[10px] text-zinc-400 block mb-0.5">Base LR (fresh)</label>
+            <input
+              type="number" step="0.001" min="0.0001" max="0.1"
+              value={baseLr}
+              onChange={e => setBaseLr(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-[10px] text-zinc-200 focus:outline-none focus:border-violet-500"
+            />
+          </div>
+
+          {/* Image size */}
+          <div>
+            <label className="text-[10px] text-zinc-400 block mb-0.5">Image size (imgsz)</label>
+            <select
+              value={imgsz}
+              onChange={e => setImgsz(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-[10px] text-zinc-200 focus:outline-none focus:border-violet-500"
+            >
+              {['320', '480', '640', '800', '1024', '1280', '1536'].map(s => (
+                <option key={s} value={s}>{s}px</option>
+              ))}
+            </select>
+          </div>
+
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="w-full py-1.5 text-[10px] bg-violet-700 hover:bg-violet-600 disabled:opacity-50 text-white rounded-lg font-semibold transition-colors flex items-center justify-center gap-1"
+          >
+            {saving ? <><Loader2 size={10} className="animate-spin" /> Saving…</> : 'Save Config'}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 
 // ── main page ──────────────────────────────────────────────────────────────────
 export default function AnnotatePage() {
@@ -1468,3 +2835,6 @@ export default function AnnotatePage() {
     </div>
   )
 }
+
+// ── Export Dataset Modal (used inside AnnotationEditor) ─────────────────────
+// (modal JSX is inlined inside AnnotationEditor's return — see showExportModal state)

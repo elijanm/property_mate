@@ -1,4 +1,6 @@
 """Dataset collection service — profile management, invites, entries, points."""
+import asyncio
+import io
 import uuid
 from typing import Optional, List
 from fastapi import UploadFile, HTTPException
@@ -358,16 +360,27 @@ async def get_entries(
     collector_id: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-) -> List[dict]:
+    review_status: Optional[str] = None,
+    quality: Optional[str] = None,       # good|poor|blurry|dark|overexposed|low_res
+    include_archived: bool = False,
+    page: int = 1,
+    page_size: int = 48,
+) -> dict:
     from datetime import datetime, timezone
     profile = await get_dataset(org_id, dataset_id)
-    # For referenced datasets, read entries from the source
     resolve_id = profile.source_dataset_id if profile.reference_type == "reference" and profile.source_dataset_id else dataset_id
-    filters = [DatasetEntry.dataset_id == resolve_id]
+    # Use $ne: true for the "not archived" case so documents without the field still match
+    if include_archived:
+        archived_filter = DatasetEntry.archived == True
+    else:
+        archived_filter = {"archived": {"$ne": True}}
+    filters = [DatasetEntry.dataset_id == resolve_id, archived_filter]
     if field_id:
         filters.append(DatasetEntry.field_id == field_id)
     if collector_id:
         filters.append(DatasetEntry.collector_id == collector_id)
+    if review_status:
+        filters.append(DatasetEntry.review_status == review_status)
     if date_from:
         try:
             dt = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
@@ -380,8 +393,183 @@ async def get_entries(
             filters.append(DatasetEntry.captured_at <= dt)
         except ValueError:
             pass
-    entries = await DatasetEntry.find(*filters).sort(-DatasetEntry.captured_at).to_list()
-    return [_entry_to_dict(e) for e in entries]
+
+    q = DatasetEntry.find(*filters).sort(-DatasetEntry.captured_at)
+    total = await q.count()
+    entries = await q.skip((page - 1) * page_size).limit(page_size).to_list()
+
+    # Apply in-memory quality filter (not indexed — acceptable for moderate dataset sizes)
+    if quality == "good":
+        entries = [e for e in entries if (e.quality_score or 0) >= 70 and not e.quality_issues]
+    elif quality == "poor":
+        entries = [e for e in entries if (e.quality_score or 100) < 70 or bool(e.quality_issues)]
+    elif quality in ("blurry", "dark", "overexposed", "low_res"):
+        entries = [e for e in entries if quality in (e.quality_issues or [])]
+
+    # Archived count (always include)
+    archived_count = await DatasetEntry.find(DatasetEntry.dataset_id == resolve_id, DatasetEntry.archived == True).count()
+
+    return {
+        "items": [_entry_to_dict(e) for e in entries],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, -(-total // page_size)),
+        "archived_count": archived_count,
+    }
+
+
+async def archive_entry(org_id: str, dataset_id: str, entry_id: str, archived: bool) -> dict:
+    await get_dataset(org_id, dataset_id)
+    entry = await DatasetEntry.find_one(DatasetEntry.id == _oid(entry_id), DatasetEntry.dataset_id == dataset_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    entry.archived = archived
+    await entry.save()
+    return _entry_to_dict(entry)
+
+
+async def find_similar_entries(org_id: str, dataset_id: str, entry_id: str, threshold: int = 12) -> List[dict]:
+    """Find dataset entries similar to the given entry using pHash hamming distance.
+
+    If images are missing phashes, downloads them from S3 concurrently to compute lazily.
+    """
+    profile = await get_dataset(org_id, dataset_id)
+    resolve_id = profile.source_dataset_id if profile.reference_type == "reference" and profile.source_dataset_id else dataset_id
+    all_entries = await DatasetEntry.find(DatasetEntry.dataset_id == resolve_id).to_list()
+
+    target = next((e for e in all_entries if str(e.id) == entry_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="Entry not found")
+
+    # Lazy compute missing phashes
+    missing = [e for e in all_entries if not e.phash and e.file_key and e.file_mime and e.file_mime.startswith("image/")]
+    if missing:
+        sem = asyncio.Semaphore(10)
+
+        async def _fill(e: DatasetEntry) -> None:
+            async with sem:
+                try:
+                    data = await _download_from_s3(e.file_key)
+                    e.phash = _dhash(data)
+                    await e.save()
+                except Exception:
+                    pass
+
+        await asyncio.gather(*[_fill(e) for e in missing])
+
+    if not target.phash:
+        return []
+
+    results = []
+    for e in all_entries:
+        if str(e.id) == entry_id or not e.phash:
+            continue
+        dist = _hamming(target.phash, e.phash)
+        if dist <= threshold:
+            d = _entry_to_dict(e)
+            d["similarity_distance"] = dist
+            d["similarity_pct"] = round((64 - dist) / 64 * 100)
+            results.append(d)
+    results.sort(key=lambda x: x["similarity_distance"])
+    return results
+
+
+async def _download_from_s3(key: str) -> bytes:
+    import aioboto3
+    session = aioboto3.Session()
+    async with session.client(
+        "s3",
+        endpoint_url=settings.S3_ENDPOINT_URL,
+        aws_access_key_id=settings.S3_ACCESS_KEY,
+        aws_secret_access_key=settings.S3_SECRET_KEY,
+        region_name=settings.S3_REGION,
+    ) as s3:
+        resp = await s3.get_object(Bucket=settings.S3_BUCKET, Key=key)
+        return await resp["Body"].read()
+
+
+async def export_to_annotation_project(
+    org_id: str,
+    dataset_id: str,
+    entry_ids: Optional[List[str]],
+    project_id: Optional[str],
+    project_name: str,
+    classes: List[str],
+    annotation_type: str,
+) -> dict:
+    """Copy (by reference) selected dataset image entries into an annotation project.
+
+    No S3 data is duplicated — AnnotationImage.s3_key points to the same object.
+    Skips entries already present in the project (matched by s3_key).
+    """
+    from app.models.annotation import AnnotationProject, AnnotationImage
+    from beanie import PydanticObjectId as _OID
+
+    # Resolve source entries
+    profile = await get_dataset(org_id, dataset_id)
+    resolve_id = profile.source_dataset_id if profile.reference_type == "reference" and profile.source_dataset_id else dataset_id
+
+    flt = [DatasetEntry.dataset_id == resolve_id, {"archived": {"$ne": True}}]
+    if entry_ids:
+        from bson import ObjectId as _BsonOID
+        oids = [_BsonOID(i) for i in entry_ids if i]
+        flt.append({"_id": {"$in": oids}})
+    entries = await DatasetEntry.find(*flt).to_list()
+    image_entries = [e for e in entries if e.file_key and e.file_mime and e.file_mime.startswith("image/")]
+    if not image_entries:
+        raise HTTPException(status_code=400, detail="No image entries to export")
+
+    # Find or create annotation project
+    if project_id:
+        ann_project = await AnnotationProject.find_one(
+            AnnotationProject.id == _OID(project_id),
+            AnnotationProject.org_id == org_id,
+            AnnotationProject.deleted_at == None,
+        )
+        if not ann_project:
+            raise HTTPException(status_code=404, detail="Annotation project not found")
+    else:
+        ann_project = AnnotationProject(
+            org_id=org_id,
+            name=project_name or f"From {profile.name}",
+            description=f"Exported from dataset: {profile.name}",
+            classes=classes or ["object"],
+            annotation_type=annotation_type or "box",
+        )
+        await ann_project.insert()
+
+    # Existing s3_keys in project to avoid duplicates
+    existing_keys = {img.s3_key for img in ann_project.images}
+
+    added = 0
+    for e in image_entries:
+        if e.file_key in existing_keys:
+            continue
+        ann_img = AnnotationImage(
+            filename=e.file_key.split("/")[-1],
+            s3_key=e.file_key,
+            blur_score=e.blur_score,
+            brightness=e.brightness,
+            quality_score=e.quality_score,
+            quality_issues=e.quality_issues or [],
+            phash=e.phash,
+        )
+        ann_project.images.append(ann_img)
+        existing_keys.add(e.file_key)
+        added += 1
+
+    from app.utils.datetime import utc_now as _now
+    ann_project.updated_at = _now()
+    await ann_project.save()
+
+    return {
+        "project_id": str(ann_project.id),
+        "project_name": ann_project.name,
+        "added": added,
+        "skipped": len(image_entries) - added,
+        "total_images": len(ann_project.images),
+    }
 
 
 # ── Public collector endpoints ─────────────────────────────────────────────────
@@ -553,15 +741,16 @@ async def upload_entry_direct(
 
     file_key = None
     file_mime = None
+    _raw_bytes: Optional[bytes] = None
     if file and file.filename:
-        content = await file.read()
+        _raw_bytes = await file.read()
         mime = file.content_type or "application/octet-stream"
         ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "bin"
         s3_key = (
             f"{profile.org_id}/datasets/{str(profile.id)}"
             f"/entries/{_ADMIN_COLLECTOR_ID}/{field_id}/{uuid.uuid4()}.{ext}"
         )
-        await _upload_to_s3(s3_key, content, mime)
+        await _upload_to_s3(s3_key, _raw_bytes, mime)
         file_key = s3_key
         file_mime = mime
 
@@ -575,6 +764,8 @@ async def upload_entry_direct(
         text_value=text_value,
         points_awarded=0,
     )
+    if _raw_bytes and file_mime and file_mime.startswith("image/"):
+        await _enrich_entry_quality(entry, _raw_bytes)
     await entry.insert()
     logger.info("dataset_entry_admin_upload", dataset_id=dataset_id, field_id=field_id, uploaded_by=uploaded_by)
     return _entry_to_dict(entry)
@@ -709,20 +900,64 @@ async def get_dataset_overview(org_id: str, dataset_id: str) -> dict:
     }
 
 
+# ── Image quality helpers (PIL-only, no extra deps) ────────────────────────────
+
+def _dhash(data: bytes) -> Optional[str]:
+    try:
+        from PIL import Image as _PIL
+        img = _PIL.open(io.BytesIO(data)).convert("L").resize((9, 8))
+        px = list(img.getdata())
+        bits = [1 if px[r * 9 + c] > px[r * 9 + c + 1] else 0 for r in range(8) for c in range(8)]
+        val = 0
+        for b in bits:
+            val = (val << 1) | b
+        return f"{val:016x}"
+    except Exception:
+        return None
+
+
+def _hamming(h1: str, h2: str) -> int:
+    return bin(int(h1, 16) ^ int(h2, 16)).count("1")
+
+
+def _compute_image_quality(data: bytes) -> dict:
+    try:
+        from PIL import Image as _PIL, ImageFilter, ImageStat
+        img = _PIL.open(io.BytesIO(data)).convert("L")
+        w, h = img.size
+        edges = img.filter(ImageFilter.FIND_EDGES)
+        blur = float(ImageStat.Stat(edges).var[0])
+        brightness = float(ImageStat.Stat(img).mean[0])
+        issues: List[str] = []
+        if blur < 40: issues.append("blurry")
+        if brightness < 40: issues.append("dark")
+        if brightness > 220: issues.append("overexposed")
+        if w < 200 or h < 200: issues.append("low_res")
+        score = max(0, min(100, int(min(100.0, blur / 5.0) * 0.7 + (100.0 - abs(brightness - 128.0) / 128.0 * 100.0) * 0.3)))
+        return {"blur_score": round(blur, 2), "brightness": round(brightness, 2), "quality_score": score, "quality_issues": issues}
+    except Exception:
+        return {"blur_score": None, "brightness": None, "quality_score": None, "quality_issues": []}
+
+
+async def _enrich_entry_quality(entry: DatasetEntry, data: bytes) -> None:
+    """Compute and assign quality + phash fields on the entry (does NOT save)."""
+    if entry.file_mime and entry.file_mime.startswith("image/"):
+        q = _compute_image_quality(data)
+        entry.blur_score = q["blur_score"]
+        entry.brightness = q["brightness"]
+        entry.quality_score = q["quality_score"]
+        entry.quality_issues = q["quality_issues"]
+        entry.phash = _dhash(data)
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _entry_to_dict(entry: DatasetEntry) -> dict:
     d = entry.model_dump()
     d["id"] = str(entry.id)
     if entry.file_key:
-        if settings.MEDIA_BASE_URL:
-            # Public bucket: construct a plain URL
-            base = settings.MEDIA_BASE_URL.rstrip("/")
-            d["file_url"] = f"{base}/{settings.S3_BUCKET}/{entry.file_key}"
-        else:
-            # Fall back to the authenticated proxy endpoint so internal MinIO
-            # URLs don't leak to the browser.  The UI appends ?token=<jwt>.
-            d["file_url"] = f"/api/v1/datasets/{entry.dataset_id}/entries/{str(entry.id)}/file"
+        url = generate_presigned_url(entry.file_key)
+        d["file_url"] = url if url else f"/api/v1/datasets/{entry.dataset_id}/entries/{str(entry.id)}/file"
     return d
 
 

@@ -39,6 +39,27 @@ from app.models.dataset import DatasetProfile
 # In-process run queues: job_id → asyncio.Queue of SSE event dicts (None = sentinel)
 _RUN_QUEUES: Dict[str, asyncio.Queue] = {}
 
+# Simple in-memory rate limiter for AI endpoints (per user email, sliding window)
+_AI_RATE_WINDOW_S = 3600  # 1 hour
+_AI_RATE_LIMIT    = 20    # max requests per window
+_AI_RATE_STORE: Dict[str, list] = {}  # email -> [timestamp, ...]
+
+
+def _ai_rate_check(email: str) -> None:
+    """Raise HTTPException 429 if the user has exceeded 20 AI chat requests/hour."""
+    import time as _time
+    now = _time.monotonic()
+    cutoff = now - _AI_RATE_WINDOW_S
+    stamps = _AI_RATE_STORE.setdefault(email, [])
+    # Evict old entries
+    _AI_RATE_STORE[email] = [t for t in stamps if t > cutoff]
+    if len(_AI_RATE_STORE[email]) >= _AI_RATE_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded: AI chat is limited to {_AI_RATE_LIMIT} requests per hour.",
+        )
+    _AI_RATE_STORE[email].append(now)
+
 router = APIRouter(prefix="/editor", tags=["editor"])
 logger = structlog.get_logger(__name__)
 
@@ -55,7 +76,8 @@ def _safe_path(rel: str) -> Path:
     """Resolve a relative path inside the plugin dir; reject traversal."""
     base = _plugin_dir().resolve()
     full = (base / rel).resolve()
-    if not str(full).startswith(str(base)):
+    # Add os.sep suffix to prevent prefix collision (e.g. /tmp/plugin vs /tmp/plugin_evil)
+    if not str(full).startswith(str(base) + os.sep) and full != base:
         raise HTTPException(status_code=400, detail="Path traversal not allowed")
     return full
 
@@ -130,6 +152,21 @@ class SaveFileRequest(BaseModel):
 @router.post("/files")
 async def save_file(body: SaveFileRequest, user=Depends(require_roles("engineer", "admin"))):
     full = _safe_path(body.path)
+
+    # Security scan Python files before writing
+    if body.path.endswith(".py"):
+        violation = _security_check(body.content)
+        if violation:
+            raise HTTPException(status_code=400, detail=f"Security violation: {violation}")
+        # AST compile check — catches syntax errors before writing
+        try:
+            compile(body.content, body.path, "exec")
+        except SyntaxError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"SyntaxError at line {e.lineno}: {e.msg}",
+            )
+
     full.parent.mkdir(parents=True, exist_ok=True)
     async with aiofiles.open(full, "w") as f:
         await f.write(body.content)
@@ -219,8 +256,15 @@ async def new_file(body: NewFileRequest, user=Depends(require_roles("engineer", 
 
 # Modules that are entirely blocked
 _BLOCKED_MODULES = frozenset([
-    "subprocess", "socket", "ctypes", "cffi", "multiprocessing",
-    "pty", "tty", "termios",
+    # Process / shell execution
+    "subprocess", "multiprocessing", "pty", "tty", "termios",
+    # Network I/O (trainers must use SafeHttpClient, not raw sockets/HTTP)
+    "socket", "urllib", "requests", "httpx", "aiohttp",
+    # Dynamic import / native code
+    "ctypes", "cffi", "importlib",
+    # Database drivers (no direct DB access in trainer code)
+    "motor", "pymongo", "beanie", "sqlalchemy", "asyncpg",
+    "psycopg2", "redis",
 ])
 
 # os.* methods that are blocked
@@ -230,6 +274,8 @@ _BLOCKED_OS_ATTRS = frozenset([
     "fork", "forkpty", "spawnl", "spawnle", "spawnlp",
     "spawnv", "spawnve", "spawnvp", "kill", "killpg",
     "unlink", "rmdir", "removedirs", "remove",
+    # Environment variable access
+    "environ", "getenv", "putenv", "environb",
 ])
 
 # Builtins that are blocked when called with dynamic (non-constant) args
@@ -274,6 +320,15 @@ def _security_check(code: str) -> Optional[str]:
             if isinstance(func, ast.Name) and func.id in _BLOCKED_BUILTINS:
                 if node.args and not isinstance(node.args[0], ast.Constant):
                     return f"Restricted call: {func.id}() with dynamic arguments is not allowed"
+
+        # Block os.environ / os.getenv direct attribute access (not inside a Call)
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "os"
+            and node.attr in _BLOCKED_OS_ATTRS
+        ):
+            return f"Restricted access: os.{node.attr} is not allowed in trainer code"
 
         # Block open() for write outside /tmp
         if isinstance(node, ast.Call):
@@ -388,9 +443,9 @@ class MyTrainer(BaseTrainer):
     output_schema = { "field": {"type": "...", "label": "..."} }
 
     def preprocess(self, raw):  ...  # transform raw data_source output → training-ready form
-    def train(self, preprocessed, config: TrainingConfig):  ...  # return model or (model, test_data)
+    def train(self, preprocessed, config: TrainingConfig):  ...  # MUST return (model, test_data) tuple
     def predict(self, model, inputs: dict) -> dict:  ...  # return JSON-serialisable dict
-    def evaluate(self, model, test_data) -> EvaluationResult:  ...  # optional
+    def evaluate(self, model, test_data) -> EvaluationResult:  ...  # REQUIRED — always implement
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 DataSource options the user may choose:
@@ -413,11 +468,27 @@ Built-in helpers inside train():
   self.log_device_info(config)
 
 Rules:
-- Class name must be PascalCase; name attribute must be snake_case.
+- Class name must be PascalCase; name attribute must be snake_case derived from the class name.
+  CRITICAL: name = "image_similarity_trainer" must match EXACTLY what was set.
+  The scanner imports your file — if it crashes on import, the trainer is lost.
+- ALL imports (torch, torchvision, sklearn, PIL, numpy, scipy, etc.) MUST be placed INSIDE
+  the method bodies (preprocess, train, predict), NEVER at module level.
+  Module-level imports of optional packages cause ImportError during trainer scan → trainer not found.
+  ✅ CORRECT: def train(self, preprocessed, config):
+                  import torch, torchvision.models as tvm
+                  ...
+  ❌ WRONG: import torch  ← at top of file — breaks scanner on machines without torch
 - All S3 writes go to /tmp/. Never write outside /tmp in trainer code.
-- Imports inside methods (not module-level) for optional heavy deps (torch, sklearn, etc.).
 - Docstring at top of file: explain what the trainer does, dataset format, inference I/O.
 - input_schema and output_schema MUST be defined for the UI to render forms correctly.
+- evaluate() is REQUIRED in every trainer — always implement it and always return (model, test_data)
+  from train() so it gets called. Pattern per task type:
+    classification/regression → from sklearn.metrics import accuracy_score, mean_squared_error
+      return EvaluationResult(metrics={"accuracy": accuracy_score(y_true, y_pred)})
+    clustering → return EvaluationResult(metrics={"silhouette": silhouette_score(X, labels)})
+    image_similarity/embedding → return EvaluationResult(metrics={"reference_count": len(test_data)})
+    NLP → return EvaluationResult(metrics={"f1": f1_score(y_true, y_pred, average='weighted')})
+  train() MUST always return (model, test_data) — not just model — so evaluate() is invoked.
 - If data_source uses DatasetDataSource, always set auto_create_spec so the dataset is
   auto-created on first run without manual setup.
 - FORBIDDEN: Never use pd.read_excel('/path'), pd.read_csv('/path'), open('/path'), or any
@@ -451,7 +522,7 @@ def _get_llm_config() -> tuple[str, str, str, str]:
       LLM_MODEL     — model name                            (default: gpt-4o)
       LLM_BASE_URL  — only required for openai_compatible; optional override for ollama
       LLM_TEMPERATURE  — sampling temperature               (default: 0.3)
-      LLM_MAX_TOKENS   — max response tokens                (default: 1024 for generate, 6000 for chat)
+      LLM_MAX_TOKENS   — max response tokens                (default: 16000)
     """
     provider   = os.environ.get("LLM_PROVIDER", "openai").lower()
     api_key    = os.environ.get("LLM_API_KEY", "")
@@ -552,27 +623,33 @@ async def ai_generate_trainer(
     )
 
     temperature = float(os.environ.get("LLM_TEMPERATURE", "0.3"))
-    max_tokens  = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
+    max_tokens  = int(os.environ.get("LLM_MAX_TOKENS", "16000"))
 
     try:
         import httpx
+        _num_ctx_g = int(os.environ.get("LLM_NUM_CTX", "0"))
+        _gen_body: dict = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": _TRAINER_SYSTEM_PROMPT},
+                {"role": "user",   "content": user_prompt},
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if _num_ctx_g > 0:
+            _gen_body["options"] = {"num_ctx": _num_ctx_g}
+        print(f"[ai_generate] {provider}/{model_name} max_tokens={max_tokens} num_ctx={_num_ctx_g or 'default'} sys~{len(_TRAINER_SYSTEM_PROMPT)//4}tok user~{len(user_prompt)//4}tok", flush=True)
         async with httpx.AsyncClient(timeout=120) as http:
             resp = await http.post(
                 f"{base_url.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": model_name,
-                    "messages": [
-                        {"role": "system", "content": _TRAINER_SYSTEM_PROMPT},
-                        {"role": "user",   "content": user_prompt},
-                    ],
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                },
+                json=_gen_body,
             )
         resp.raise_for_status()
         data = resp.json()
-        code = data["choices"][0]["message"]["content"].strip()
+        raw = data["choices"][0]["message"]["content"].strip()
+        code = raw
 
         # ── Charge wallet for actual tokens used ─────────────────────────────
         usage = data.get("usage", {})
@@ -590,7 +667,21 @@ async def ai_generate_trainer(
         if code.startswith("```"):
             code = "\n".join(l for l in code.splitlines() if not l.strip().startswith("```")).strip()
 
-        return {"code": code, "model": model_name, "tokens": {"input": in_tok, "output": out_tok}, "cost_usd": actual_cost}
+        print(f"[ai_generate] final_lines={len(code.splitlines())} in_tok={in_tok} out_tok={out_tok}", flush=True)
+        return {
+            "code": code,
+            "model": model_name,
+            "tokens": {"input": in_tok, "output": out_tok},
+            "cost_usd": actual_cost,
+            "debug": {
+                "provider": provider,
+                "max_tokens": max_tokens,
+                "num_ctx": _num_ctx_g or None,
+                "system_prompt_tokens_est": len(_TRAINER_SYSTEM_PROMPT) // 4,
+                "final_line_count": len(code.splitlines()) if code else 0,
+                "raw_llm_reply": raw,
+            },
+        }
 
     except HTTPException:
         raise
@@ -615,39 +706,58 @@ _CHAT_SYSTEM_PROMPT = """\
 You are an expert ML engineer assistant helping a user design and build a trainer plugin for MLDock.
 Engage in focused, practical conversation to understand requirements, then generate production-ready code.
 
-━━ SCOPE EVALUATION (always assess this) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━ SCOPE EVALUATION (always assess this) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Before diving into requirements, mentally assess:
 
 1. CAN A TRAINER BE BUILT FOR THIS?
    → Identify the model type: classification / regression / clustering / anomaly /
-     NLP / image / time-series / custom
+     NLP / image / time-series / image-embedding / image-similarity / custom
    → Identify what the model should return per inference: the output fields and their types
    → If feasible — say so briefly and proceed
    → If not feasible (e.g. user asks for real-time video processing, live audio, web scraping) —
      explain why it's outside a trainer's scope and suggest what IS possible
 
-2. SCOPE WARNING for complex projects:
-   If the request involves: large image datasets (zip of images, segmentation, detection, OCR,
-   plate recognition), video frames, real-time streams, multi-modal data, or highly custom
-   architectures:
-   → Acknowledge upfront: "This is a larger-scope project. I can build a working trainer, but
-     production-quality results for [task] typically require significant data, GPU resources,
-     and hyperparameter tuning. Results should be validated by a domain expert."
-   → Then proceed — build the best trainer possible given the constraints.
+2. DATA REQUIREMENT ASSESSMENT — critical gate before asking for CSV:
+   Some tasks are SELF-CONTAINED — the description alone tells you the data structure AND task.
+   For these, NEVER ask for a CSV upload — generate immediately.
 
-3. DEFAULT DEFENSE MECHANISM (non-negotiable):
+   SELF-CONTAINED TASK PATTERNS (detect any of these → proceed to CASE E):
+   a) IMAGE SIMILARITY / EMBEDDING / REFERENCE MATCHING:
+      "store images in dataset and compare/score at inference"
+      "check how similar an image is to stored originals"
+      "find nearest match", "similarity score", "feature distance", "image fingerprint"
+      → Training data: images stored in platform dataset (field_type = 'image')
+      → No CSV needed. Generate the trainer immediately.
+
+   b) IMAGE ANOMALY / DEFECT DETECTION:
+      "flag unusual images", "detect defects", "compare to good samples"
+      → Same pattern as image similarity. Generate immediately.
+
+   c) FULLY-SPECIFIED TASK:
+      User has described: (i) what input the model receives at inference,
+      (ii) what output/score it returns, and (iii) what data trains it.
+      → That is sufficient. Generate immediately without asking for more.
+
+3. SCOPE NOTE — informational ONLY (never use to delay generation):
+   For image tasks it is fine to say in 1 sentence:
+   "More reference images → better accuracy; GPU speeds up feature extraction."
+   Then IMMEDIATELY generate the code. Never use scope concerns as a reason to ask for data.
+
+4. DEFAULT DEFENSE MECHANISM (non-negotiable):
    Every trainer you generate MUST begin with this comment block:
    # ⚠ AI-GENERATED TRAINER
    # Review by a qualified data scientist or ML engineer before production use.
    # Validate output quality on your specific dataset. For complex tasks
    # (image segmentation, object detection, NLP at scale), expert review is essential.
 
-━━ FIRST RESPONSE RULES (critical) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━ FIRST RESPONSE RULES (critical) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Check what data context you have BEFORE asking any technical questions:
 
-CASE A — No CSV uploaded AND no dataset selected:
+CASE A — No CSV uploaded AND no dataset selected AND task clearly needs tabular data:
+  ONLY for: financial prediction, customer segmentation, sales forecasting, tabular regression/
+  classification where column names and row counts affect model design.
   → DO NOT ask about column names. You don't know what data they have yet.
   → Acknowledge the idea warmly (1 sentence), briefly state what model type would suit it
     and what outputs it would produce, then say:
@@ -655,6 +765,7 @@ CASE A — No CSV uploaded AND no dataset selected:
      • Upload a CSV or Excel file using the Upload Data button below, or
      • Describe your data — what fields/columns you typically have and roughly how many rows?"
   → Nothing else. One clear ask.
+  ⚠ NEVER apply CASE A to image/embedding tasks or any self-contained description → use CASE E.
 
 CASE B — CSV schema IS available (shown in CONTEXT section):
   → Acknowledge the idea (1 sentence).
@@ -673,6 +784,13 @@ CASE D — Data inspection summary received (user just cleaned/uploaded data):
   → State clearly: what model type fits, what the target variable likely is, what features
     to use, what algorithm to start with, and what output fields the trainer should produce.
   → If anything is ambiguous, ask ONE focused question. Otherwise generate.
+
+CASE E — Self-contained description (image similarity / embedding / fully-specified):
+  → The user has given you everything needed. NEVER ask for CSV or more info.
+  → In 2–3 sentences confirm: the approach (e.g. MobileNetV2 embeddings + cosine similarity),
+    how training works (store embeddings per reference image), what inference returns
+    (top-N matches with similarity scores 0–1).
+  → Then IMMEDIATELY generate the full trainer code.
 
 ━━ SUBSEQUENT RESPONSES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -704,6 +822,17 @@ SUGGESTIONS: Refine the algorithm | Add more features | Explain output fields | 
 - Never ask about column names when you have no data context yet — ask for the file first
 """
 
+_TRAINER_SYSTEM_PROMPT_BRIEF = """\
+Rules (copy exactly):
+- name = snake_case, version, description, framework, category required
+- ALL imports INSIDE method bodies (never at module level) — scanner crashes on top-level imports
+- data_source uses DatasetDataSource with auto_create_spec so dataset auto-creates
+- input_schema and output_schema MUST be defined
+- train() returns (model, test_data); evaluate() returns EvaluationResult
+- No hard-coded file paths; no writes outside /tmp
+- Docstring at top of file
+"""
+
 _CHAT_CODE_INSTRUCTIONS = """
 When generating the trainer, follow these rules precisely:
 
@@ -712,183 +841,141 @@ OUTPUT SCHEMA — always include derived metrics relevant to the task:
   - clustering: {"segment": {"type": "int"}, "segment_label": {"type": "str"}, "distance_to_center": {"type": "float"}}
   - regression: {"prediction": {"type": "float"}, "confidence_interval": {"type": "dict"}}
   - anomaly: {"is_anomaly": {"type": "bool"}, "anomaly_score": {"type": "float"}, "reason": {"type": "str"}}
+  - image_similarity: {"top_matches": {"type": "list"}, "best_score": {"type": "float"}, "best_match_id": {"type": "str"}}
+    where top_matches is a list of {"id": str, "score": float, "label": str} sorted best-first
 
-DATA LOADING — CRITICAL (read carefully):
-  ALL data loading goes through DatasetDataSource. NEVER hard-code file paths.
+IMAGE SIMILARITY / EMBEDDING TRAINER PATTERN:
+  When the task is: "store reference images in a dataset, then at inference compare a query image
+  and return similarity scores against the stored references."
 
-  THE THREE FIELD LABELS ARE ALWAYS AND ONLY:
-    "Original Upload"  — the raw file the user uploaded
-    "Clean Copy"       — cleaned version (may be absent)
-    "Cleaning Code"    — preprocessing script (file, may be absent)
+  Architecture: pre-trained CNN feature extractor (MobileNetV2 or EfficientNetB0) + cosine similarity.
+  Training = building a reference embedding library (no gradient updates needed).
+  Inference = embed query image, cosine-compare against library, return ranked matches.
 
-  NEVER use field labels derived from the user's description of their data.
-  Even if the user says "I have transaction data and customer profiles",
-  the ACTUAL field labels in the workshop dataset are always exactly the three above.
-  The user's data is stored INSIDE the uploaded file — it is not split into separate fields.
+  TRAINING DATA SOURCE for image similarity:
+    The dataset has image fields (field_type = 'image'). Each entry is one reference image.
+    preprocess() fetches ALL entries and builds a list of (label, bytes) pairs.
+    train() runs each image through the CNN to get a 1280-d embedding vector, stores all
+    embeddings + labels in a TrainerBundle. No train/test split needed.
 
-  ❌ WRONG (do not generate this — ever):
-    trans_data   = [e for e in raw if e.get('field_label') == 'Transaction Data' ...]
-    profile_data = [e for e in raw if e.get('field_label') == 'Customer Profile Data' ...]
-    sales        = [e for e in raw if e.get('field_label') == 'Sales CSV' ...]
+  CORRECT image similarity preprocess() pattern:
+    def preprocess(self, raw):
+        # raw is a list of entry dicts; each has file_key/file_url for the image field
+        samples = []
+        for entry in raw:
+            img_fields = [e for e in (entry if isinstance(entry, list) else [entry])
+                          if e.get('field_type') in ('image', 'file') and (e.get('file_key') or e.get('file_url'))]
+            if not img_fields:
+                continue
+            f = img_fields[0]
+            img_bytes = self._fetch_bytes(f.get('file_key'), f.get('file_url'))
+            if img_bytes:
+                label = f.get('text_value') or f.get('field_label') or 'reference'
+                samples.append({'label': label, 'bytes': img_bytes, 'id': f.get('id', str(len(samples)))})
+        return samples  # list of dicts
 
-  ✅ CORRECT (copy this exactly — field_label is always one of the three workshop labels):
-    clean = [e for e in raw if e.get('field_label') == 'Clean Copy' and (e.get('file_key') or e.get('file_url'))]
-    orig  = [e for e in raw if e.get('field_label') == 'Original Upload' and (e.get('file_key') or e.get('file_url'))]
-    all_f = [e for e in raw if e.get('field_type') == 'file' and (e.get('file_key') or e.get('file_url'))]
-    entry = clean or orig or all_f
+  CORRECT image similarity train() pattern (copy exactly, all imports inside method):
+    def train(self, preprocessed, config):
+        import numpy as np, io, torch
+        import torchvision.models as tvm, torchvision.transforms as T
+        from PIL import Image
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        backbone = tvm.mobilenet_v2(weights=tvm.MobileNet_V2_Weights.IMAGENET1K_V1)
+        backbone.classifier = torch.nn.Identity()
+        backbone.eval().to(device)
+        transform = T.Compose([T.Resize((224,224)), T.ToTensor(),
+            T.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
+        embeddings, labels, ids = [], [], []
+        with torch.no_grad():
+            for s in preprocessed:
+                img = Image.open(io.BytesIO(s['bytes'])).convert('RGB')
+                emb = backbone(transform(img).unsqueeze(0).to(device)).squeeze().cpu().numpy()
+                embeddings.append(emb); labels.append(s['label']); ids.append(s['id'])
+        return TrainerBundle(model=backbone.cpu(), embeddings=np.array(embeddings),
+                             labels=labels, ids=ids, transform=transform), preprocessed
 
-  data_source MUST always be DatasetDataSource with these three fields:
-    fields=[
-      {"label": "Original Upload", "type": "file", "required": True},
-      {"label": "Clean Copy",      "type": "file", "required": False},
-      {"label": "Cleaning Code",   "type": "file", "required": False},
-    ]
+  CORRECT image similarity predict() pattern:
+    def predict(self, model, inputs):
+        import base64, io, numpy as np
+        from PIL import Image
+        import torch
 
-  CRITICAL: preprocess(self, raw) receives a LIST OF DICTS (not a dict).
-  Each dict has keys: field_label, field_type, file_url, file_key, text_value, etc.
-  file_url is a presigned S3 URL; file_key is the raw S3 object key.
+        # inputs['image'] is base64-encoded bytes
+        raw = inputs.get('image') or next(iter(inputs.values()), '')
+        img_bytes = base64.b64decode(raw) if isinstance(raw, str) else raw
+        img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
 
-  ALWAYS use self._fetch_bytes(file_key, file_url) — a method on BaseTrainer that
-  reads directly from S3 (reliable) and falls back to the presigned URL automatically.
-  Do NOT define your own _fetch_bytes — it is already available on self.
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        backbone = model.model.eval().to(device)
+        transform = model.transform
+        t = transform(img).unsqueeze(0).to(device)
+        with torch.no_grad():
+            q_emb = backbone(t).squeeze().cpu().numpy()
 
-  CORRECT pattern — copy this exactly:
+        # cosine similarity against all reference embeddings
+        ref = model.embeddings          # shape (N, D)
+        ref_n = ref / np.maximum(np.linalg.norm(ref, axis=1, keepdims=True), 1e-8)
+        q_n   = q_emb / max(float(np.linalg.norm(q_emb)), 1e-8)
+        scores = (ref_n @ q_n).tolist()
+
+        # Build ranked list — avoid multi-line lambda inside sorted()
+        hits = [{'id': model.ids[i], 'score': round(float(scores[i]), 4),
+                 'label': model.labels[i]} for i in range(len(scores))]
+        hits.sort(key=lambda x: x['score'], reverse=True)
+        top = hits[:5]
+        best = top[0] if top else {}
+        return {
+            'best_score': best.get('score', 0.0),
+            'best_match_id': best.get('id', ''),
+            'top_matches': top,
+        }
+
+  input_schema for image similarity:
+    {"image": {"type": "file", "label": "Query Image"}}
+
+DATA LOADING — field labels are ALWAYS exactly: "Original Upload", "Clean Copy", "Cleaning Code"
+  NEVER invent field labels from user data descriptions. raw is a LIST of dicts, not a dict.
+  CORRECT preprocess() pattern (copy exactly):
     import io
-    clean = [e for e in raw if e.get('field_label') == 'Clean Copy' and (e.get('file_key') or e.get('file_url'))]
-    orig  = [e for e in raw if e.get('field_label') == 'Original Upload' and (e.get('file_key') or e.get('file_url'))]
-    all_f = [e for e in raw if e.get('field_type') == 'file' and (e.get('file_key') or e.get('file_url'))]
-    entry = clean or orig or all_f
-    if not entry:
-        raise ValueError("No file data in dataset — upload a CSV via the Datasets page.")
-    e = entry[-1]
-    content = self._fetch_bytes(e.get('file_key'), e.get('file_url'))
-    if content is None:
-        raise ValueError("Could not fetch file from storage.")
+    entry = ([e for e in raw if e.get('field_label')=='Clean Copy' and (e.get('file_key') or e.get('file_url'))]
+             or [e for e in raw if e.get('field_label')=='Original Upload' and (e.get('file_key') or e.get('file_url'))]
+             or [e for e in raw if e.get('field_type')=='file' and (e.get('file_key') or e.get('file_url'))])
+    if not entry: raise ValueError("No file in dataset — upload a CSV.")
+    e = entry[-1]; content = self._fetch_bytes(e.get('file_key'), e.get('file_url'))
     fname = (e.get('file_key') or '').split('/')[-1].lower()
-    if fname.endswith(('.xlsx', '.xls')):
-        df = pd.read_excel(io.BytesIO(content))
+    if fname.endswith(('.xlsx','.xls')): df = pd.read_excel(io.BytesIO(content))
     else:
-        try:
-            df = pd.read_csv(io.BytesIO(content))
-        except Exception:
-            df = pd.read_csv(io.BytesIO(content), on_bad_lines='skip', engine='python')
+        try: df = pd.read_csv(io.BytesIO(content))
+        except: df = pd.read_csv(io.BytesIO(content), on_bad_lines='skip', engine='python')
+  Use self._fetch_bytes(file_key, file_url) — built-in, reads S3 or presigned URL.
+  If UPLOADED DATASET slug is in CONTEXT, use that slug exactly.
 
-  CSV READ RULE — ALWAYS use the try/except fallback above. NEVER use a bare read_csv:
-    ❌ WRONG — crashes on CSVs with unquoted commas or extra fields:
-        df = pd.read_csv(io.BytesIO(content))
+PREDICT() — predict(self, model, inputs) runs on a FRESH instance; self state from train() is GONE.
+  NEVER store scalers/encoders on self — they vanish between train() and predict().
+  OPTION A (supervised): use sklearn Pipeline so scaler is saved inside the artifact.
+    train() → pipeline = Pipeline([('scaler', StandardScaler()), ('clf', RF())]) → return pipeline, test
+    predict() → row = pd.DataFrame([[inputs['f1'],...]], columns=[...]); return {"label": str(model.predict(row)[0])}
+  OPTION B (unsupervised/multi-artifact): use TrainerBundle to persist scaler+model together.
+    train() → return TrainerBundle(model=kmeans, scaler=scaler, feature_names=[...], label_map={...}), X_scaled
+    predict() → row = pd.DataFrame([[inputs[f] for f in model.feature_names]], columns=model.feature_names)
+               X_s = model.scaler.transform(row); return {"segment": int(model.model.predict(X_s)[0])}
+  FILE inputs: base64-encoded. decode with: import base64; raw_bytes = base64.b64decode(inputs['field'])
 
-    ✅ CORRECT — always copy this exact pattern:
-        try:
-            df = pd.read_csv(io.BytesIO(content))
-        except Exception:
-            df = pd.read_csv(io.BytesIO(content), on_bad_lines='skip', engine='python')
+  SCALERS: StandardScaler (default), MinMaxScaler (0–1 needed), RobustScaler (outliers);
+           tree-based models (RF, GBM, XGB) never need a scaler.
 
-  This applies to EVERY pd.read_csv call in preprocess() — no exceptions.
-  Real-world CSVs frequently have unquoted commas in fields (e.g. addresses, descriptions)
-  that cause "Expected N fields, saw N+1" ParserError with the default C engine.
+EVALUATE() — REQUIRED (non-negotiable):
+  train() MUST return (model, test_data) 2-tuple so evaluate() is called.
+  evaluate() MUST return EvaluationResult with at least one metric:
+    classification: EvaluationResult(metrics={"accuracy": float(accuracy_score(y_true, model.predict(X_test)))})
+    regression:     EvaluationResult(metrics={"rmse": float(mean_squared_error(y_test, y_pred, squared=False))})
+    clustering:     EvaluationResult(metrics={"silhouette": float(silhouette_score(X, labels))})
+    image/embedding:EvaluationResult(metrics={"reference_count": len(model.embeddings)})
+    nlp:            EvaluationResult(metrics={"f1": float(f1_score(y_true, y_pred, average='weighted'))})
+  Always import metrics inside evaluate() body, not at module level.
 
-  If UPLOADED DATASET slug is provided in CONTEXT use that slug exactly.
-
-  FORBIDDEN:
-    - field labels other than "Original Upload", "Clean Copy", "Cleaning Code" in preprocess()
-    - raw.get('clean_copy'), raw['original_upload'], raw.get('data_file')
-    - pd.read_excel('/any/path'), pd.read_csv('/any/path'), open('/any/path')
-    - bare pd.read_csv(buf) without the try/except fallback shown above
-  raw is a LIST — it has no .get() method. Always iterate with a list comprehension.
-
-DATASET MERGING — when multiple sources must be merged on a unique key:
-  preprocess() should: load all sources → merge on unique_id → feature engineer → return DataFrame
-
-PREDICT() — CRITICAL (read carefully):
-  predict(self, model, inputs) is called at INFERENCE TIME on a FRESH trainer instance.
-  Anything stored on self during preprocess() or train() is GONE.
-
-  NEVER store fitted transformers on self and use them in predict():
-    ❌ WRONG — self.scaler lost at inference time:
-        def preprocess(self, raw):
-            self.scaler = StandardScaler()
-            X_scaled = self.scaler.fit_transform(X)
-            ...
-        def predict(self, model, inputs):
-            scaled = self.scaler.transform(...)   # AttributeError at runtime!
-
-  TWO CORRECT PATTERNS — pick one:
-
-  OPTION A — sklearn Pipeline (recommended for supervised tabular models):
-    Put scaler, encoder, imputer as Pipeline steps so they are saved and loaded
-    automatically as part of the model artifact. auto_train_tabular() already
-    returns a Pipeline — scaler is always bundled when you use it.
-
-    ✅ CORRECT (manual Pipeline):
-        from sklearn.pipeline import Pipeline
-        from sklearn.preprocessing import StandardScaler
-        from sklearn.ensemble import RandomForestClassifier
-
-        def train(self, preprocessed, config):
-            pipeline = Pipeline([
-                ('scaler', StandardScaler()),
-                ('clf',    RandomForestClassifier(n_estimators=200, random_state=config.random_seed)),
-            ])
-            pipeline.fit(X_train, y_train)
-            return pipeline                    # scaler saved inside MLflow artifact
-
-        def predict(self, model, inputs):
-            import pandas as pd
-            row = pd.DataFrame([[inputs['f1'], inputs['f2']]], columns=['f1', 'f2'])
-            pred = model.predict(row)[0]       # Pipeline scales + predicts automatically
-            return {"label": str(pred)}
-
-  OPTION B — TrainerBundle (required for unsupervised models or multi-artifact cases):
-    from app.abstract.base_trainer import TrainerBundle
-
-    ✅ CORRECT (KMeans example — Pipeline is awkward for unsupervised):
-        def train(self, preprocessed, config):
-            from sklearn.preprocessing import StandardScaler
-            from sklearn.cluster import KMeans
-
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-            kmeans = KMeans(n_clusters=4, random_state=config.random_seed)
-            kmeans.fit(X_scaled)
-
-            return TrainerBundle(
-                model=kmeans,
-                scaler=scaler,
-                feature_names=list(df.columns),
-                label_map={0: "Low Value", 1: "Mid Value", 2: "High Value", 3: "VIP"},
-            )
-
-        def predict(self, model: TrainerBundle, inputs: dict) -> dict:
-            import pandas as pd
-            row = pd.DataFrame([[inputs[f] for f in model.feature_names]],
-                               columns=model.feature_names)
-            X_scaled = model.scaler.transform(row)
-            cluster   = int(model.model.predict(X_scaled)[0])
-            label     = model.label_map.get(cluster, str(cluster))
-            return {"segment": cluster, "segment_label": label}
-
-  FILE INPUTS (base64) — when input_schema has a "file" type field, the value
-  in inputs[key] is BASE64-ENCODED bytes (the caller uploaded a CSV/image).
-  ALWAYS decode it before use:
-
-    ✅ CORRECT pattern for a CSV file input:
-        def predict(self, model, inputs):
-            import base64, io, pandas as pd
-            csv_bytes = base64.b64decode(inputs['transaction_data'])
-            df = pd.read_csv(io.StringIO(csv_bytes.decode('utf-8')))
-            preds = model.predict(df[self.get_feature_names()])
-            return {"predictions": preds.tolist(), "count": len(preds)}
-
-  SCALERS THAT APPLY TO ALL CASES:
-    - StandardScaler   → use when feature magnitudes differ (most tabular data)
-    - MinMaxScaler     → use when output must be 0–1 range
-    - RobustScaler     → use when data has significant outliers
-    - No scaler        → tree-based models (RF, GBM, XGB) do NOT need a scaler;
-                         auto_train_tabular() only applies StandardScaler to features
-                         alongside ordinal encoding for categoricals inside the Pipeline
-
-TEMPLATE CONTRACT:
-""" + _TRAINER_SYSTEM_PROMPT
+TEMPLATE CONTRACT: see BaseTrainer rules above (name=snake_case, imports inside methods, etc.)
+""" + _TRAINER_SYSTEM_PROMPT_BRIEF
 
 
 class AiChatMessage(BaseModel):
@@ -925,6 +1012,9 @@ async def ai_chat_trainer(
     """
     import re as _re
 
+    # Per-user rate limit: 20 AI chat requests per hour
+    _ai_rate_check(user.email)
+
     base_url, api_key, model_name, provider = _get_llm_config()
 
     if not api_key or api_key == "key":
@@ -938,7 +1028,7 @@ async def ai_chat_trainer(
     # Estimate: full conversation history + system prompt + generous output
     history_chars = sum(len(m.content) for m in body.messages)
     est_in   = max(2_000, int(history_chars / 4) + 1_500)   # chars÷4 ≈ tokens + system prompt
-    est_out  = int(os.environ.get("LLM_MAX_TOKENS", "6000"))
+    est_out  = int(os.environ.get("LLM_MAX_TOKENS", "16000"))
     reservation = _calc_token_cost(provider, est_in, est_out)
     try:
         from app.services import wallet_service as _ws
@@ -1044,20 +1134,28 @@ async def ai_chat_trainer(
 
     # ── Call LLM ─────────────────────────────────────────────────────────────
     temperature = float(os.environ.get("LLM_TEMPERATURE", "0.35"))
-    max_tokens  = int(os.environ.get("LLM_MAX_TOKENS", "6000"))
+    # 8000 default — image similarity + evaluate() trainers need ~200 lines of code;
+    # 6000 was too low and caused truncation mid-function (sorted() call cut off).
+    max_tokens  = int(os.environ.get("LLM_MAX_TOKENS", "16000"))
 
     try:
         import httpx
+        # Build request body — add Ollama num_ctx if configured (default 2048 is too small)
+        _num_ctx = int(os.environ.get("LLM_NUM_CTX", "0"))
+        _req_body: dict = {
+            "model": model_name,
+            "messages": llm_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if _num_ctx > 0:
+            _req_body["options"] = {"num_ctx": _num_ctx}
+        print(f"[ai_chat] {provider}/{model_name} max_tokens={max_tokens} num_ctx={_num_ctx or 'default'} sys~{len(system_prompt)//4}tok", flush=True)
         async with httpx.AsyncClient(timeout=180) as http:
             resp = await http.post(
                 f"{base_url.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": model_name,
-                    "messages": llm_messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                },
+                json=_req_body,
             )
         resp.raise_for_status()
         resp_data = resp.json()
@@ -1091,6 +1189,10 @@ async def ai_chat_trainer(
     # ── Extract code block ────────────────────────────────────────────────────
     code: Optional[str] = None
     filename: Optional[str] = None
+    extraction_pass: str = "none"
+    continuation_count: int = 0
+    repair_ran: bool = False
+    cont_replies: list[str] = []
 
     def _derive_filename(src: str) -> str:
         """Derive snake_case.py filename from the first class name in the code."""
@@ -1113,6 +1215,19 @@ async def ai_chat_trainer(
         filename = code_match.group(1).strip()
         code = _strip_fences(code_match.group(2).strip())
         raw = (raw[:code_match.start()] + raw[code_match.end():]).strip()
+        extraction_pass = "pass1"
+
+    # Pass 1b — opening tag found but closing tag missing (truncated LLM output)
+    if not code:
+        open_match = _re.search(
+            r'<CODE_START\s+filename=["\']([^"\']+)["\']>\s*(.*)',
+            raw, _re.DOTALL | _re.IGNORECASE,
+        )
+        if open_match and len(open_match.group(2).strip()) > 50:
+            filename = open_match.group(1).strip()
+            code = _strip_fences(open_match.group(2).strip())
+            raw = raw[:open_match.start()].strip()
+            extraction_pass = "pass1b"
 
     # Pass 2 — <CODE_START> without filename attribute
     if not code:
@@ -1121,6 +1236,16 @@ async def ai_chat_trainer(
             code = _strip_fences(code_match2.group(1).strip())
             filename = _derive_filename(code)
             raw = (raw[:code_match2.start()] + raw[code_match2.end():]).strip()
+            extraction_pass = "pass2"
+
+    # Pass 2b — any CODE_START without closing tag
+    if not code:
+        open_match2 = _re.search(r'<CODE_START[^>]*>\s*(.*)', raw, _re.DOTALL | _re.IGNORECASE)
+        if open_match2 and len(open_match2.group(1).strip()) > 50:
+            code = _strip_fences(open_match2.group(1).strip())
+            filename = _derive_filename(code)
+            raw = raw[:open_match2.start()].strip()
+            extraction_pass = "pass2b"
 
     # Pass 3 — any fenced block (```python, ```py, ``` Python, ``` , etc.)
     if not code:
@@ -1132,6 +1257,7 @@ async def ai_chat_trainer(
                 code = _strip_fences(candidate)
                 filename = _derive_filename(code)
                 raw = (raw[:fence.start()] + raw[fence.end():]).strip()
+                extraction_pass = "pass3"
 
     # Pass 4 — bare class block (no fences at all) with BaseTrainer
     if not code:
@@ -1140,6 +1266,180 @@ async def ai_chat_trainer(
             code = raw[cls_start.start():].strip()
             filename = _derive_filename(code)
             raw = raw[:cls_start.start()].strip()
+            extraction_pass = "pass4"
+
+    # ── Continuation loop: if code is syntactically incomplete, ask LLM to continue ──
+    # Detects truncated output (unexpected EOF, unclosed brackets) and loops up to
+    # MAX_CONTINUATIONS times, appending each continuation and deduplicating overlap.
+    # After all continuations, runs a final repair pass if still invalid.
+    _TRUNCATION_HINTS = frozenset([
+        "unexpected eof", "was never closed", "eof while scanning",
+        "expected an indented block", "invalid syntax", "unmatched",
+    ])
+    _REQUIRED_METHODS = frozenset(["train", "predict", "preprocess", "evaluate"])
+
+    def _is_truncated_syntax_error(src: str) -> bool:
+        """Return True if src has a SyntaxError that looks like truncation, not a bug."""
+        try:
+            compile(src, "<gen>", "exec")
+            return False
+        except SyntaxError as _e:
+            msg = str(_e).lower()
+            return any(h in msg for h in _TRUNCATION_HINTS)
+
+    def _missing_methods(src: str) -> list:
+        """Return list of required BaseTrainer methods absent from the generated code."""
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            return list(_REQUIRED_METHODS)
+        defined: set = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                bases = [b.id for b in node.bases if isinstance(b, ast.Name)]
+                if "BaseTrainer" in bases:
+                    for item in ast.walk(node):
+                        if isinstance(item, ast.FunctionDef):
+                            defined.add(item.name)
+        return sorted(_REQUIRED_METHODS - defined)
+
+    def _needs_continuation(src: str) -> tuple[bool, str]:
+        """Return (needs_more, reason) — True if code is incomplete."""
+        if _is_truncated_syntax_error(src):
+            return True, "syntax error (truncated output)"
+        missing = _missing_methods(src)
+        if missing:
+            return True, f"missing methods: {', '.join(missing)}"
+        return False, ""
+
+    def _merge_continuation(base: str, cont: str) -> str:
+        """Append cont to base, removing any overlapping lines at the join point."""
+        base_lines = base.splitlines()
+        cont_lines = cont.splitlines()
+        # Find the longest suffix of base_lines that is a prefix of cont_lines
+        # (overlap up to 10 lines to handle LLM repetition)
+        overlap = 0
+        for n in range(min(10, len(base_lines), len(cont_lines)), 0, -1):
+            if [l.rstrip() for l in base_lines[-n:]] == [l.rstrip() for l in cont_lines[:n]]:
+                overlap = n
+                break
+        merged = base_lines + cont_lines[overlap:]
+        return "\n".join(merged)
+
+    def _extract_any_code(text: str) -> Optional[str]:
+        """Try all extraction passes on a raw LLM response; return code or None."""
+        # TAG with filename
+        m = _re.search(r'<CODE_START\s+filename=["\'][^"\']+["\']>\s*(.*?)\s*</CODE_START>',
+                       text, _re.DOTALL | _re.IGNORECASE)
+        if m: return _strip_fences(m.group(1).strip())
+        # TAG without closing
+        m = _re.search(r'<CODE_START[^>]*>\s*(.*)', text, _re.DOTALL | _re.IGNORECASE)
+        if m and len(m.group(1).strip()) > 20: return _strip_fences(m.group(1).strip())
+        # Fenced block
+        m = _re.search(r'```[a-zA-Z]*[ \t]*\n(.*?)```', text, _re.DOTALL)
+        if m and ('def ' in m.group(1) or 'class ' in m.group(1)):
+            return _strip_fences(m.group(1).strip())
+        # Bare code (starts with def/class)
+        if text.lstrip().startswith(('def ', 'class ', '#', 'from ', 'import ')):
+            return text.strip()
+        return None
+
+    if code:
+        _needs_more, _reason = _needs_continuation(code)
+    else:
+        _needs_more, _reason = False, ""
+
+    print(f"[ai_chat] extracted={extraction_pass} lines={len(code.splitlines()) if code else 0} needs_cont={_needs_more} reason={_reason!r}", flush=True)
+
+    if code and _needs_more:
+        _MAX_CONT = 3
+        _cont_base_raw = resp_data["choices"][0]["message"]["content"].strip()
+
+        for _ci in range(_MAX_CONT):
+            _needs_more, _reason = _needs_continuation(code)
+            if not _needs_more:
+                break
+
+            # Tell the LLM exactly what's missing so it targets the gap
+            _missing = _missing_methods(code)
+            if _missing:
+                _cont_ask = (
+                    f"The trainer is incomplete — these methods are missing: "
+                    f"{', '.join(_missing)}. "
+                    "Add ONLY the missing methods (do not repeat code already written). "
+                    "Wrap your output in <CODE_START filename=\"continuation\"> ... </CODE_START>."
+                )
+            else:
+                _cont_ask = (
+                    "The code was cut off before it was complete. "
+                    "Continue from exactly where you stopped — output ONLY the remaining lines "
+                    "(do not repeat any code already written). "
+                    "Wrap the continuation in <CODE_START filename=\"continuation\"> ... </CODE_START>."
+                )
+
+            _cont_messages = list(llm_messages) + [
+                {"role": "assistant", "content": _cont_base_raw},
+                {"role": "user", "content": _cont_ask},
+            ]
+            try:
+                import httpx as _hx_c
+                _cont_req = {**_req_body, "messages": _cont_messages}
+                async with _hx_c.AsyncClient(timeout=120) as _hc:
+                    _cr = await _hc.post(
+                        f"{base_url.rstrip('/')}/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json=_cont_req,
+                    )
+                _cr.raise_for_status()
+                _cont_raw = _cr.json()["choices"][0]["message"]["content"].strip()
+                _cont_base_raw = _cont_raw
+                cont_replies.append(_cont_raw)
+                continuation_count += 1
+
+                _cont_code = _extract_any_code(_cont_raw)
+                if _cont_code:
+                    code = _merge_continuation(code, _cont_code)
+                    logger.info("ai_chat_continuation", iteration=_ci + 1, reason=_reason,
+                                added_lines=len(_cont_code.splitlines()))
+                else:
+                    break
+            except Exception as _cont_exc:
+                logger.warning("ai_chat_continuation_failed", iteration=_ci + 1, error=str(_cont_exc))
+                break
+
+        print(f"[ai_chat] continuations={continuation_count} repair={repair_ran} final_lines={len(code.splitlines()) if code else 0} missing={_missing_methods(code) if code else 'N/A'}", flush=True)
+
+        # ── Repair pass: still incomplete after continuations → ask for full rewrite ──
+        _needs_more, _reason = _needs_continuation(code)
+        if _needs_more:
+            try:
+                _missing_r = _missing_methods(code)
+                _repair_messages = list(llm_messages) + [
+                    {"role": "user", "content": (
+                        "The generated trainer is still incomplete. "
+                        + (f"Missing methods: {', '.join(_missing_r)}. " if _missing_r else "")
+                        + "Return the COMPLETE working trainer file from top to bottom. "
+                        "Wrap it in <CODE_START filename=\"fixed_trainer.py\"> ... </CODE_START>."
+                        f"\n\nCurrent partial code:\n```python\n{code}\n```"
+                    )},
+                ]
+                _rep_req = {**_req_body, "messages": _repair_messages}
+                import httpx as _hx_r
+                async with _hx_r.AsyncClient(timeout=180) as _hr:
+                    _rr = await _hr.post(
+                        f"{base_url.rstrip('/')}/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json=_rep_req,
+                    )
+                _rr.raise_for_status()
+                _rep_raw = _rr.json()["choices"][0]["message"]["content"].strip()
+                _rep_code = _extract_any_code(_rep_raw)
+                if _rep_code:
+                    code = _rep_code
+                    repair_ran = True
+                    logger.info("ai_chat_repair_applied")
+            except Exception as _rep_exc:
+                logger.warning("ai_chat_repair_failed", error=str(_rep_exc))
 
     # Final cleanup: strip any still-leaked tags from message text
     raw = _re.sub(r'</?CODE_START[^>]*>', '', raw).strip()
@@ -1164,7 +1464,9 @@ async def ai_chat_trainer(
     # When code was generated, replace the (often verbose) explanation with a short
     # actionable note so the chat stays clean — the code belongs in the editor panel.
     if code:
-        message_text = f"Trainer ready — check the **Code** tab to review and edit `{filename}`."
+        _syn_ok = not _is_truncated_syntax_error(code)
+        _status = "Trainer ready" if _syn_ok else "Trainer generated (may be incomplete — review carefully)"
+        message_text = f"{_status} — check the **Code** tab to review and edit `{filename}`."
 
     return {
         "message": message_text,
@@ -1176,6 +1478,17 @@ async def ai_chat_trainer(
             "tokens": {"input": int(in_tok), "output": int(out_tok), "total": int(in_tok) + int(out_tok)},
             "cost_usd": actual_cost,
             "model": model_name,
+            "provider": provider,
+            "max_tokens": max_tokens,
+            "num_ctx": _num_ctx or None,
+            "system_prompt_tokens_est": len(system_prompt) // 4,
+            "extraction_pass": extraction_pass,
+            "continuation_count": continuation_count,
+            "repair_ran": repair_ran,
+            "final_line_count": len(code.splitlines()) if code else 0,
+            "missing_methods_final": _missing_methods(code) if code else list(_REQUIRED_METHODS),
+            "raw_llm_reply": resp_data["choices"][0]["message"]["content"].strip(),
+            "continuation_replies": cont_replies,
         },
     }
 
@@ -1328,7 +1641,25 @@ async def _main():
 
     cls = get_trainer_class({trainer_name!r})
     if not cls:
-        raise RuntimeError(f"Trainer {trainer_name!r} not found after scan — check name attribute")
+        from app.services.registry_service import list_trainer_classes
+        registered = list(list_trainer_classes().keys())
+        print(f"[editor] Registered trainers after scan: {{registered or ['(none)']}}", flush=True)
+        # Try importing the plugin directly to surface any import error
+        try:
+            import importlib.util as _ilu
+            _spec = _ilu.spec_from_file_location("_probe_plugin", {plugin_path!r})
+            _mod = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            print(f"[editor] Plugin imported OK — classes defined: {{[k for k in dir(_mod) if not k.startswith('_')]}}", flush=True)
+        except Exception as _ie:
+            print(f"[editor] Plugin import error: {{type(_ie).__name__}}: {{_ie}}", flush=True)
+            import traceback as _tb
+            _tb.print_exc()
+        raise RuntimeError(
+            f"Trainer {trainer_name!r} not found after scan. "
+            f"Registered: {{registered}}. "
+            f"Check that your class sets name = {trainer_name!r} or trainer_name() returns {trainer_name!r}."
+        )
 
     trainer = cls()
     config = TrainingConfig()
@@ -1383,6 +1714,7 @@ async def _execute_trainer(
     runner_code = _RUNNER_TEMPLATE.format(
         trainer_name=trainer_name,
         overrides_snippet=overrides_snippet or "    pass  # no overrides",
+        plugin_path=str(plugin_path),
     )
 
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": "/app", "ML_ORG_ID": org_id}

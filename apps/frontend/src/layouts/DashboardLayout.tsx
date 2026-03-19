@@ -36,10 +36,11 @@ const ROLE_NAV: Record<string, NavItem[]> = {
     { label: 'Vendor Portal', path: '/service-provider', icon: '🔧', exact: true },
   ],
   superadmin: [
-    { label: 'Platform Overview', path: '/superadmin',    icon: '◫', exact: true },
-    { label: 'Portfolio',         path: '/portfolio',     icon: '🗂' },
+    { label: 'Platform Overview', path: '/superadmin',       icon: '◫', exact: true },
+    { label: 'Users',             path: '/superadmin/users', icon: '👤' },
+    { label: 'Portfolio',         path: '/portfolio',        icon: '🗂' },
     { label: 'New Property',      path: '/portfolio/properties/new', icon: '+', exact: true },
-    { label: 'Tenants',           path: '/tenants',       icon: '👥' },
+    { label: 'Tenants',           path: '/tenants',          icon: '👥' },
   ],
 }
 

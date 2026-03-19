@@ -16,6 +16,7 @@ router = APIRouter(prefix="/datasets", tags=["datasets"])
 # ── Request schemas ────────────────────────────────────────────────────────────
 
 class FieldIn(BaseModel):
+    id: Optional[str] = None      # present on update to preserve field identity
     label: str
     instruction: str = ""
     type: str = "image"           # image | file | text | number
@@ -178,9 +179,22 @@ async def get_entries(
     collector_id: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    review_status: Optional[str] = None,
+    quality: Optional[str] = None,      # good | poor | blurry | dark | overexposed | low_res
+    include_archived: bool = False,
+    page: int = 1,
+    page_size: int = 50,
     user: MLUser = RequireEngineer,
 ):
-    return await svc.get_entries(user.org_id, dataset_id, field_id, collector_id, date_from, date_to)
+    return await svc.get_entries(
+        user.org_id, dataset_id,
+        field_id, collector_id, date_from, date_to,
+        review_status=review_status,
+        quality=quality,
+        include_archived=include_archived,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/{dataset_id}/entry-count")
@@ -219,7 +233,8 @@ async def export_dataset_csv(dataset_id: str, user: MLUser = RequireEngineer):
     File entries include their presigned S3 URL in the file_url column.
     """
     profile = await svc.get_dataset(user.org_id, dataset_id)
-    entries = await svc.get_entries(user.org_id, dataset_id)
+    result = await svc.get_entries(user.org_id, dataset_id, page=1, page_size=10_000)
+    entries = result["items"]
 
     field_map = {f.id: f for f in profile.fields}
 
@@ -256,6 +271,45 @@ async def export_dataset_csv(dataset_id: str, user: MLUser = RequireEngineer):
         iter([buf.getvalue()]),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+class ArchiveEntryRequest(BaseModel):
+    archived: bool = True
+
+
+@router.post("/{dataset_id}/entries/{entry_id}/archive")
+async def archive_entry(
+    dataset_id: str, entry_id: str, body: ArchiveEntryRequest, user: MLUser = RequireEngineer
+):
+    """Archive or unarchive a dataset entry."""
+    return await svc.archive_entry(user.org_id, dataset_id, entry_id, body.archived)
+
+
+@router.get("/{dataset_id}/entries/{entry_id}/similar")
+async def find_similar_entries(
+    dataset_id: str, entry_id: str, threshold: int = 12, user: MLUser = RequireEngineer
+):
+    """Find entries with similar images using perceptual hash (dHash). threshold=12 for near-dupes."""
+    return await svc.find_similar_entries(user.org_id, dataset_id, entry_id, threshold)
+
+
+class ExportToAnnotationRequest(BaseModel):
+    project_id: str
+    entry_ids: Optional[List[str]] = None   # None = export all non-archived entries
+
+
+@router.post("/{dataset_id}/export-to-annotation", status_code=201)
+async def export_to_annotation(
+    dataset_id: str, body: ExportToAnnotationRequest, user: MLUser = RequireEngineer
+):
+    """
+    Export dataset entries (images) to an annotation project.
+    Reuses the same S3 object — no file duplication.
+    Skips entries whose file_key already exists in the target project.
+    """
+    return await svc.export_to_annotation_project(
+        user.org_id, dataset_id, body.project_id, body.entry_ids
     )
 
 
