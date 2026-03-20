@@ -314,8 +314,20 @@ async def predict(
         except Exception:
             pass
     except Exception as exc:
-        error_msg = str(exc)
-        logger.error("inference_failed", trainer=trainer_name, error=str(exc))
+        import traceback
+        from pathlib import Path as _Path
+        _tb = traceback.extract_tb(exc.__traceback__)
+        _trainer_frame = next(
+            (f for f in reversed(_tb) if "ml_plugin_" in (f.filename or "") or "trainers/" in (f.filename or "")),
+            _tb[-1] if _tb else None,
+        )
+        _location = (
+            f"{_Path(_trainer_frame.filename).name}:{_trainer_frame.lineno} in {_trainer_frame.name}"
+            if _trainer_frame else "unknown location"
+        )
+        error_msg = f"{_location}: {exc}"
+        logger.error("inference_failed", trainer=trainer_name, error=error_msg,
+                     traceback="".join(traceback.format_tb(exc.__traceback__)))
         try:
             import asyncio
             asyncio.ensure_future(publish_event("inference", {

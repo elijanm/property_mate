@@ -47,6 +47,10 @@ export interface DatasetProfile {
   // Location tracking
   require_location: boolean
   location_purpose: string
+  // Consent
+  require_consent: boolean
+  consent_template_id: string | null
+  consent_type: 'individual' | 'group'
   created_by: string
   created_at: string
   updated_at: string
@@ -104,7 +108,9 @@ export interface DatasetEntry {
   quality_score: number | null
   quality_issues: QualityIssue[]
   phash: string | null
+  file_hash: string | null
   archived: boolean
+  consent_record_id?: string | null
 }
 
 export interface SimilarDatasetEntry extends DatasetEntry {
@@ -134,6 +140,9 @@ export interface CollectFormDefinition {
     points_redemption_info: string
     require_location: boolean
     location_purpose: string
+    require_consent: boolean
+    consent_type: 'individual' | 'group'
+    consent_template_id: string | null
   }
   collector: {
     id: string
@@ -184,4 +193,7 @@ export interface DatasetCreatePayload {
   points_redemption_info: string
   require_location?: boolean
   location_purpose?: string
+  require_consent?: boolean
+  consent_template_id?: string
+  consent_type?: string
 }

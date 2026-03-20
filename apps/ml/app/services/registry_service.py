@@ -54,13 +54,19 @@ def _load_module_from_file(path: Path) -> list[Type[BaseTrainer]]:
 
     found = []
     for _, obj in inspect.getmembers(module, inspect.isclass):
-        if (
-            issubclass(obj, BaseTrainer)
-            and obj is not BaseTrainer
-            and hasattr(obj, "name")
-            and hasattr(obj, "data_source")
-        ):
-            found.append(obj)
+        if not (issubclass(obj, BaseTrainer) and obj is not BaseTrainer and hasattr(obj, "name")):
+            continue
+        ds = getattr(obj, "data_source", None)
+        if ds is not None and not hasattr(ds, "describe"):
+            logger.error(
+                "trainer_plugin_invalid_data_source",
+                file=str(path),
+                trainer=getattr(obj, "name", repr(obj)),
+                data_source=repr(ds),
+                hint="data_source must be a DataSource instance (e.g. DatasetDataSource(...)), not a string",
+            )
+            continue
+        found.append(obj)
     return found
 
 
@@ -82,11 +88,20 @@ async def scan_and_register_plugins(owner_email: Optional[str] = None, org_id: O
     for py_file in sorted(plugin_dir.glob("*.py")):
         if py_file.name.startswith("_"):
             continue
-        classes = _load_module_from_file(py_file)
+        try:
+            classes = _load_module_from_file(py_file)
+        except Exception as exc:
+            logger.error("trainer_plugin_scan_failed", file=str(py_file), error=str(exc))
+            continue
         for cls in classes:
-            register_class(cls, plugin_file=str(py_file))
-            await _upsert_db_registration(cls, str(py_file), owner_email=owner_email, org_id=org_id)
-            await _ensure_trainer_datasets(cls, org_id=org_id)
+            try:
+                register_class(cls, plugin_file=str(py_file))
+                await _upsert_db_registration(cls, str(py_file), owner_email=owner_email, org_id=org_id)
+                await _ensure_trainer_datasets(cls, org_id=org_id)
+            except Exception as exc:
+                logger.error("trainer_plugin_register_failed", file=str(py_file),
+                             trainer=getattr(cls, "name", repr(cls)), error=str(exc))
+                continue
             # Warn if any declared requirements aren't importable
             for req in getattr(cls, "requirements", []):
                 pkg = req.split(">=")[0].split("==")[0].split("[")[0].strip()

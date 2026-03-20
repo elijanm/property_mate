@@ -31,6 +31,8 @@ async def init_db():
     from app.models.audit_log import AuditLog
     from app.models.wallet import Wallet, WalletTransaction
     from app.models.dataset import DatasetProfile, DatasetCollector, DatasetEntry
+    from app.models.consent import ConsentTemplate, ConsentRecord
+    from app.models.watermark import OrgWatermarkConfig, UserWatermarkConfig
     from app.models.annotation import AnnotationProject
     from app.models.annotation_export_job import AnnotationExportJob
     from app.models.platform_ledger import PlatformLedger
@@ -65,6 +67,10 @@ async def init_db():
             DatasetProfile,
             DatasetCollector,
             DatasetEntry,
+            ConsentTemplate,
+            ConsentRecord,
+            OrgWatermarkConfig,
+            UserWatermarkConfig,
             AnnotationProject,
             AnnotationExportJob,
             PlatformLedger,

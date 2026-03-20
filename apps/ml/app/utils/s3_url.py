@@ -65,7 +65,9 @@ def ensure_bucket_exists() -> None:
         except ClientError as exc:
             logger.warning("s3_policy_failed", error=str(exc))
 
-    # Always set CORS — needed for browser multipart uploads (presigned part PUTs)
+    # Set CORS — needed for browser multipart uploads (presigned part PUTs).
+    # MinIO OSS does not implement PutBucketCors and returns NotImplemented;
+    # in that case CORS must be configured via MinIO's own config or the reverse proxy.
     cors_config = {
         "CORSRules": [{
             "AllowedHeaders": ["*"],
@@ -79,7 +81,13 @@ def ensure_bucket_exists() -> None:
         s3.put_bucket_cors(Bucket=settings.S3_BUCKET, CORSConfiguration=cors_config)
         logger.info("s3_cors_configured", bucket=settings.S3_BUCKET)
     except ClientError as exc:
-        logger.warning("s3_cors_failed", error=str(exc))
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        if error_code == "NotImplemented":
+            # MinIO OSS does not support PutBucketCors — configure CORS via MinIO
+            # environment variable MINIO_API_CORS_ALLOW_ORIGIN or a reverse proxy.
+            logger.debug("s3_cors_not_supported", hint="configure CORS via MinIO env or reverse proxy")
+        else:
+            logger.warning("s3_cors_failed", error=str(exc))
 
 
 def generate_presigned_url(key: str, expiry: int = 3600) -> str:

@@ -29,6 +29,8 @@ class MultipartCompleteRequest(BaseModel):
     lat: Optional[float] = None
     lng: Optional[float] = None
     accuracy: Optional[float] = None
+    file_hash: Optional[str] = None
+    consent_record_id: Optional[str] = None
 
 
 @router.get("/{token}")
@@ -48,6 +50,7 @@ async def submit_entry(
     lat: Optional[float] = Form(None),
     lng: Optional[float] = Form(None),
     accuracy: Optional[float] = Form(None),
+    consent_record_id: Optional[str] = Form(None),
 ):
     """Submit one field entry. Accepts file upload (image/file) or text_value (text/number).
     Optionally accepts GPS coordinates (lat/lng/accuracy). Falls back to IP geolocation."""
@@ -55,6 +58,7 @@ async def submit_entry(
     return await svc.submit_entry(
         token, field_id, file, text_value, description,
         lat=lat, lng=lng, accuracy=accuracy, client_ip=client_ip,
+        consent_record_id=consent_record_id,
     )
 
 
@@ -100,4 +104,6 @@ async def complete_multipart(request: Request, token: str, body: MultipartComple
         lng=body.lng,
         accuracy=body.accuracy,
         client_ip=client_ip,
+        file_hash=body.file_hash,
+        consent_record_id=body.consent_record_id,
     )

@@ -32,6 +32,8 @@ async def lifespan(app: FastAPI):
     await ensure_admin_exists()
     await ensure_sample_model_deployed()
     await resume_interrupted_gpu_jobs()
+    from app.services.consent_service import seed_global_templates
+    await seed_global_templates()
     yield
     # Shutdown
     await stop_scheduler()

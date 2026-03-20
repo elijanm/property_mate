@@ -73,6 +73,11 @@ class DatasetProfile(Document):
     require_location: bool = False                # if True, collector is prompted to share GPS location
     location_purpose: str = ""                    # shown to collector: why location is needed
 
+    # Consent
+    require_consent: bool = False                 # if True, collector must capture signed consent before photos
+    consent_template_id: Optional[str] = None     # if None, uses org/global default
+    consent_type: str = "individual"              # "individual" | "group"
+
     created_by: str = ""
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -138,8 +143,14 @@ class DatasetEntry(Document):
     quality_score: Optional[int] = None
     quality_issues: List[str] = []
     phash: Optional[str] = None                  # 64-bit dHash for similarity search
+    file_hash: Optional[str] = None              # SHA-256 hex of raw file bytes (duplicate guard)
+    # Consent
+    consent_record_id: Optional[str] = None      # token of the ConsentRecord that covers this entry
     # Lifecycle
     archived: bool = False
 
     class Settings:
         name = "dataset_entries"
+        indexes = [
+            [("dataset_id", 1), ("field_id", 1), ("file_hash", 1)],
+        ]

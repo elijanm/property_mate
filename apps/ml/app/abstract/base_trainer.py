@@ -1123,8 +1123,7 @@ class BaseTrainer(ABC):
             "description": getattr(cls, "description", ""),
             "framework": getattr(cls, "framework", "custom"),
             "schedule": getattr(cls, "schedule", None),
-            "data_source": getattr(cls, "data_source", None) and
-                           cls.data_source.describe() if hasattr(cls, "data_source") else {},
+            "data_source": cls.data_source.describe() if hasattr(cls.data_source, "describe") else {},
             "tags": getattr(cls, "tags", {}),
             "input_schema": getattr(cls, "input_schema", {}),
             "output_schema": getattr(cls, "output_schema", {}),

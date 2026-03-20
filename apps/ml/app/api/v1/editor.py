@@ -484,10 +484,10 @@ Rules:
 - evaluate() is REQUIRED in every trainer — always implement it and always return (model, test_data)
   from train() so it gets called. Pattern per task type:
     classification/regression → from sklearn.metrics import accuracy_score, mean_squared_error
-      return EvaluationResult(metrics={"accuracy": accuracy_score(y_true, y_pred)})
-    clustering → return EvaluationResult(metrics={"silhouette": silhouette_score(X, labels)})
-    image_similarity/embedding → return EvaluationResult(metrics={"reference_count": len(test_data)})
-    NLP → return EvaluationResult(metrics={"f1": f1_score(y_true, y_pred, average='weighted')})
+      return EvaluationResult(extra_metrics={"accuracy": accuracy_score(y_true, y_pred)})
+    clustering → return EvaluationResult(extra_metrics={"silhouette": silhouette_score(X, labels)})
+    image_similarity/embedding → return EvaluationResult(extra_metrics={"reference_count": len(test_data)})
+    NLP → return EvaluationResult(extra_metrics={"f1": f1_score(y_true, y_pred, average='weighted')})
   train() MUST always return (model, test_data) — not just model — so evaluate() is invoked.
 - If data_source uses DatasetDataSource, always set auto_create_spec so the dataset is
   auto-created on first run without manual setup.
@@ -833,149 +833,437 @@ Rules (copy exactly):
 - Docstring at top of file
 """
 
-_CHAT_CODE_INSTRUCTIONS = """
-When generating the trainer, follow these rules precisely:
+_CHAT_CODE_INSTRUCTIONS = '''
+━━ COMPLETE CANONICAL TRAINER PSEUDOCODE (tabular / CSV tasks) ━━━━━━━━━━━━━━━━
+This is the COMPLETE file structure every trainer must follow.
+Replace every <…> placeholder with a real value suited to the task.
+Do NOT omit any section — all attributes and all four methods are required.
 
-OUTPUT SCHEMA — always include derived metrics relevant to the task:
-  - classification: {"label": {"type": "str"}, "confidence": {"type": "float"}, "probabilities": {"type": "dict"}}
-  - clustering: {"segment": {"type": "int"}, "segment_label": {"type": "str"}, "distance_to_center": {"type": "float"}}
-  - regression: {"prediction": {"type": "float"}, "confidence_interval": {"type": "dict"}}
-  - anomaly: {"is_anomaly": {"type": "bool"}, "anomaly_score": {"type": "float"}, "reason": {"type": "str"}}
-  - image_similarity: {"top_matches": {"type": "list"}, "best_score": {"type": "float"}, "best_match_id": {"type": "str"}}
-    where top_matches is a list of {"id": str, "score": float, "label": str} sorted best-first
+"""
+<ClassName> — <one-line description: what it predicts and from what data>.
+Dataset: upload a CSV file. Each row is one labelled sample.
+Inference input: <describe each input field the user provides at prediction time>.
+Inference output: <describe each key returned by predict()>.
+Requirements: <list pip packages used, e.g. scikit-learn, xgboost, pandas, numpy>.
+"""
+import base64
+import io
+import os
+import re
+import shutil
+import zipfile
+from pathlib import Path
+from typing import Optional
 
-IMAGE SIMILARITY / EMBEDDING TRAINER PATTERN:
-  When the task is: "store reference images in a dataset, then at inference compare a query image
-  and return similarity scores against the stored references."
+from app.abstract.base_trainer import BaseTrainer, TrainingConfig, EvaluationResult, TrainerBundle, OutputFieldSpec, DerivedMetricSpec
+from app.abstract.data_source import DatasetDataSource   # swap for S3DataSource / HuggingFaceDataSource / etc. if needed
 
-  Architecture: pre-trained CNN feature extractor (MobileNetV2 or EfficientNetB0) + cosine similarity.
-  Training = building a reference embedding library (no gradient updates needed).
-  Inference = embed query image, cosine-compare against library, return ranked matches.
 
-  TRAINING DATA SOURCE for image similarity:
-    The dataset has image fields (field_type = 'image'). Each entry is one reference image.
-    preprocess() fetches ALL entries and builds a list of (label, bytes) pairs.
-    train() runs each image through the CNN to get a 1280-d embedding vector, stores all
-    embeddings + labels in a TrainerBundle. No train/test split needed.
+class <ClassName>(BaseTrainer):
+    # ── Identity ──────────────────────────────────────────────────────────────
+    name        = "<snake_case_name>"        # unique slug — used as API endpoint path
+    version     = "1.0.0"
+    description = "<one-line description>"
+    framework   = "<sklearn | pytorch | tensorflow | custom>"
+    category    = {"key": "<category-key>", "label": "<Category Label>"}
+    #              common keys: classification, regression, clustering, anomaly,
+    #              nlp, image-classification, image-similarity, object-detection,
+    #              ocr, embedding, time-series, recommendation, custom
+    schedule    = None                       # or cron string e.g. "0 3 * * 0" (Sun 3am)
+    tags        = {"domain": "<domain>", "task": "<task>"}  # arbitrary MLflow tags
 
-  CORRECT image similarity preprocess() pattern:
+    # ── Packages required at runtime ──────────────────────────────────────────
+    requirements = [
+        "<package1>",     # e.g. "scikit-learn>=1.3"
+        "<package2>",     # e.g. "xgboost", "torch", "transformers", "sentence-transformers"
+    ]
+
+    # ── Data source ───────────────────────────────────────────────────────────
+    data_source = DatasetDataSource(
+        slug="<unique-dataset-slug>",
+        auto_create_spec={
+            "name":        "<Human-readable dataset name>",
+            "description": "<What the user should upload / what each entry contains>",
+            "fields": [
+                {"label": "Original Upload", "type": "file",  "required": True,
+                 "instruction": "Upload a CSV with labelled rows"},
+                # add more fields if the dataset needs multiple uploads or text annotations:
+                # {"label": "Label",          "type": "text",  "required": False},
+                # {"label": "Reference Image","type": "image", "required": False},
+            ],
+        },
+    )
+
+    # ── Inference UI schemas ───────────────────────────────────────────────────
+    input_schema = {
+        "<field_key>": {"type": "<number | text | file | image>", "label": "<Field Label>", "required": True},
+        # add one entry per user-facing input field
+    }
+    output_schema = {
+        "<output_key>": {"type": "<str | float | int | bool | list | dict>", "label": "<Output Label>"},
+        # add one entry per key returned by predict()
+    }
+
+    # ── How predict() output is rendered in the UI ─────────────────────────────
+    output_display = [
+        OutputFieldSpec("<primary_output_key>", "<label | reading | confidence | text | image | json>",
+                        "<Display Name>", primary=True, hint="<placeholder for feedback input>"),
+        OutputFieldSpec("<secondary_key>",      "confidence", "<Display Name>"),
+        # types: image | reading | label | confidence | ranked_list | bbox_list | table_list | text | json
+        # primary=True → this field is the main prediction used for feedback tracking
+    ]
+
+    # ── Derived metrics computed from user feedback (optional) ────────────────
+    derived_metrics = [
+        DerivedMetricSpec("exact_match",  "Exact Match Rate", unit="%",    higher_is_better=True,  category="accuracy"),
+        # DerivedMetricSpec("edit_distance","Edit Distance",   unit="chars", higher_is_better=False, category="error"),
+    ]
+
+    # ── Methods ───────────────────────────────────────────────────────────────
+
     def preprocess(self, raw):
-        # raw is a list of entry dicts; each has file_key/file_url for the image field
-        samples = []
+        """Load and clean training data. raw is a list of dataset entries;
+        each entry is itself a list of field dicts with keys:
+        field_type, field_label, file_key, file_url, file_mime, text_value, id."""
+        import io, pandas as pd
+        # Flatten all field dicts across all entries
+        all_fields = [f for entry in raw for f in (entry if isinstance(entry, list) else [entry])]
+        # Find the file field (prefer 'Original Upload', fall back to any file)
+        file_field = (
+            next((f for f in all_fields if f.get('field_label') == 'Original Upload'
+                  and (f.get('file_key') or f.get('file_url'))), None)
+            or next((f for f in all_fields if f.get('field_type') == 'file'
+                     and (f.get('file_key') or f.get('file_url'))), None)
+        )
+        if not file_field:
+            raise ValueError("No file found in dataset — upload a CSV via the Datasets page.")
+        content = self._fetch_bytes(file_field.get('file_key'), file_field.get('file_url'))
+        fname = (file_field.get('file_key') or '').split('/')[-1].lower()
+        if fname.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(io.BytesIO(content))
+        else:
+            try:
+                df = pd.read_csv(io.BytesIO(content))
+            except Exception:
+                df = pd.read_csv(io.BytesIO(content), on_bad_lines='skip', engine='python')
+        df = df.dropna()
+        # <add any feature engineering, encoding, or filtering here>
+        return df
+
+    def train(self, preprocessed, config: TrainingConfig):
+        """Train the model. MUST return (artifact, test_data) so evaluate() is called.
+        All imports go inside this method body — never at module level."""
+        # import the libraries needed (all inside the method):
+        # from sklearn.ensemble import RandomForestClassifier
+        # from sklearn.pipeline import Pipeline
+        # from sklearn.preprocessing import StandardScaler, LabelEncoder
+        # import numpy as np
+
+        df = preprocessed
+        label_col = "<target_column_name>"   # column to predict
+        df_tr, df_te = self.split_dataframe(df, label_col, config)
+        X_tr = df_tr.drop(columns=[label_col])
+        y_tr = df_tr[label_col]
+        X_te = df_te.drop(columns=[label_col])
+        y_te = df_te[label_col]
+
+        # Option A — supervised with sklearn Pipeline (scaler + model in one artifact):
+        # pipeline = Pipeline([('scaler', StandardScaler()), ('clf', <Estimator>(...))])
+        # pipeline.fit(X_tr, y_tr)
+        # return pipeline, (X_te, y_te)
+
+        # Option B — multi-artifact with TrainerBundle (needed for encoders, feature names, etc.):
+        # <fit scaler, encoder, model separately>
+        # return TrainerBundle(
+        #     model=<fitted_model>,
+        #     scaler=<fitted_scaler>,          # optional
+        #     encoder=<fitted_label_encoder>,  # optional
+        #     feature_names=list(X_tr.columns),
+        #     label_map={0: "class_a", 1: "class_b"},
+        #     extra={"<any_other_artifact>": <value>},
+        # ), (X_te, y_te)
+
+        raise NotImplementedError("Replace this with real training logic")
+
+    def predict(self, model, inputs: dict) -> dict:
+        """Run inference. model is the artifact returned by train() — a Pipeline or TrainerBundle.
+        inputs is a flat dict matching input_schema keys.
+        All imports go inside this method body.
+        NEVER access self.scaler / self.encoder here — use model.scaler / model.encoder."""
+        # import pandas as pd  (if needed)
+
+        # For Pipeline:
+        # row = pd.DataFrame([[inputs.get(f, 0) for f in <feature_list>]], columns=<feature_list>)
+        # pred = model.predict(row)[0]
+        # proba = model.predict_proba(row)[0]
+        # return {"<output_key>": <value>, ...}
+
+        # For TrainerBundle:
+        # row = pd.DataFrame([[inputs.get(f, 0) for f in model.feature_names]], columns=model.feature_names)
+        # X_scaled = model.scaler.transform(row)
+        # pred_idx = int(model.model.predict(X_scaled)[0])
+        # label = model.label_map.get(pred_idx, str(pred_idx))
+        # return {"label": label, "confidence": round(float(model.model.predict_proba(X_scaled)[0][pred_idx]), 4)}
+
+        raise NotImplementedError("Replace this with real inference logic")
+
+    def evaluate(self, model, test_data) -> EvaluationResult:
+        """Evaluate on the held-out test split returned by train().
+        All imports go inside this method body."""
+        # from sklearn.metrics import accuracy_score, f1_score, mean_squared_error
+        X_te, y_te = test_data
+        # y_pred = model.predict(X_te)  # or model.model.predict(...) for TrainerBundle
+        # return EvaluationResult(
+        #     accuracy=float(accuracy_score(y_te, y_pred)),        # classification
+        #     f1=float(f1_score(y_te, y_pred, average="weighted")),# classification
+        #     # mse=float(mean_squared_error(y_te, y_pred)),        # regression
+        #     # r2=float(r2_score(y_te, y_pred)),                   # regression
+        #     y_true=list(y_te), y_pred=list(y_pred),              # for confusion matrix
+        #     extra_metrics={"<custom_metric>": <float_value>},
+        # )
+        raise NotImplementedError("Replace this with real evaluation logic")
+
+━━ END CANONICAL PSEUDOCODE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ABSOLUTE RULES — any violation causes a registration crash or runtime error:
+
+IMPORTS
+  ✅ Standard library imports are ALWAYS at module level (top of file):
+       import base64, io, os, re, shutil, zipfile
+       from pathlib import Path
+       from typing import Optional
+  ✅ Then the two mandatory framework imports:
+       from app.abstract.base_trainer import BaseTrainer, TrainingConfig, EvaluationResult, TrainerBundle, OutputFieldSpec, DerivedMetricSpec
+       from app.abstract.data_source import DatasetDataSource  (add S3DataSource, HuggingFaceDataSource, etc. as needed)
+  ✅ Optional/heavy packages (torch, sklearn, PIL, numpy, cv2, transformers, etc.) go INSIDE method bodies
+  ❌ NEVER:  from mldock.trainers import ...   ← package does not exist
+  ❌ NEVER:  from mldock import ...            ← package does not exist
+  ❌ NEVER:  import torch / import sklearn at module level — breaks scanner on machines without that package
+
+data_source
+  ✅ data_source = DatasetDataSource(slug="...", auto_create_spec={"name":...,"description":...,"fields":[...]})
+  ❌ data_source = "DatasetDataSource(...)"    ← string — AttributeError on startup, whole service crashes
+  ❌ data_source = DatasetDataSource(auto_create_spec=True)  ← True is not a dict
+
+category
+  ✅ category = {"key": "classification", "label": "Classification"}
+  ❌ category = "classification"              ← string — UI breaks
+
+TrainerBundle — all valid kwargs (anything else crashes):
+  TrainerBundle(
+      model         = <fitted estimator or neural net>,   # required
+      scaler        = <fitted StandardScaler/MinMaxScaler/RobustScaler>,  # optional
+      encoder       = <fitted LabelEncoder/OrdinalEncoder>,               # optional
+      vectorizer    = <fitted TfidfVectorizer/CountVectorizer>,           # optional
+      feature_names = ["col1", "col2", ...],              # optional — column order for predict()
+      label_map     = {0: "cat", 1: "dog"},               # optional — int index → human label
+      threshold     = 0.75,                               # optional — anomaly/decision threshold
+      extra         = {"key": <any serialisable value>},  # optional — anything else
+  )
+  ❌ TrainerBundle(model=m, embeddings=arr, transform=t)  ← unknown kwargs, crashes at save time
+
+EvaluationResult — all available fields (use whichever apply to the task):
+  EvaluationResult(
+      accuracy    = float,          # classification
+      precision   = float,          # classification
+      recall      = float,          # classification
+      f1          = float,          # classification
+      roc_auc     = float,          # binary classification
+      mse         = float,          # regression
+      mae         = float,          # regression
+      r2          = float,          # regression
+      y_true      = list,           # raw labels — enables confusion matrix in UI
+      y_pred      = list,           # raw predictions — enables confusion matrix in UI
+      extra_metrics = {"key": float, ...},  # any custom metric
+  )
+  ❌ EvaluationResult(metrics={"accuracy": 0.95})   ← field does not exist, use extra_metrics
+
+predict() receives a TrainerBundle (or sklearn Pipeline) — NOT self state from train():
+  ✅ model.feature_names, model.label_map, model.encoder, model.extra["key"]
+  ❌ self.feature_names  ← self is a fresh instance, train() state is gone
+
+EMBEDDING / SIMILARITY TRAINERS (image, text, audio, product, face, etc.):
+  Pattern: build a reference library at train time, compare a query at inference time.
+  Choose the backbone appropriate to the modality and task:
+    image similarity / face recognition → MobileNetV2, EfficientNet, ResNet, FaceNet, ArcFace, CLIP, …
+    text / semantic search              → sentence-transformers, SBERT, TF-IDF + cosine, BM25, …
+    audio fingerprinting                → MFCC + cosine, PANNs, wav2vec, …
+    product / e-commerce matching       → CLIP, ResNet + metric learning, …
+
+  Complete pseudocode — use this exact file structure, replace <...> with real implementation:
+
+"""
+<ClassName> — <one-line description: what it matches and why, e.g. face recognition, product search>.
+Dataset: <describe each dataset field, e.g. one image per entry + optional label text>.
+Inference input: <describe the query, e.g. a single query image uploaded by the user>.
+Inference output: {"best_score": float, "best_match_id": str, "top_matches": list-of-dicts}.
+Requirements: <list pip packages, e.g. torch, torchvision, Pillow, sentence-transformers, numpy>.
+"""
+import base64
+import io
+import os
+import re
+import shutil
+import zipfile
+from pathlib import Path
+from typing import Optional
+
+from app.abstract.base_trainer import BaseTrainer, TrainingConfig, EvaluationResult, TrainerBundle, OutputFieldSpec
+from app.abstract.data_source import DatasetDataSource   # swap if data lives elsewhere
+
+
+class <ClassName>(BaseTrainer):
+    # ── Identity ──────────────────────────────────────────────────────────────
+    name        = "<snake_case_name>"
+    version     = "1.0.0"
+    description = "<what this trainer matches>"
+    framework   = "<torch | sklearn | custom>"
+    category    = {"key": "<image-similarity | embedding | nlp | custom>", "label": "<Label>"}
+    schedule    = None
+    tags        = {"domain": "<domain>", "task": "similarity"}
+
+    # ── Packages required at runtime ──────────────────────────────────────────
+    requirements = [
+        "<package1>",   # e.g. "torch", "torchvision", "Pillow", "sentence-transformers"
+        "<package2>",
+    ]
+
+    # ── Data source ───────────────────────────────────────────────────────────
+    data_source = DatasetDataSource(
+        slug="<unique-dataset-slug>",
+        auto_create_spec={
+            "name":        "<Dataset Name>",
+            "description": "<What the user uploads, e.g. one reference image per entry>",
+            "fields": [
+                {"label": "<Image | Document | Audio>", "type": "<image | file | text>",
+                 "required": True, "instruction": "<what to upload>"},
+                # optional label field:
+                # {"label": "Label", "type": "text", "required": False},
+            ],
+        },
+    )
+
+    # ── Inference UI schemas ───────────────────────────────────────────────────
+    input_schema = {
+        "<query_field>": {"type": "<file | image | text>", "label": "<Query Label>", "required": True},
+    }
+    output_schema = {
+        "best_score":    {"type": "float", "label": "Best Match Score"},
+        "best_match_id": {"type": "str",   "label": "Best Match ID"},
+        "top_matches":   {"type": "list",  "label": "Top Matches"},
+    }
+
+    # ── How predict() output is rendered in the UI ─────────────────────────────
+    output_display = [
+        OutputFieldSpec("best_score",    "confidence", "Best Match Score", primary=True),
+        OutputFieldSpec("best_match_id", "label",      "Best Match ID"),
+        OutputFieldSpec("top_matches",   "ranked_list","Top Matches",       span=2),
+    ]
+
+    # ── Methods ───────────────────────────────────────────────────────────────
+
+    def preprocess(self, raw):
+        """Fetch and return all reference items from the dataset.
+        raw is a list of entries; each entry is a list of field dicts with keys:
+        field_type, field_label, file_key, file_url, file_mime, text_value, id."""
+        items = []
         for entry in raw:
-            img_fields = [e for e in (entry if isinstance(entry, list) else [entry])
-                          if e.get('field_type') in ('image', 'file') and (e.get('file_key') or e.get('file_url'))]
-            if not img_fields:
+            fields = entry if isinstance(entry, list) else [entry]
+            # pick the field that holds the content for this modality:
+            f = next(
+                (f for f in fields
+                 if f.get('field_type') in ('<image | file | text | audio>')
+                 and (f.get('file_key') or f.get('file_url') or f.get('text_value'))),
+                None,
+            )
+            if not f:
                 continue
-            f = img_fields[0]
-            img_bytes = self._fetch_bytes(f.get('file_key'), f.get('file_url'))
-            if img_bytes:
-                label = f.get('text_value') or f.get('field_label') or 'reference'
-                samples.append({'label': label, 'bytes': img_bytes, 'id': f.get('id', str(len(samples)))})
-        return samples  # list of dicts
+            content = self._fetch_bytes(f.get('file_key'), f.get('file_url'))
+            # for text fields use instead: content = f.get('text_value', '')
+            label = f.get('text_value') or f.get('field_label') or 'reference'
+            items.append({'id': f.get('id', str(len(items))), 'label': label, 'content': content})
+        if not items:
+            raise ValueError("Dataset has no valid entries — upload reference items first.")
+        return items
 
-  CORRECT image similarity train() pattern (copy exactly, all imports inside method):
-    def train(self, preprocessed, config):
-        import numpy as np, io, torch
-        import torchvision.models as tvm, torchvision.transforms as T
-        from PIL import Image
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        backbone = tvm.mobilenet_v2(weights=tvm.MobileNet_V2_Weights.IMAGENET1K_V1)
-        backbone.classifier = torch.nn.Identity()
-        backbone.eval().to(device)
-        transform = T.Compose([T.Resize((224,224)), T.ToTensor(),
-            T.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
-        embeddings, labels, ids = [], [], []
-        with torch.no_grad():
-            for s in preprocessed:
-                img = Image.open(io.BytesIO(s['bytes'])).convert('RGB')
-                emb = backbone(transform(img).unsqueeze(0).to(device)).squeeze().cpu().numpy()
-                embeddings.append(emb); labels.append(s['label']); ids.append(s['id'])
-        return TrainerBundle(model=backbone.cpu(), embeddings=np.array(embeddings),
-                             labels=labels, ids=ids, transform=transform), preprocessed
+    def train(self, preprocessed, config: TrainingConfig):
+        """Build the reference embedding library. All imports inside this method.
+        MUST return (TrainerBundle, test_data) so evaluate() is called."""
+        import numpy as np
+        # import the backbone suited to the modality — all inside this method:
+        # import torch, torchvision.models as tvm, torchvision.transforms as T  (images)
+        # from sentence_transformers import SentenceTransformer                   (text)
+        # import librosa                                                          (audio)
 
-  CORRECT image similarity predict() pattern:
-    def predict(self, model, inputs):
-        import base64, io, numpy as np
-        from PIL import Image
-        import torch
+        # 1. Load / instantiate the encoder (no gradient updates needed):
+        encoder = <load_or_instantiate_backbone>
+        # e.g. backbone = tvm.mobilenet_v2(weights=tvm.MobileNet_V2_Weights.IMAGENET1K_V1)
+        #      backbone.classifier = torch.nn.Identity(); backbone.eval()
 
-        # inputs['image'] is base64-encoded bytes
-        raw = inputs.get('image') or next(iter(inputs.values()), '')
-        img_bytes = base64.b64decode(raw) if isinstance(raw, str) else raw
-        img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+        # 2. Encode every reference item to a fixed-length numpy vector:
+        embeddings = np.stack([<encode(item['content'], encoder)> for item in preprocessed])
+        # e.g. backbone(transform(img).unsqueeze(0)).squeeze().cpu().numpy()
+        # e.g. encoder.encode(item['content'])
 
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        backbone = model.model.eval().to(device)
-        transform = model.transform
-        t = transform(img).unsqueeze(0).to(device)
-        with torch.no_grad():
-            q_emb = backbone(t).squeeze().cpu().numpy()
+        bundle = TrainerBundle(
+            model=encoder,
+            extra={
+                "embeddings": embeddings,                           # shape (N, D) — required
+                "labels":     [i['label'] for i in preprocessed],  # required
+                "ids":        [i['id']    for i in preprocessed],   # required
+                # store any other artifact needed at predict time:
+                # "transform": transform,     # torchvision transform pipeline
+                # "tokenizer": tokenizer,     # text tokenizer
+            },
+        )
+        return bundle, preprocessed   # preprocessed passed as test_data to evaluate()
 
-        # cosine similarity against all reference embeddings
-        ref = model.embeddings          # shape (N, D)
-        ref_n = ref / np.maximum(np.linalg.norm(ref, axis=1, keepdims=True), 1e-8)
+    def predict(self, model: TrainerBundle, inputs: dict) -> dict:
+        """Embed query and return cosine-ranked top matches.
+        model is the TrainerBundle from train(). All imports inside this method."""
+        import numpy as np
+        # import the same library used in train()
+
+        raw_input = inputs.get('<query_field>') or next(iter(inputs.values()), '')
+        # for file/image: import base64; query_content = base64.b64decode(raw_input)
+        # for text:       query_content = raw_input
+
+        q_emb = <encode(query_content, model.model)>   # shape (D,)
+
+        ref   = model.extra['embeddings']              # shape (N, D)
+        ref_n = ref   / np.maximum(np.linalg.norm(ref,   axis=1, keepdims=True), 1e-8)
         q_n   = q_emb / max(float(np.linalg.norm(q_emb)), 1e-8)
         scores = (ref_n @ q_n).tolist()
 
-        # Build ranked list — avoid multi-line lambda inside sorted()
-        hits = [{'id': model.ids[i], 'score': round(float(scores[i]), 4),
-                 'label': model.labels[i]} for i in range(len(scores))]
+        hits = [
+            {'id': model.extra['ids'][i], 'score': round(float(scores[i]), 4),
+             'label': model.extra['labels'][i]}
+            for i in range(len(scores))
+        ]
         hits.sort(key=lambda x: x['score'], reverse=True)
-        top = hits[:5]
+        top  = hits[:5]
         best = top[0] if top else {}
         return {
-            'best_score': best.get('score', 0.0),
+            'best_score':    best.get('score', 0.0),
             'best_match_id': best.get('id', ''),
-            'top_matches': top,
+            'top_matches':   top,
         }
 
-  input_schema for image similarity:
-    {"image": {"type": "file", "label": "Query Image"}}
+    def evaluate(self, model: TrainerBundle, test_data) -> EvaluationResult:
+        """Evaluate the reference library quality."""
+        return EvaluationResult(
+            extra_metrics={
+                "reference_count": len(model.extra["embeddings"]),
+                "embedding_dim":   int(model.extra["embeddings"].shape[1]),
+            }
+        )
 
-DATA LOADING — field labels are ALWAYS exactly: "Original Upload", "Clean Copy", "Cleaning Code"
-  NEVER invent field labels from user data descriptions. raw is a LIST of dicts, not a dict.
-  CORRECT preprocess() pattern (copy exactly):
-    import io
-    entry = ([e for e in raw if e.get('field_label')=='Clean Copy' and (e.get('file_key') or e.get('file_url'))]
-             or [e for e in raw if e.get('field_label')=='Original Upload' and (e.get('file_key') or e.get('file_url'))]
-             or [e for e in raw if e.get('field_type')=='file' and (e.get('file_key') or e.get('file_url'))])
-    if not entry: raise ValueError("No file in dataset — upload a CSV.")
-    e = entry[-1]; content = self._fetch_bytes(e.get('file_key'), e.get('file_url'))
-    fname = (e.get('file_key') or '').split('/')[-1].lower()
-    if fname.endswith(('.xlsx','.xls')): df = pd.read_excel(io.BytesIO(content))
-    else:
-        try: df = pd.read_csv(io.BytesIO(content))
-        except: df = pd.read_csv(io.BytesIO(content), on_bad_lines='skip', engine='python')
-  Use self._fetch_bytes(file_key, file_url) — built-in, reads S3 or presigned URL.
-  If UPLOADED DATASET slug is in CONTEXT, use that slug exactly.
+SCALERS: StandardScaler (default), MinMaxScaler (0–1), RobustScaler (outliers)
+  Tree-based models (RF, GBM, XGBoost) do NOT need a scaler — omit it.
 
-PREDICT() — predict(self, model, inputs) runs on a FRESH instance; self state from train() is GONE.
-  NEVER store scalers/encoders on self — they vanish between train() and predict().
-  OPTION A (supervised): use sklearn Pipeline so scaler is saved inside the artifact.
-    train() → pipeline = Pipeline([('scaler', StandardScaler()), ('clf', RF())]) → return pipeline, test
-    predict() → row = pd.DataFrame([[inputs['f1'],...]], columns=[...]); return {"label": str(model.predict(row)[0])}
-  OPTION B (unsupervised/multi-artifact): use TrainerBundle to persist scaler+model together.
-    train() → return TrainerBundle(model=kmeans, scaler=scaler, feature_names=[...], label_map={...}), X_scaled
-    predict() → row = pd.DataFrame([[inputs[f] for f in model.feature_names]], columns=model.feature_names)
-               X_s = model.scaler.transform(row); return {"segment": int(model.model.predict(X_s)[0])}
-  FILE inputs: base64-encoded. decode with: import base64; raw_bytes = base64.b64decode(inputs['field'])
-
-  SCALERS: StandardScaler (default), MinMaxScaler (0–1 needed), RobustScaler (outliers);
-           tree-based models (RF, GBM, XGB) never need a scaler.
-
-EVALUATE() — REQUIRED (non-negotiable):
-  train() MUST return (model, test_data) 2-tuple so evaluate() is called.
-  evaluate() MUST return EvaluationResult with at least one metric:
-    classification: EvaluationResult(metrics={"accuracy": float(accuracy_score(y_true, model.predict(X_test)))})
-    regression:     EvaluationResult(metrics={"rmse": float(mean_squared_error(y_test, y_pred, squared=False))})
-    clustering:     EvaluationResult(metrics={"silhouette": float(silhouette_score(X, labels))})
-    image/embedding:EvaluationResult(metrics={"reference_count": len(model.embeddings)})
-    nlp:            EvaluationResult(metrics={"f1": float(f1_score(y_true, y_pred, average='weighted'))})
-  Always import metrics inside evaluate() body, not at module level.
-
-TEMPLATE CONTRACT: see BaseTrainer rules above (name=snake_case, imports inside methods, etc.)
-""" + _TRAINER_SYSTEM_PROMPT_BRIEF
+FILE inputs in predict(): always base64-encoded → decode with base64.b64decode(inputs["field"])
+S3 writes: /tmp/ only — never write outside /tmp in trainer code.
+''' + _TRAINER_SYSTEM_PROMPT_BRIEF
 
 
 class AiChatMessage(BaseModel):
@@ -1095,12 +1383,16 @@ async def ai_chat_trainer(
             f"    'Cleaning Code'   — Python preprocessing script stored as .py file\n\n"
             f"  NOTE: use self._fetch_bytes(file_key, file_url) — built-in BaseTrainer method.\n\n"
             f"  CORRECT preprocess() pattern:\n"
+            f"    # raw is a list of entries; each entry is a list of field dicts\n"
             f"    import io\n"
-            f"    clean = [e for e in raw if e.get('field_label') == 'Clean Copy' and (e.get('file_key') or e.get('file_url'))]\n"
-            f"    orig  = [e for e in raw if e.get('field_label') == 'Original Upload' and (e.get('file_key') or e.get('file_url'))]\n"
-            f"    entry = clean or orig\n"
-            f"    if not entry: raise ValueError('No data in dataset — upload a CSV via the Datasets page.')\n"
-            f"    e = entry[-1]\n"
+            f"    all_fields = [f for entry in raw for f in (entry if isinstance(entry, list) else [entry])]\n"
+            f"    file_field = (\n"
+            f"        next((f for f in all_fields if f.get('field_label') == 'Clean Copy' and (f.get('file_key') or f.get('file_url'))), None)\n"
+            f"        or next((f for f in all_fields if f.get('field_label') == 'Original Upload' and (f.get('file_key') or f.get('file_url'))), None)\n"
+            f"        or next((f for f in all_fields if f.get('field_type') == 'file' and (f.get('file_key') or f.get('file_url'))), None)\n"
+            f"    )\n"
+            f"    if not file_field: raise ValueError('No data in dataset — upload a CSV via the Datasets page.')\n"
+            f"    e = file_field\n"
             f"    content = self._fetch_bytes(e.get('file_key'), e.get('file_url'))\n"
             f"    if content is None: raise ValueError('Could not fetch file from storage.')\n"
             f"    fname = (e.get('file_key') or '').split('/')[-1].lower()\n"
@@ -1150,7 +1442,7 @@ async def ai_chat_trainer(
         }
         if _num_ctx > 0:
             _req_body["options"] = {"num_ctx": _num_ctx}
-        print(f"[ai_chat] {provider}/{model_name} max_tokens={max_tokens} num_ctx={_num_ctx or 'default'} sys~{len(system_prompt)//4}tok", flush=True)
+        print(f"[ai_chat] {provider}/{model_name} max_tokens={max_tokens} num_ctx={_num_ctx or 'default'} sys~{len(sys_prompt)//4}tok", flush=True)
         async with httpx.AsyncClient(timeout=180) as http:
             resp = await http.post(
                 f"{base_url.rstrip('/')}/chat/completions",
@@ -1481,7 +1773,7 @@ async def ai_chat_trainer(
             "provider": provider,
             "max_tokens": max_tokens,
             "num_ctx": _num_ctx or None,
-            "system_prompt_tokens_est": len(system_prompt) // 4,
+            "system_prompt_tokens_est": len(sys_prompt) // 4,
             "extraction_pass": extraction_pass,
             "continuation_count": continuation_count,
             "repair_ran": repair_ran,

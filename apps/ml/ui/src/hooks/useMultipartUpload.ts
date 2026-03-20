@@ -22,11 +22,16 @@ export function useMultipartUpload(opts: MultipartUploadOptions = {}) {
       lat?: number
       lng?: number
       accuracy?: number
+      consent_record_id?: string
     } = {}
   ): Promise<DatasetEntry> => {
     setIsUploading(true)
     setProgress(0)
     abortRef.current = false
+
+    // Compute SHA-256 before upload so backend can reject duplicates
+    const hashBuf = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
+    const file_hash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('')
 
     const { upload_id, key } = await collectApi.initiateMultipart(
       token, fieldId, file.name, file.type || 'application/octet-stream'
@@ -69,6 +74,7 @@ export function useMultipartUpload(opts: MultipartUploadOptions = {}) {
         upload_id,
         parts,
         file_mime: file.type || 'application/octet-stream',
+        file_hash,
         ...extra,
       })
 

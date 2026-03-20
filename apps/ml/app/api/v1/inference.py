@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import json
+from pathlib import Path
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query
@@ -109,7 +110,18 @@ async def run_inference(trainer_name: str, body: PredictRequest, user=Depends(ge
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Inference failed: {exc}")
+        import traceback
+        tb = traceback.extract_tb(exc.__traceback__)
+        # find the innermost frame inside user trainer code (skip framework frames)
+        trainer_frame = next(
+            (f for f in reversed(tb) if "ml_plugin_" in (f.filename or "") or "trainers/" in (f.filename or "")),
+            tb[-1] if tb else None,
+        )
+        location = (
+            f"{Path(trainer_frame.filename).name}:{trainer_frame.lineno} in {trainer_frame.name}"
+            if trainer_frame else "unknown location"
+        )
+        raise HTTPException(status_code=500, detail=f"Inference failed at {location}: {exc}")
 
 
 @router.post("/{trainer_name}/upload")
@@ -153,7 +165,18 @@ async def run_inference_upload(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Inference failed: {exc}")
+        import traceback
+        tb = traceback.extract_tb(exc.__traceback__)
+        # find the innermost frame inside user trainer code (skip framework frames)
+        trainer_frame = next(
+            (f for f in reversed(tb) if "ml_plugin_" in (f.filename or "") or "trainers/" in (f.filename or "")),
+            tb[-1] if tb else None,
+        )
+        location = (
+            f"{Path(trainer_frame.filename).name}:{trainer_frame.lineno} in {trainer_frame.name}"
+            if trainer_frame else "unknown location"
+        )
+        raise HTTPException(status_code=500, detail=f"Inference failed at {location}: {exc}")
 
 
 @router.get("/{trainer_name}/schema", dependencies=[_any_role])

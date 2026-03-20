@@ -116,6 +116,7 @@ export const collectApi = {
     textValue?: string,
     description?: string,
     location?: { lat: number; lng: number; accuracy?: number } | null,
+    consentRecordId?: string | null,
   ) => {
     const fd = new FormData()
     fd.append('field_id', fieldId)
@@ -127,6 +128,7 @@ export const collectApi = {
       fd.append('lng', String(location.lng))
       if (location.accuracy != null) fd.append('accuracy', String(location.accuracy))
     }
+    if (consentRecordId) fd.append('consent_record_id', consentRecordId)
     return publicClient.post<DatasetEntry>(`/collect/${token}/submit`, fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }).then(r => r.data)
@@ -159,6 +161,8 @@ export const collectApi = {
       parts: { part_number: number; etag: string }[];
       file_mime: string; description?: string;
       lat?: number; lng?: number; accuracy?: number;
+      file_hash?: string;
+      consent_record_id?: string | null;
     }
   ) =>
     publicClient.post<DatasetEntry>(`/collect/${token}/multipart/complete`, payload).then(r => r.data),

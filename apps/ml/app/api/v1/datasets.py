@@ -47,6 +47,9 @@ class DatasetCreateRequest(BaseModel):
     points_redemption_info: str = ""
     require_location: bool = False
     location_purpose: str = ""
+    require_consent: bool = False
+    consent_template_id: Optional[str] = None
+    consent_type: str = "individual"
 
 
 class DatasetUpdateRequest(BaseModel):
@@ -64,6 +67,9 @@ class DatasetUpdateRequest(BaseModel):
     points_redemption_info: Optional[str] = None
     require_location: Optional[bool] = None
     location_purpose: Optional[str] = None
+    require_consent: Optional[bool] = None
+    consent_template_id: Optional[str] = None
+    consent_type: Optional[str] = None
 
 
 class VisibilityRequest(BaseModel):
@@ -295,8 +301,12 @@ async def find_similar_entries(
 
 
 class ExportToAnnotationRequest(BaseModel):
-    project_id: str
-    entry_ids: Optional[List[str]] = None   # None = export all non-archived entries
+    project_id: Optional[str] = None       # existing project; if None, a new one is created
+    entry_ids: Optional[List[str]] = None  # None = export all non-archived entries
+    # Fields used only when project_id is None (create-and-export)
+    project_name: str = ""
+    classes: List[str] = ["object"]
+    annotation_type: str = "box"
 
 
 @router.post("/{dataset_id}/export-to-annotation", status_code=201)
@@ -307,9 +317,11 @@ async def export_to_annotation(
     Export dataset entries (images) to an annotation project.
     Reuses the same S3 object — no file duplication.
     Skips entries whose file_key already exists in the target project.
+    Pass project_id to export into an existing project, or omit it to create a new one.
     """
     return await svc.export_to_annotation_project(
-        user.org_id, dataset_id, body.project_id, body.entry_ids
+        user.org_id, dataset_id, body.entry_ids, body.project_id,
+        body.project_name, body.classes, body.annotation_type,
     )
 
 
@@ -357,9 +369,8 @@ async def delete_entry(dataset_id: str, entry_id: str, user: MLUser = RequireEng
 @router.get("/{dataset_id}/entries/{entry_id}/file")
 async def proxy_entry_file(dataset_id: str, entry_id: str, user: MLUser = RequireEngineer):
     """
-    Proxy an entry's S3 file through the backend.
-    Used when MEDIA_BASE_URL / S3_PUBLIC_ENDPOINT_URL are not configured
-    (e.g. dev with internal minio:9000).  Accepts auth via Bearer header
-    or ?token= query param so <img src="…"> / <a href="…"> links work.
+    Proxy an entry's S3 file through the backend, applying watermark on-the-fly
+    for image entries if the org has watermarking active.
+    Original S3 file is never modified.
     """
-    return await svc.proxy_entry_file(user.org_id, dataset_id, entry_id)
+    return await svc.proxy_entry_file(user.org_id, dataset_id, entry_id, viewer_user_id=user.email)

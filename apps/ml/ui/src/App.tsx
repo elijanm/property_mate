@@ -32,7 +32,9 @@ import DatasetPage from './pages/DatasetPage'
 import AnnotatePage from './pages/AnnotatePage'
 import CodeEditorPage from './pages/CodeEditorPage'
 import CollectPage from './pages/CollectPage'
+import ConsentSignPage from './pages/ConsentSignPage'
 import StaffPage from './pages/StaffPage'
+import WatermarkSettingsPage from './pages/WatermarkSettingsPage'
 import AnnotatorPortalPage from './pages/AnnotatorPortalPage'
 import ClaimAccountPage from './pages/ClaimAccountPage'
 import { walletApi } from './api/wallet'
@@ -57,7 +59,7 @@ import {
   Upload, Play, Settings, List, Activity, Shield,
   FlaskConical, Bell, Key, Layers, ClipboardList, GitCompare,
   LogOut, User, Loader2, Users, Wallet, BarChart2, Database, Code2,
-  ChevronRight, ChevronDown, DollarSign, Pencil, UserCheck,
+  ChevronRight, ChevronDown, DollarSign, Pencil, UserCheck, Image as ImageIcon,
 } from 'lucide-react'
 import Logo from './components/Logo'
 import clsx from 'clsx'
@@ -72,7 +74,7 @@ if (_INVITE_TOKEN_FROM_URL) {
   sessionStorage.setItem('pending_invite_token', _INVITE_TOKEN_FROM_URL)
 }
 
-type Page = 'models' | 'trainers' | 'editor' | 'annotate' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing' | 'usage' | 'staff' | 'profile' | 'accounts'
+type Page = 'models' | 'trainers' | 'editor' | 'annotate' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing' | 'usage' | 'staff' | 'profile' | 'accounts' | 'watermark'
 
 type NavGroup = {
   id: string
@@ -146,7 +148,8 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'billing',  label: 'Billing',   icon: <DollarSign size={14} /> },
       { id: 'usage',    label: 'Usage',     icon: <BarChart2 size={14} /> },
       { id: 'api-keys', label: 'API Keys',  icon: <Key size={14} /> },
-      { id: 'config',   label: 'Config',    icon: <Settings size={14} /> },
+      { id: 'config',    label: 'Config',    icon: <Settings size={14} /> },
+      { id: 'watermark', label: 'Watermark', icon: <ImageIcon size={14} />, roles: ['admin'] },
     ],
   },
 ]
@@ -181,6 +184,7 @@ const PAGE_TITLE: Record<Page, string> = {
   staff:       'Staff Management',
   profile:     'My Profile',
   accounts:    'All Accounts',
+  watermark:   'Watermark Settings',
 }
 
 export default function App() {
@@ -310,6 +314,13 @@ export default function App() {
     return m ? m[1] : null
   })()
   if (collectToken) return <CollectPage token={collectToken} />
+
+  // Consent sign page — /consent-sign/<email_token>
+  const consentSignToken = (() => {
+    const m = window.location.pathname.match(/\/consent-sign\/([^/]+)/)
+    return m ? m[1] : null
+  })()
+  if (consentSignToken) return <ConsentSignPage emailToken={consentSignToken} />
 
   // Claim account page — /claim/<collector_token>
   const claimToken = (() => {
@@ -771,6 +782,7 @@ export default function App() {
               {page === 'billing' && (effectiveRole === 'admin' ? <BillingSettingsPage /> : <UserBillingPage />)}
               {page === 'usage' && <UsageTrackerPage />}
               {page === 'staff' && <StaffPage />}
+              {page === 'watermark' && <WatermarkSettingsPage />}
               {page === 'profile' && <ProfilePage />}
               {page === 'accounts' && <AccountsPage />}
             </div>

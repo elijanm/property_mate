@@ -394,17 +394,70 @@ async def get_entries(
         except ValueError:
             pass
 
-    q = DatasetEntry.find(*filters).sort(-DatasetEntry.captured_at)
-    total = await q.count()
-    entries = await q.skip((page - 1) * page_size).limit(page_size).to_list()
+    # Duplicate filter requires aggregation — detect by phash, file_hash, or file_key
+    if quality == "duplicate":
+        from motor.motor_asyncio import AsyncIOMotorCollection
+        col: AsyncIOMotorCollection = DatasetEntry.get_motor_collection()
+        base_match: dict = {"dataset_id": resolve_id, "archived": {"$ne": True}}
 
-    # Apply in-memory quality filter (not indexed — acceptable for moderate dataset sizes)
-    if quality == "good":
-        entries = [e for e in entries if (e.quality_score or 0) >= 70 and not e.quality_issues]
-    elif quality == "poor":
-        entries = [e for e in entries if (e.quality_score or 100) < 70 or bool(e.quality_issues)]
-    elif quality in ("blurry", "dark", "overexposed", "low_res"):
-        entries = [e for e in entries if quality in (e.quality_issues or [])]
+        dup_values: list = []
+
+        # 1. phash duplicates (exact perceptual matches — most entries have this)
+        phash_pipeline = [
+            {"$match": {**base_match, "phash": {"$ne": None}}},
+            {"$group": {"_id": "$phash", "count": {"$sum": 1}}},
+            {"$match": {"count": {"$gt": 1}}},
+        ]
+        dup_phashes = [doc["_id"] async for doc in col.aggregate(phash_pipeline)]
+        if dup_phashes:
+            dup_values_filter = {"$or": [{"phash": {"$in": dup_phashes}}]}
+        else:
+            dup_values_filter = None
+
+        # 2. file_hash duplicates (same content, different upload — SHA-256)
+        fhash_pipeline = [
+            {"$match": {**base_match, "file_hash": {"$ne": None}}},
+            {"$group": {"_id": "$file_hash", "count": {"$sum": 1}}},
+            {"$match": {"count": {"$gt": 1}}},
+        ]
+        dup_fhashes = [doc["_id"] async for doc in col.aggregate(fhash_pipeline)]
+
+        # 3. file_key duplicates (same S3 object referenced multiple times)
+        fkey_pipeline = [
+            {"$match": {**base_match, "file_key": {"$ne": None}}},
+            {"$group": {"_id": "$file_key", "count": {"$sum": 1}}},
+            {"$match": {"count": {"$gt": 1}}},
+        ]
+        dup_fkeys = [doc["_id"] async for doc in col.aggregate(fkey_pipeline)]
+
+        # Build combined $or filter
+        or_clauses = []
+        if dup_phashes:
+            or_clauses.append({"phash": {"$in": dup_phashes}})
+        if dup_fhashes:
+            or_clauses.append({"file_hash": {"$in": dup_fhashes}})
+        if dup_fkeys:
+            or_clauses.append({"file_key": {"$in": dup_fkeys}})
+
+        if not or_clauses:
+            return {"items": [], "total": 0, "page": page, "page_size": page_size, "total_pages": 0, "archived_count": 0}
+
+        filters.append({"$or": or_clauses})
+        q = DatasetEntry.find(*filters).sort(-DatasetEntry.captured_at)
+        total = await q.count()
+        entries = await q.skip((page - 1) * page_size).limit(page_size).to_list()
+    else:
+        q = DatasetEntry.find(*filters).sort(-DatasetEntry.captured_at)
+        total = await q.count()
+        entries = await q.skip((page - 1) * page_size).limit(page_size).to_list()
+
+        # Apply in-memory quality filter (not indexed — acceptable for moderate dataset sizes)
+        if quality == "good":
+            entries = [e for e in entries if (e.quality_score or 0) >= 70 and not e.quality_issues]
+        elif quality == "poor":
+            entries = [e for e in entries if (e.quality_score or 100) < 70 or bool(e.quality_issues)]
+        elif quality in ("blurry", "dark", "overexposed", "low_res"):
+            entries = [e for e in entries if quality in (e.quality_issues or [])]
 
     # Archived count (always include)
     archived_count = await DatasetEntry.find(DatasetEntry.dataset_id == resolve_id, DatasetEntry.archived == True).count()
@@ -539,16 +592,25 @@ async def export_to_annotation_project(
         )
         await ann_project.insert()
 
-    # Existing s3_keys in project to avoid duplicates
+    # Deduplicate by s3_key (same upload) AND file_hash (same content, different upload)
     existing_keys = {img.s3_key for img in ann_project.images}
+    existing_hashes = {img.file_hash for img in ann_project.images if img.file_hash}
 
     added = 0
+    skipped_dup = 0
     for e in image_entries:
+        # Skip if same S3 object already in project
         if e.file_key in existing_keys:
+            skipped_dup += 1
+            continue
+        # Skip if same content (duplicate upload) already in project
+        if e.file_hash and e.file_hash in existing_hashes:
+            skipped_dup += 1
             continue
         ann_img = AnnotationImage(
             filename=e.file_key.split("/")[-1],
             s3_key=e.file_key,
+            file_hash=e.file_hash,
             blur_score=e.blur_score,
             brightness=e.brightness,
             quality_score=e.quality_score,
@@ -557,6 +619,8 @@ async def export_to_annotation_project(
         )
         ann_project.images.append(ann_img)
         existing_keys.add(e.file_key)
+        if e.file_hash:
+            existing_hashes.add(e.file_hash)
         added += 1
 
     from app.utils.datetime import utc_now as _now
@@ -567,7 +631,7 @@ async def export_to_annotation_project(
         "project_id": str(ann_project.id),
         "project_name": ann_project.name,
         "added": added,
-        "skipped": len(image_entries) - added,
+        "skipped": skipped_dup,
         "total_images": len(ann_project.images),
     }
 
@@ -634,6 +698,7 @@ async def submit_entry(
     lng: Optional[float] = None,
     accuracy: Optional[float] = None,
     client_ip: Optional[str] = None,
+    consent_record_id: Optional[str] = None,
 ) -> dict:
     collector = await get_collector_by_token(token)
     profile = await DatasetProfile.find_one(DatasetProfile.id == _oid(collector.dataset_id))
@@ -649,10 +714,22 @@ async def submit_entry(
 
     file_key = None
     file_mime = None
+    file_hash = None
     content = None
     if file and file.filename:
         content = await file.read()
         mime = file.content_type or "application/octet-stream"
+
+        # ── Duplicate detection ───────────────────────────────────────────────
+        import hashlib
+        file_hash = hashlib.sha256(content).hexdigest()
+        existing = await DatasetEntry.find_one(
+            DatasetEntry.dataset_id == str(profile.id),
+            DatasetEntry.field_id == field_id,
+            DatasetEntry.file_hash == file_hash,
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="Duplicate file — this file has already been submitted.")
 
         # ── Model validation ──────────────────────────────────────────────────
         validation_prediction: Optional[str] = None
@@ -689,13 +766,23 @@ async def submit_entry(
         field_id=field_id,
         file_key=file_key,
         file_mime=file_mime,
+        file_hash=file_hash,
         text_value=text_value,
         description=description,
         points_awarded=profile.points_per_entry if profile.points_enabled else 0,
         location=location,
         validation_prediction=validation_prediction,
+        consent_record_id=consent_record_id or None,
     )
     await entry.insert()
+
+    # Link entry to consent record if provided
+    if consent_record_id:
+        try:
+            from app.services.consent_service import link_entry_to_consent
+            await link_entry_to_consent(consent_record_id, str(entry.id))
+        except Exception as _exc:
+            logger.warning("consent_link_failed", error=str(_exc), entry_id=str(entry.id))
 
     # Update collector stats
     collector.entry_count += 1
@@ -715,6 +802,7 @@ async def submit_entry(
         collector_id=str(collector.id),
         dataset_id=str(profile.id),
         points_awarded=entry.points_awarded,
+        consent_record_id=consent_record_id,
     )
     return _entry_to_dict(entry)
 
@@ -956,8 +1044,13 @@ def _entry_to_dict(entry: DatasetEntry) -> dict:
     d = entry.model_dump()
     d["id"] = str(entry.id)
     if entry.file_key:
-        url = generate_presigned_url(entry.file_key)
-        d["file_url"] = url if url else f"/api/v1/datasets/{entry.dataset_id}/entries/{str(entry.id)}/file"
+        # Always use the proxy endpoint for display — watermark is composited on-the-fly
+        # there.  The original S3 file is never modified.
+        # A direct presigned URL is stored separately as download_url for explicit downloads.
+        proxy_url = f"/api/v1/datasets/{entry.dataset_id}/entries/{str(entry.id)}/file"
+        d["file_url"] = proxy_url
+        presigned = generate_presigned_url(entry.file_key)
+        d["download_url"] = presigned or proxy_url
     return d
 
 
@@ -1105,6 +1198,8 @@ async def complete_multipart_upload(
     lng: Optional[float] = None,
     accuracy: Optional[float] = None,
     client_ip: Optional[str] = None,
+    file_hash: Optional[str] = None,
+    consent_record_id: Optional[str] = None,
 ) -> dict:
     """Finalize the multipart upload and create a DatasetEntry."""
     import boto3
@@ -1112,6 +1207,16 @@ async def complete_multipart_upload(
     profile = await DatasetProfile.find_one(DatasetProfile.id == _oid(collector.dataset_id))
     if not profile or profile.status == "closed":
         raise HTTPException(status_code=410, detail="Dataset is closed")
+
+    # ── Duplicate detection (hash provided by client before upload) ───────────
+    if file_hash:
+        existing = await DatasetEntry.find_one(
+            DatasetEntry.dataset_id == str(profile.id),
+            DatasetEntry.field_id == field_id,
+            DatasetEntry.file_hash == file_hash,
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="Duplicate file — this file has already been submitted.")
 
     s3 = boto3.client(
         "s3",
@@ -1146,11 +1251,21 @@ async def complete_multipart_upload(
         field_id=field_id,
         file_key=key,
         file_mime=file_mime,
+        file_hash=file_hash,
         description=description,
         points_awarded=profile.points_per_entry if profile.points_enabled else 0,
         location=location,
+        consent_record_id=consent_record_id or None,
     )
     await entry.insert()
+
+    # Link entry to consent record if provided
+    if consent_record_id:
+        try:
+            from app.services.consent_service import link_entry_to_consent
+            await link_entry_to_consent(consent_record_id, str(entry.id))
+        except Exception as _exc:
+            logger.warning("consent_link_failed", error=str(_exc), entry_id=str(entry.id))
 
     # Update collector stats
     collector.entry_count += 1
@@ -1165,6 +1280,7 @@ async def complete_multipart_upload(
         field_id=field_id,
         key=key,
         collector_id=str(collector.id),
+        consent_record_id=consent_record_id,
     )
     return _entry_to_dict(entry)
 
@@ -1330,42 +1446,75 @@ async def delete_entry(org_id: str, dataset_id: str, entry_id: str) -> None:
     await entry.delete()
 
 
-async def proxy_entry_file(org_id: str, dataset_id: str, entry_id: str):
-    """Stream the S3 file for a dataset entry through the backend (bypasses internal URLs)."""
-    from fastapi.responses import StreamingResponse as _SR
+async def proxy_entry_file(org_id: str, dataset_id: str, entry_id: str, viewer_user_id: Optional[str] = None):
+    """Stream the S3 file for a dataset entry through the backend.
+
+    For image entries with an active org watermark config, the watermark is
+    composited on-the-fly and the watermarked JPEG is returned.  The original
+    S3 file is NEVER modified — this is display-only watermarking.
+    """
+    from fastapi.responses import StreamingResponse as _SR, Response as _R
     await get_dataset(org_id, dataset_id)  # permission check
     entry = await DatasetEntry.find_one(DatasetEntry.id == _oid(entry_id), DatasetEntry.dataset_id == dataset_id)
     if not entry or not entry.file_key:
         raise HTTPException(status_code=404, detail="Entry file not found")
 
-    import aioboto3
-    session = aioboto3.Session()
-    async with session.client(
-        "s3",
-        endpoint_url=settings.S3_ENDPOINT_URL,
-        aws_access_key_id=settings.S3_ACCESS_KEY,
-        aws_secret_access_key=settings.S3_SECRET_KEY,
-        region_name=settings.S3_REGION,
-    ) as s3:
-        resp = await s3.get_object(Bucket=settings.S3_BUCKET, Key=entry.file_key)
-        body = resp["Body"]
-        mime = entry.file_mime or "application/octet-stream"
-        filename = entry.file_key.split("/")[-1]
+    mime = entry.file_mime or "application/octet-stream"
+    filename = entry.file_key.split("/")[-1]
 
-        async def _iter():
-            async with body as stream:
-                # aioboto3 StreamingBody wraps aiohttp.ClientResponse which
-                # exposes iter_any() not iter_chunks().  Try iter_chunks first
-                # for forward-compatibility, fall back to iter_any.
-                if hasattr(stream, "iter_chunks"):
-                    async for chunk in stream.iter_chunks(65536):
-                        yield chunk
-                else:
-                    async for chunk in stream.iter_any(65536):
-                        yield chunk
+    # Apply watermark on-the-fly for image entries.
+    # Original S3 file is NEVER modified.  Watermarked bytes are cached in Redis
+    # for 1 hour so repeated requests don't re-download + re-composite.
+    if mime.startswith("image/"):
+        try:
+            import hashlib
+            import redis.asyncio as aioredis
+            from app.services.watermark_service import maybe_watermark
 
-        return _SR(
-            _iter(),
-            media_type=mime,
-            headers={"Content-Disposition": f'inline; filename="{filename}"'},
-        )
+            # Cache key: entry id + md5 of (entry.file_key) so it resets when file changes
+            cfg_hash = hashlib.md5(entry.file_key.encode()).hexdigest()[:12]
+            cache_key = f"wm:{str(entry.id)}:{cfg_hash}"
+
+            # Try Redis cache first
+            try:
+                r = aioredis.from_url(settings.REDIS_URL)
+                cached = await r.get(cache_key)
+                await r.aclose()
+                if cached:
+                    return _R(
+                        content=cached,
+                        media_type="image/jpeg",
+                        headers={"Content-Disposition": f'inline; filename="{filename.rsplit(".", 1)[0]}.jpg"'},
+                    )
+            except Exception:
+                pass  # Redis unavailable — proceed without cache
+
+            raw: bytes = await _download_from_s3(entry.file_key)
+            watermarked = await maybe_watermark(org_id, viewer_user_id, raw, mime)
+
+            # Cache the result (whether custom image or text fallback)
+            try:
+                r2 = aioredis.from_url(settings.REDIS_URL)
+                await r2.set(cache_key, watermarked, ex=3600)
+                await r2.aclose()
+            except Exception:
+                pass
+
+            return _R(
+                content=watermarked,
+                media_type="image/jpeg",
+                headers={
+                    "Content-Disposition": f'inline; filename="{filename.rsplit(".", 1)[0]}.jpg"',
+                    "Cache-Control": "no-store",
+                },
+            )
+        except Exception as _wm_exc:
+            logger.warning("watermark_proxy_skipped", error=str(_wm_exc))
+
+    # No watermark — stream original
+    raw: bytes = await _download_from_s3(entry.file_key)
+    return _R(
+        content=raw,
+        media_type=mime,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )

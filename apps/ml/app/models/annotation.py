@@ -38,6 +38,7 @@ class AnnotationImage(BaseModel):
     quality_score: Optional[int] = None     # 0-100 overall quality score
     quality_issues: List[str] = []          # ['blurry', 'dark', 'overexposed', 'low_res']
     phash: Optional[str] = None             # 64-bit perceptual dHash as 16-char hex string
+    file_hash: Optional[str] = None         # SHA-256 of original file bytes (duplicate guard)
     # Lifecycle
     archived: bool = False                  # hidden from annotation view; not deleted
     added_at: datetime = Field(default_factory=utc_now)

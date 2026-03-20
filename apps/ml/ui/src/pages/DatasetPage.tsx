@@ -327,6 +327,12 @@ function DatasetSlideOver({
   const [pointsInfo] = useState(initial?.points_redemption_info ?? '')
   const [requireLocation, setRequireLocation] = useState(initial?.require_location ?? false)
   const [locationPurpose, setLocationPurpose] = useState(initial?.location_purpose ?? '')
+  const [requireConsent, setRequireConsent] = useState(initial?.require_consent ?? false)
+  const [consentType, setConsentType] = useState<'individual' | 'group'>(
+    (initial?.consent_type as 'individual' | 'group') ?? 'individual'
+  )
+  const [consentTemplateId, setConsentTemplateId] = useState(initial?.consent_template_id ?? '')
+  const [consentTemplates, setConsentTemplates] = useState<import('@/types/consent').ConsentTemplate[]>([])
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
   const [deployments, setDeployments] = useState<ModelDeployment[]>([])
@@ -337,6 +343,7 @@ function DatasetSlideOver({
     modelsApi.list({ include_all: true }).then(setDeployments).catch(() => {})
     annotatorApi.getRewardRate().then(r => setPlatformRate(r as any)).catch(() => {})
     walletApi.get().then(w => setWalletBalance(w.balance)).catch(() => {})
+    import('@/api/consent').then(m => m.consentApi.listTemplates().then(setConsentTemplates).catch(() => {}))
   }, [])
 
   const save = async () => {
@@ -353,6 +360,9 @@ function DatasetSlideOver({
         points_redemption_info: pointsInfo,
         require_location: requireLocation,
         location_purpose: locationPurpose,
+        require_consent: requireConsent,
+        consent_type: consentType,
+        ...(consentTemplateId.trim() ? { consent_template_id: consentTemplateId.trim() } : {}),
       }
       const result = initial
         ? await datasetsApi.update(initial.id, payload)
@@ -611,6 +621,44 @@ function DatasetSlideOver({
                   placeholder="e.g. We verify data is collected in the field, not remotely"
                   value={locationPurpose} onChange={e => setLocationPurpose(e.target.value)} />
               </div>
+            )}
+          </div>
+
+          {/* Consent */}
+          <div className="border border-gray-700/50 rounded-2xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold text-white">Require Photo Consent</p>
+                <p className="text-xs text-gray-400 mt-0.5">Collect signed consent from photo subjects before capturing images</p>
+              </div>
+              <button onClick={() => setRequireConsent(v => !v)} className="text-gray-400 hover:text-white transition-colors">
+                {requireConsent ? <ToggleRight size={28} className="text-indigo-400" /> : <ToggleLeft size={28} />}
+              </button>
+            </div>
+            {requireConsent && (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  {(['individual', 'group'] as const).map(t => (
+                    <button key={t} type="button" onClick={() => setConsentType(t)}
+                      className={clsx('py-2 px-3 rounded-xl border text-sm capitalize transition-colors',
+                        consentType === t ? 'bg-indigo-600/30 border-indigo-500/60 text-indigo-300' : 'bg-gray-800/50 border-gray-700/50 text-gray-400')}>
+                      {t}
+                    </button>
+                  ))}
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1.5 block">
+                    Consent Template <span className="text-gray-600 normal-case font-normal">(optional — uses default if blank)</span>
+                  </label>
+                  <select value={consentTemplateId} onChange={e => setConsentTemplateId(e.target.value)}
+                    className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500">
+                    <option value="">Use default template</option>
+                    {consentTemplates.map(t => (
+                      <option key={t.id} value={t.id}>{t.name} ({t.type}){t.is_global ? ' — Global' : ''}</option>
+                    ))}
+                  </select>
+                </div>
+              </>
             )}
           </div>
 
@@ -1542,6 +1590,7 @@ function DatasetWorkspace({ dataset, onClose }: { dataset: DatasetProfile; onClo
     { value: 'dark', label: 'Dark' },
     { value: 'overexposed', label: 'Overexposed' },
     { value: 'low_res', label: 'Low res' },
+    { value: 'duplicate', label: 'Duplicates' },
   ]
 
   return (
@@ -1755,6 +1804,10 @@ function DatasetWorkspace({ dataset, onClose }: { dataset: DatasetProfile; onClo
                           : e.quality_score >= 40 ? 'bg-amber-700/90 text-amber-100'
                           : 'bg-red-700/90 text-red-100'
                         )}>Q{e.quality_score}</div>
+                      )}
+
+                      {filterQuality === 'duplicate' && (
+                        <div className="absolute bottom-1.5 left-1.5 text-[9px] bg-purple-700/90 text-purple-100 px-1.5 py-0.5 rounded shadow font-bold">DUP</div>
                       )}
 
                       {e.archived && (
