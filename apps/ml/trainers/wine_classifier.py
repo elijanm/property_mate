@@ -1,3 +1,16 @@
+# @trainer
+# Name: Wine Classifier
+# Version: 1.0.0
+# Author: Mldock Team
+# Author Email: hello@mldock.io
+# Author URL: https://mldock.io
+# Description: Classifies wine cultivar (A/B/C) from 13 chemical properties using sklearn's Wine dataset
+# Commercial: public
+# Downloadable: true
+# Protect Model: false
+# License: MIT
+# Tags: classification, wine, sklearn, tabular
+
 """
 Wine variety classifier — identifies wine cultivar (3 classes) from chemical analysis.
 

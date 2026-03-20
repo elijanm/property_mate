@@ -865,7 +865,7 @@ function ProfileTab({ profile, onUpdated, onLogout }: { profile: AnnotatorProfil
 }
 
 // ── Main Component ─────────────────────────────────────────────────────────────
-export default function AnnotatorPortalPage({ onLogout }: { onLogout?: () => void }) {
+export default function AnnotatorPortalPage({ onLogout, onSwitchToMain }: { onLogout?: () => void; onSwitchToMain?: () => void }) {
   const [tab, setTab] = useState<Tab>('dashboard')
   const [profile, setProfile] = useState<AnnotatorProfile | null>(null)
   const [stats, setStats] = useState<AnnotatorStats | null>(null)
@@ -908,12 +908,23 @@ export default function AnnotatorPortalPage({ onLogout }: { onLogout?: () => voi
             <span className="font-bold text-white text-sm">MLDock</span>
             <span className="text-[10px] font-semibold text-indigo-400 bg-indigo-900/40 border border-indigo-800/40 rounded-full px-1.5 py-0.5">Contributor</span>
           </div>
-          {stats && (
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-400 bg-amber-900/20 border border-amber-800/30 rounded-full px-2.5 py-1">
-              <Star size={12} fill="currentColor" />
-              {fmt(stats.total_points)} pts
-            </div>
-          )}
+          <div className="flex items-center gap-2">
+            {stats && (
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-400 bg-amber-900/20 border border-amber-800/30 rounded-full px-2.5 py-1">
+                <Star size={12} fill="currentColor" />
+                {fmt(stats.total_points)} pts
+              </div>
+            )}
+            {onSwitchToMain && (
+              <button
+                onClick={onSwitchToMain}
+                className="flex items-center gap-1.5 text-[11px] font-semibold text-indigo-400 bg-indigo-900/20 hover:bg-indigo-900/40 border border-indigo-800/40 rounded-full px-2.5 py-1 transition-colors"
+                title="Switch to main app"
+              >
+                <Layers size={11} /> Switch to Admin
+              </button>
+            )}
+          </div>
         </div>
       </header>
 

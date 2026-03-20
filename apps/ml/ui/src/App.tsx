@@ -34,6 +34,8 @@ import CodeEditorPage from './pages/CodeEditorPage'
 import CollectPage from './pages/CollectPage'
 import ConsentSignPage from './pages/ConsentSignPage'
 import StaffPage from './pages/StaffPage'
+import ClientsPage from './pages/ClientsPage'
+import MarketplacePage from './pages/MarketplacePage'
 import WatermarkSettingsPage from './pages/WatermarkSettingsPage'
 import AnnotatorPortalPage from './pages/AnnotatorPortalPage'
 import ClaimAccountPage from './pages/ClaimAccountPage'
@@ -74,7 +76,7 @@ if (_INVITE_TOKEN_FROM_URL) {
   sessionStorage.setItem('pending_invite_token', _INVITE_TOKEN_FROM_URL)
 }
 
-type Page = 'models' | 'trainers' | 'editor' | 'annotate' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing' | 'usage' | 'staff' | 'profile' | 'accounts' | 'watermark'
+type Page = 'models' | 'trainers' | 'editor' | 'annotate' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing' | 'usage' | 'staff' | 'clients' | 'marketplace' | 'profile' | 'accounts' | 'watermark'
 
 type NavGroup = {
   id: string
@@ -101,9 +103,10 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Deploy',
     icon: <Upload size={16} />,
     items: [
-      { id: 'models',   label: 'Models',  icon: <LayoutGrid size={14} /> },
-      { id: 'deploy',   label: 'Deploy',  icon: <Upload size={14} />, roles: ['engineer', 'admin'] },
-      { id: 'batch',    label: 'Batch',   icon: <Layers size={14} />, roles: ['engineer', 'admin'] },
+      { id: 'models',      label: 'Models',      icon: <LayoutGrid size={14} /> },
+      { id: 'marketplace', label: 'Marketplace', icon: <LayoutGrid size={14} /> },
+      { id: 'deploy',      label: 'Deploy',      icon: <Upload size={14} />, roles: ['engineer', 'admin'] },
+      { id: 'batch',       label: 'Batch',       icon: <Layers size={14} />, roles: ['engineer', 'admin'] },
     ],
   },
   {
@@ -124,8 +127,9 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Team',
     icon: <Users size={16} />,
     items: [
-      { id: 'staff', label: 'Staff',  icon: <UserCheck size={14} />, roles: ['engineer', 'admin'] },
-      { id: 'users', label: 'Users',  icon: <Users size={14} />, roles: ['admin'] },
+      { id: 'staff',   label: 'Staff',   icon: <UserCheck size={14} />, roles: ['engineer', 'admin'] },
+      { id: 'users',   label: 'Users',   icon: <Users size={14} />, roles: ['admin'] },
+      { id: 'clients', label: 'Clients', icon: <LayoutGrid size={14} />, roles: ['admin'] },
     ],
   },
   {
@@ -182,6 +186,8 @@ const PAGE_TITLE: Record<Page, string> = {
   billing:     'Billing Settings',
   usage:       'Usage Tracker',
   staff:       'Staff Management',
+  clients:     'Clients',
+  marketplace: 'Trainer Marketplace',
   profile:     'My Profile',
   accounts:    'All Accounts',
   watermark:   'Watermark Settings',
@@ -197,11 +203,24 @@ export default function App() {
       return raw ? JSON.parse(raw) : null
     } catch { return null }
   })
+  // Which interface is active when BOTH sessions are live
+  const [activeInterface, setActiveInterface] = useState<'main' | 'contributor'>('main')
+
   const logoutAnnotator = () => {
     localStorage.removeItem('ml_annotator_token')
     localStorage.removeItem('ml_annotator_refresh')
     localStorage.removeItem('ml_annotator_user')
     setAnnotatorUser(null)
+    setActiveInterface('main')
+    // If no engineer session either, go to login
+    if (!localStorage.getItem('ml_token')) setAuthPage('login')
+  }
+
+  const logoutEngineer = () => {
+    logout()
+    setActiveInterface('contributor')
+    // If no annotator session either, go to login
+    if (!localStorage.getItem('ml_annotator_token')) setAuthPage('login')
   }
   const [resetToken, setResetToken] = useState<string | null>(_RESET_TOKEN_FROM_URL)
   const [authPage, setAuthPage] = useState<'login' | 'register' | 'landing' | 'getting-started' | 'api-docs' | 'privacy' | 'terms' | 'forgot-password' | 'reset-password' | 'discover-scientists' | 'discover-models' | 'discover-datasets'>(
@@ -372,6 +391,10 @@ export default function App() {
     if (annotatorUser) {
       return <AnnotatorPortalPage onLogout={logoutAnnotator} />
     }
+    // authPage may have been set to 'login' by logout functions above
+    if (authPage === 'login') {
+      return <LoginPage onGoHome={() => setAuthPage('landing')} onGoRegister={() => { setRegisterRole(undefined); setAuthPage('register') }} onForgotPassword={() => setAuthPage('forgot-password')} />
+    }
     if (pendingEmail) {
       return (
         <VerifyEmailPage
@@ -457,14 +480,22 @@ export default function App() {
     if (authPage === 'reset-password' && resetToken) {
       return <ResetPasswordPage token={resetToken} onDone={() => { setResetToken(null); setAuthPage('login') }} />
     }
-    return authPage === 'login'
-      ? <LoginPage onGoHome={() => setAuthPage('landing')} onGoRegister={() => { setRegisterRole(undefined); setAuthPage('register') }} onForgotPassword={() => setAuthPage('forgot-password')} />
-      : <RegisterPage onGoHome={() => setAuthPage('landing')} onGoLogin={() => setAuthPage('login')} initialRole={registerRole} />
+    return <RegisterPage onGoHome={() => setAuthPage('landing')} onGoLogin={() => setAuthPage('login')} initialRole={registerRole} />
   }
 
   // Legacy: annotator token stored in main session — show annotator portal
   if (user?.role === 'annotator') {
     return <AnnotatorPortalPage onLogout={logout} />
+  }
+
+  // Both sessions active + user chose to view contributor interface
+  if (annotatorUser && activeInterface === 'contributor') {
+    return (
+      <AnnotatorPortalPage
+        onLogout={logoutAnnotator}
+        onSwitchToMain={() => setActiveInterface('main')}
+      />
+    )
   }
 
   return (
@@ -624,10 +655,19 @@ export default function App() {
               <div className="text-[11px] text-gray-300 truncate">{user.email}</div>
               <div className="text-[10px] text-gray-600 capitalize">{user.role}</div>
             </div>
-            <button onClick={logout} title="Sign out" className="text-gray-600 hover:text-red-400 transition-colors">
+            <button onClick={logoutEngineer} title="Sign out" className="text-gray-600 hover:text-red-400 transition-colors">
               <LogOut size={12} />
             </button>
           </div>
+          {/* Switch to Contributor Portal (when annotator session is also active) */}
+          {annotatorUser && (
+            <button
+              onClick={() => setActiveInterface('contributor')}
+              className="w-full flex items-center gap-1.5 px-2 py-1.5 mb-1 rounded-lg text-[11px] text-indigo-400 bg-indigo-900/20 hover:bg-indigo-900/40 border border-indigo-800/40 transition-colors"
+            >
+              <UserCheck size={11} /> Switch to Contributor Portal
+            </button>
+          )}
           {/* View-as role toggle (admin only) */}
           {user?.role === 'admin' && (
             <div className="flex items-center gap-1.5 mb-1">
@@ -782,6 +822,8 @@ export default function App() {
               {page === 'billing' && (effectiveRole === 'admin' ? <BillingSettingsPage /> : <UserBillingPage />)}
               {page === 'usage' && <UsageTrackerPage />}
               {page === 'staff' && <StaffPage />}
+              {page === 'clients' && <ClientsPage />}
+              {page === 'marketplace' && <MarketplacePage />}
               {page === 'watermark' && <WatermarkSettingsPage />}
               {page === 'profile' && <ProfilePage />}
               {page === 'accounts' && <AccountsPage />}

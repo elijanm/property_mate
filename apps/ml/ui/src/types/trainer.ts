@@ -22,6 +22,9 @@ export interface TrainerRegistration {
   created_at: string
   updated_at?: string
   derived_metrics?: TrainerDerivedMetricSpec[]
+  alias?: string
+  namespace?: string
+  full_name?: string
 }
 
 export interface ModelDeployment {

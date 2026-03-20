@@ -1,3 +1,16 @@
+# @trainer
+# Name: IP Threat Detector
+# Version: 1.0.0
+# Author: Mldock Team
+# Author Email: hello@mldock.io
+# Author URL: https://mldock.io
+# Description: Detects malicious IP addresses from network traffic features using ensemble classifiers
+# Commercial: public
+# Downloadable: true
+# Protect Model: false
+# License: MIT
+# Tags: security, classification, sklearn, network
+
 """
 IP Threat Detector — self-training model that learns malicious IP patterns.
 

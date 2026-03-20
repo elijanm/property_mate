@@ -1,3 +1,16 @@
+# @trainer
+# Name: Customer Segmentation
+# Version: 1.0.0
+# Author: Mldock Team
+# Author Email: hello@mldock.io
+# Author URL: https://mldock.io
+# Description: Segments customers based on transaction history and profile data using KMeans clustering
+# Commercial: public
+# Downloadable: true
+# Protect Model: false
+# License: MIT
+# Tags: clustering, segmentation, sklearn, tabular
+
 # ⚠ AI-GENERATED TRAINER
 # Review by a qualified data scientist or ML engineer before production use.
 # Validate output quality on your specific dataset. For complex tasks

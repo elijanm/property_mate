@@ -194,6 +194,7 @@ async def get_schema(trainer_name: str):
     reg = await TrainerRegistration.find_one(TrainerRegistration.name == trainer_name)
     return {
         "trainer_name": trainer_name,
+        "alias": reg.alias if reg and reg.alias else trainer_name,
         "version": dep.version,
         "model_uri": dep.model_uri,
         "input_schema": dep.input_schema or {},

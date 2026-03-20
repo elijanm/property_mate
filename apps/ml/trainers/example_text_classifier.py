@@ -1,3 +1,16 @@
+# @trainer
+# Name: Ticket Classifier
+# Version: 1.0.0
+# Author: Mldock Team
+# Author Email: hello@mldock.io
+# Author URL: https://mldock.io
+# Description: Classifies maintenance ticket text into property-management categories using DistilBERT
+# Commercial: public
+# Downloadable: true
+# Protect Model: false
+# License: MIT
+# Tags: nlp, classification, pytorch, tickets
+
 """
 Example text classifier — classifies maintenance ticket descriptions into categories.
 

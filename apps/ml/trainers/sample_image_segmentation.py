@@ -1,3 +1,17 @@
+# @trainer
+# Name: Image Segmentation
+# Version: 1.0.0
+# Author: Mldock Team
+# Author Email: hello@mldock.io
+# Author URL: https://mldock.io
+# Description: Instance segmentation using YOLOv8-seg fine-tuned on your annotated dataset
+# Commercial: public
+# Downloadable: true
+# Protect Model: false
+# Icon: dataset:image-segmentation-data
+# License: MIT
+# Tags: segmentation, image, pytorch, yolo
+
 """
 Sample: Instance Segmentation (YOLOv8-seg)
 ==========================================

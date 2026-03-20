@@ -1,3 +1,16 @@
+# @trainer
+# Name: Iris Classifier
+# Version: 1.0.0
+# Author: Mldock Team
+# Author Email: hello@mldock.io
+# Author URL: https://mldock.io
+# Description: Example sklearn classifier trained on the classic Iris flower dataset
+# Commercial: public
+# Downloadable: true
+# Protect Model: false
+# License: MIT
+# Tags: classification, iris, sklearn, example
+
 """
 Example trainer — drop this file to show how to write a plugin.
 This will be auto-discovered on service startup.

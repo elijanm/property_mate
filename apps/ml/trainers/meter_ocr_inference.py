@@ -1,3 +1,17 @@
+# @trainer
+# Name: Meter OCR Inference
+# Version: 1.0.0
+# Author: Mldock Team
+# Author Email: hello@mldock.io
+# Author URL: https://mldock.io
+# Description: Reads utility meter values from images using OCR and computer vision
+# Commercial: public
+# Downloadable: true
+# Protect Model: false
+# Icon: dataset:water-meter-data
+# License: MIT
+# Tags: ocr, image, meters, utilities
+
 """
 Meter OCR inference script — upload this alongside model.pt via:
   POST /api/v1/models/deploy-pretrained/upload

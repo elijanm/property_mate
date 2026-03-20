@@ -56,6 +56,7 @@ def require_roles(*roles: str):
 
 # Convenience shortcuts
 CurrentUser = Depends(get_current_user)
-RequireViewer   = Depends(require_roles("viewer", "engineer", "admin"))
-RequireEngineer = Depends(require_roles("engineer", "admin"))
-RequireAdmin    = Depends(require_roles("admin"))
+RequireViewer    = Depends(require_roles("viewer", "engineer", "admin"))
+RequireEngineer  = Depends(require_roles("engineer", "admin"))
+RequireAdmin     = Depends(require_roles("admin"))
+RequireAnnotator = Depends(require_roles("annotator", "engineer", "admin"))

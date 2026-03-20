@@ -51,6 +51,7 @@ export default function ModelWorkspace({ deployment, onClose }: Props) {
   const [feedbackRefresh, setFeedbackRefresh] = useState(0)
   const [schema, setSchema] = useState<Record<string, unknown>>({})
   const [outputSchema, setOutputSchema] = useState<Record<string, unknown>>({})
+  const [trainerAlias, setTrainerAlias] = useState<string | undefined>()
 
   // Version management
   const [versions, setVersions] = useState<ModelDeployment[]>([deployment])
@@ -62,6 +63,7 @@ export default function ModelWorkspace({ deployment, onClose }: Props) {
     trainersApi.getSchema(deployment.trainer_name).then(s => {
       setSchema(s.input_schema ?? s)
       if (s.output_schema) setOutputSchema(s.output_schema)
+      if (s.alias) setTrainerAlias(s.alias)
     }).catch(() => {})
     if (!sessionStorage.getItem('ml_session_id')) {
       sessionStorage.setItem('ml_session_id', Math.random().toString(36).slice(2))
@@ -317,6 +319,7 @@ export default function ModelWorkspace({ deployment, onClose }: Props) {
             deployment={current}
             inputSchema={schema}
             outputSchema={outputSchema}
+            alias={trainerAlias}
           />
         )}
 

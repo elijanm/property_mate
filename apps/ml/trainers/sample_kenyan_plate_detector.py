@@ -1,3 +1,17 @@
+# @trainer
+# Name: Kenyan Plate Detector
+# Version: 1.0.0
+# Author: Mldock Team
+# Author Email: hello@mldock.io
+# Author URL: https://mldock.io
+# Description: Detects and reads Kenyan vehicle number plates using YOLOv8 and OCR
+# Commercial: public
+# Downloadable: true
+# Protect Model: true
+# Icon: dataset:kenyan-plates-data
+# License: MIT
+# Tags: detection, ocr, pytorch, yolo, kenya
+
 """
 Kenyan License Plate Detector
 ==============================

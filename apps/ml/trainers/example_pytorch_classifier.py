@@ -1,3 +1,16 @@
+# @trainer
+# Name: Meter Type Classifier
+# Version: 1.0.0
+# Author: Mldock Team
+# Author Email: hello@mldock.io
+# Author URL: https://mldock.io
+# Description: Classifies utility meter images into water / electricity / gas / heat using ResNet-18
+# Commercial: public
+# Downloadable: true
+# Protect Model: false
+# License: MIT
+# Tags: classification, image, pytorch, meters
+
 """
 Example PyTorch image classifier — classifies utility meter types.
 

@@ -1,3 +1,16 @@
+# @trainer
+# Name: Rent Predictor
+# Version: 1.0.0
+# Author: Mldock Team
+# Author Email: hello@mldock.io
+# Author URL: https://mldock.io
+# Description: Predicts monthly rent (KES) from unit attributes using gradient boosting and RandomForest
+# Commercial: public
+# Downloadable: true
+# Protect Model: false
+# License: MIT
+# Tags: regression, rent, sklearn, property
+
 """
 Example regression trainer — predicts monthly rent based on property attributes.
 

@@ -223,6 +223,16 @@ async def predict(
 ) -> tuple:
     """Load the active deployment and run prediction. Returns (result, log_id)."""
     import mlflow
+    from app.models.trainer_registration import TrainerRegistration
+
+    # Resolve alias → real trainer_name (e.g. "john/iris_classifier" → "iris_classifier")
+    if "/" in trainer_name or not await ModelDeployment.find_one(
+        ModelDeployment.trainer_name == trainer_name,
+        ModelDeployment.status == "active",
+    ):
+        reg_by_alias = await TrainerRegistration.find_one({"alias": trainer_name})
+        if reg_by_alias:
+            trainer_name = reg_by_alias.name
 
     # Find deployment
     filters = [

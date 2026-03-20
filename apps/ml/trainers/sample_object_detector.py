@@ -1,3 +1,17 @@
+# @trainer
+# Name: Object Detector
+# Version: 1.0.0
+# Author: Mldock Team
+# Author Email: hello@mldock.io
+# Author URL: https://mldock.io
+# Description: Custom object detector using YOLOv8 fine-tuned on your labeled bounding box dataset
+# Commercial: public
+# Downloadable: true
+# Protect Model: false
+# Icon: dataset:object-detection-data
+# License: MIT
+# Tags: detection, image, pytorch, yolo
+
 """
 Sample: Object Detector (YOLOv8)
 =================================

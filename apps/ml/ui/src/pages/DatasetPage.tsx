@@ -1163,11 +1163,12 @@ function DatasetCard({
 // ── Public dataset gallery card ───────────────────────────────────────────────
 
 function PublicDatasetCard({
-  dataset, onClone, onReference, busy,
+  dataset, onClone, onReference, onViewEntries, busy,
 }: {
   dataset: DatasetProfile
   onClone: () => void
   onReference: () => void
+  onViewEntries: () => void
   busy: boolean
 }) {
   return (
@@ -1204,19 +1205,222 @@ function PublicDatasetCard({
         </div>
       )}
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <button onClick={onViewEntries}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-700/50 hover:bg-gray-700 border border-gray-600/50 text-gray-300 text-xs rounded-lg transition-colors">
+          <Eye size={11} /> Browse
+        </button>
         <button onClick={onClone} disabled={busy}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-teal-600/20 hover:bg-teal-600/30 border border-teal-700/40 text-teal-400 text-xs rounded-lg transition-colors disabled:opacity-50">
           <GitFork size={11} /> Clone
         </button>
         <button onClick={onReference} disabled={busy}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-700/40 text-purple-400 text-xs rounded-lg transition-colors disabled:opacity-50">
-          <Link2 size={11} /> Use as Reference
+          <Link2 size={11} /> Reference
         </button>
-        <div className="ml-auto text-[10px] text-gray-600 text-right">
-          <p>Clone = your own copy</p>
-          <p>Reference = read-only, no storage</p>
+      </div>
+    </div>
+  )
+}
+
+// ── Read-only entry viewer for public datasets ────────────────────────────────
+
+function PublicDatasetEntriesViewer({
+  dataset, onClose,
+}: {
+  dataset: DatasetProfile
+  onClose: () => void
+}) {
+  const [entries, setEntries]   = useState<DatasetEntry[]>([])
+  const [loading, setLoading]   = useState(true)
+  const [total, setTotal]       = useState(0)
+  const [totalPages, setTotalPages] = useState(1)
+  const [page, setPage]         = useState(1)
+  const PAGE_SIZE = 48
+
+  const [filterField, setFilterField]       = useState('')
+  const [filterDateFrom, setFilterDateFrom] = useState('')
+  const [filterDateTo, setFilterDateTo]     = useState('')
+  const [lightbox, setLightbox]             = useState<DatasetEntry | null>(null)
+
+  const load = useCallback(() => {
+    setLoading(true)
+    datasetsApi.getEntries(dataset.id, {
+      field_id: filterField || undefined,
+      date_from: filterDateFrom || undefined,
+      date_to: filterDateTo || undefined,
+      page,
+      page_size: PAGE_SIZE,
+    }).then(r => {
+      setEntries(r.items)
+      setTotal(r.total)
+      setTotalPages(r.total_pages)
+    }).finally(() => setLoading(false))
+  }, [dataset.id, filterField, filterDateFrom, filterDateTo, page])
+
+  useEffect(() => { load() }, [load])
+  useEffect(() => { setPage(1) }, [filterField, filterDateFrom, filterDateTo])
+
+  const resolveFileUrl = (url: string | null | undefined): string | null => {
+    if (!url) return null
+    if (url.startsWith('/api/')) {
+      const token = localStorage.getItem('ml_token') ?? ''
+      return `${url}?token=${encodeURIComponent(token)}`
+    }
+    return url
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex">
+      <div className="flex-1 bg-black/60" onClick={onClose} />
+      <div className="w-full max-w-4xl bg-gray-950 border-l border-gray-800 shadow-2xl flex flex-col overflow-hidden">
+
+        {/* Header */}
+        <div className="shrink-0 flex items-center gap-3 px-5 py-4 border-b border-gray-800 bg-gray-900">
+          <button onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-400 transition-colors">
+            <X size={16} />
+          </button>
+          <div className="flex-1 min-w-0">
+            <h2 className="text-sm font-semibold text-white truncate">{dataset.name}</h2>
+            <p className="text-[11px] text-gray-500">
+              {loading ? '…' : `${total} entr${total === 1 ? 'y' : 'ies'}`} · read-only
+            </p>
+          </div>
+          <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-sky-900/50 border border-sky-800/50 text-sky-400 font-semibold">
+            <Globe size={9} /> Public
+          </span>
         </div>
+
+        {/* Filters */}
+        <div className="shrink-0 flex items-center gap-2 px-4 py-2.5 border-b border-gray-800 bg-gray-900/50 flex-wrap">
+          <select
+            value={filterField}
+            onChange={e => setFilterField(e.target.value)}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-indigo-500">
+            <option value="">All fields</option>
+            {dataset.fields.map(f => (
+              <option key={f.id} value={f.id}>{f.label}</option>
+            ))}
+          </select>
+          <input
+            type="date"
+            value={filterDateFrom}
+            onChange={e => setFilterDateFrom(e.target.value)}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-indigo-500"
+            placeholder="From"
+          />
+          <input
+            type="date"
+            value={filterDateTo}
+            onChange={e => setFilterDateTo(e.target.value)}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-indigo-500"
+            placeholder="To"
+          />
+          {(filterField || filterDateFrom || filterDateTo) && (
+            <button
+              onClick={() => { setFilterField(''); setFilterDateFrom(''); setFilterDateTo('') }}
+              className="px-2.5 py-1.5 text-xs text-gray-500 hover:text-gray-200 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors">
+              Clear
+            </button>
+          )}
+          <span className="ml-auto text-[10px] text-gray-600 italic">Browsing only — entries cannot be modified</span>
+        </div>
+
+        {/* Entry grid */}
+        <div className="flex-1 overflow-y-auto p-4">
+          {loading ? (
+            <div className="flex items-center justify-center h-full">
+              <Loader2 size={24} className="text-indigo-400 animate-spin" />
+            </div>
+          ) : entries.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-center">
+              <Database size={32} className="text-gray-700 mb-3" />
+              <p className="text-sm text-gray-400 font-medium">No entries{(filterField || filterDateFrom || filterDateTo) ? ' matching filters' : ' yet'}</p>
+            </div>
+          ) : (
+            <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))' }}>
+              {entries.map(e => {
+                const isImage = e.file_mime?.startsWith('image/')
+                const isVideo = e.file_mime?.startsWith('video/')
+                const furl = resolveFileUrl(e.file_url)
+                return (
+                  <div
+                    key={e.id}
+                    onClick={() => furl && isImage && setLightbox(e)}
+                    className={clsx(
+                      'relative rounded-xl overflow-hidden border border-transparent hover:border-gray-600 transition-all',
+                      furl && isImage ? 'cursor-zoom-in' : 'cursor-default',
+                    )}>
+                    <div className="aspect-square bg-gray-800">
+                      {furl && isImage ? (
+                        <img src={furl} alt="" className="w-full h-full object-cover" />
+                      ) : furl && isVideo ? (
+                        <div className="relative w-full h-full bg-black flex items-center justify-center">
+                          <video src={furl} className="w-full h-full object-contain" preload="metadata" muted playsInline />
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
+                              <svg viewBox="0 0 24 24" fill="white" className="w-4 h-4 translate-x-0.5"><path d="M8 5v14l11-7z"/></svg>
+                            </div>
+                          </div>
+                        </div>
+                      ) : furl ? (
+                        <div className="flex flex-col items-center justify-center h-full gap-1">
+                          <FileText size={20} className="text-gray-500" />
+                          <span className="text-[10px] text-gray-600">{e.file_mime?.split('/')[1]?.toUpperCase() ?? 'File'}</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center h-full p-2">
+                          <p className="text-[10px] text-gray-400 text-center line-clamp-4">{e.text_value ?? '—'}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="shrink-0 flex items-center justify-between px-4 py-2.5 border-t border-gray-800 text-xs text-gray-500">
+            <span>{total} entries</span>
+            <div className="flex items-center gap-2">
+              <button
+                disabled={page <= 1}
+                onClick={() => setPage(p => p - 1)}
+                className="px-2.5 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-40 transition-colors">
+                ← Prev
+              </button>
+              <span>{page} / {totalPages}</span>
+              <button
+                disabled={page >= totalPages}
+                onClick={() => setPage(p => p + 1)}
+                className="px-2.5 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-40 transition-colors">
+                Next →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Lightbox */}
+        {lightbox && (
+          <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/90"
+            onClick={() => setLightbox(null)}>
+            <img
+              src={resolveFileUrl(lightbox.file_url) ?? ''}
+              alt=""
+              className="max-w-full max-h-full object-contain rounded-lg"
+              onClick={e => e.stopPropagation()}
+            />
+            <button
+              onClick={() => setLightbox(null)}
+              className="absolute top-4 right-4 p-2 rounded-full bg-black/60 hover:bg-black/80 text-white transition-colors">
+              <X size={18} />
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -2539,6 +2743,7 @@ export default function DatasetPage() {
   const [overviewTarget, setOverviewTarget] = useState<DatasetProfile | null>(null)
   const [contributorsTarget, setContributorsTarget] = useState<DatasetProfile | null>(null)
   const [busyId, setBusyId]         = useState<string | null>(null)
+  const [publicViewTarget, setPublicViewTarget] = useState<DatasetProfile | null>(null)
 
   const load = () => {
     setLoading(true)
@@ -2691,6 +2896,7 @@ export default function DatasetPage() {
                 <PublicDatasetCard key={d.id} dataset={d} busy={busyId === d.id}
                   onClone={() => handleClone(d.id)}
                   onReference={() => handleReference(d.id)}
+                  onViewEntries={() => setPublicViewTarget(d)}
                 />
               ))}
             </div>
@@ -2711,6 +2917,9 @@ export default function DatasetPage() {
       )}
       {inviteTarget && <InviteModal dataset={inviteTarget} onClose={() => setInviteTarget(null)} />}
       {overviewTarget && <OverviewPanel dataset={overviewTarget} onClose={() => setOverviewTarget(null)} />}
+      {publicViewTarget && (
+        <PublicDatasetEntriesViewer dataset={publicViewTarget} onClose={() => setPublicViewTarget(null)} />
+      )}
       {contributorsTarget && (
         <CollectorsPanel
           dataset={contributorsTarget}

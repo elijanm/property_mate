@@ -24,6 +24,32 @@ class TrainerRegistration(Document):
     class_path: str = ""                  # module.ClassName for dynamic loading
     plugin_file: Optional[str] = None     # path to .py file
     tags: Dict[str, str] = {}
+
+    # Namespace/identity
+    namespace: str = "system"           # "system" for built-ins, org_id for user uploads
+    full_name: str = ""                 # "{namespace}/{name}" computed key
+    alias: str = ""                     # short human-readable inference URL slug
+
+    # Marketplace metadata (parsed from header comments)
+    author: str = ""
+    author_email: str = ""
+    author_url: str = ""
+    git_url: str = ""
+    commercial: str = "public"          # "public" | "private"
+    downloadable: bool = False
+    protect_model: bool = False
+    icon_url: str = ""
+    license: str = ""
+
+    # Clone hierarchy
+    parent_trainer_id: Optional[str] = None
+    clone_depth: int = 0
+
+    # Submission & approval
+    submission_id: Optional[str] = None
+    submission_hash: str = ""           # sha256(org_id + ":" + file_bytes)
+    approval_status: str = "approved"   # "approved" | "pending_review" | "flagged" | "rejected"
+
     is_active: bool = True
     is_sample: bool = False          # iris/wine/digits — visible to all roles
     owner_email: Optional[str] = None

@@ -1,16 +1,19 @@
 import { useState, useEffect, useRef } from 'react'
 import { trainersApi } from '@/api/trainers'
 import { datasetsApi } from '@/api/datasets'
+import { trainerSubmissionsApi } from '@/api/trainerSubmissions'
 import client from '@/api/client'
 import type { TrainerRegistration } from '@/types/trainer'
 import type { DatasetProfile } from '@/types/dataset'
+import type { TrainerSubmission } from '@/types/trainerSubmission'
 import StatusBadge from './StatusBadge'
 import JobsPanel from './JobsPanel'
 import DatasetUploadModal from './DatasetUploadModal'
+import TrainerAnomalyModal from './TrainerAnomalyModal'
 import {
   Upload, RefreshCw, Scan, Trash2, Brain, Loader2, ChevronDown, ChevronRight,
   ChevronLeft, Play, Database, AlertTriangle, CheckCircle2, X, Plus, ExternalLink,
-  Download,
+  Download, ShieldCheck, ShieldAlert, Clock,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -243,10 +246,14 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
   const [uploadMsg, setUploadMsg] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [uploadDataset, setUploadDataset] = useState<DatasetProfile | null>(null)
-  // dataset entry counts per datasetId after upload (to force refresh)
   const [refreshKeys, setRefreshKeys] = useState<Record<string, number>>({})
   const [expandedTab, setExpandedTab] = useState<Record<string, 'details' | 'upload'>>({})
   const fileRef = useRef<HTMLInputElement>(null)
+
+  // LLM scan state
+  const [scanSubmission, setScanSubmission] = useState<TrainerSubmission | null>(null)
+  const [scanPolling, setScanPolling] = useState(false)
+  const [anomalyModalOpen, setAnomalyModalOpen] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -272,15 +279,44 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
   const handleUpload = async (file: File) => {
     setUploading(true)
     setUploadMsg(null)
+    setScanSubmission(null)
     try {
-      const res = await trainersApi.upload(file)
-      setUploadMsg(`Uploaded "${res.uploaded}" — ${res.trainers_registered} trainer(s) registered`)
-      await load()
+      // Use submission API — triggers LLM security scan in background
+      const submission = await trainerSubmissionsApi.upload(file)
+      setScanSubmission(submission)
+      setUploadMsg(`Uploaded "${file.name}" — running security scan…`)
+
+      // Poll until scan completes (not 'scanning')
+      setScanPolling(true)
+      let attempts = 0
+      const poll = async () => {
+        try {
+          const updated = await trainerSubmissionsApi.get(submission.id)
+          setScanSubmission(updated)
+          if (updated.status !== 'scanning' || attempts >= 30) {
+            setScanPolling(false)
+            setAnomalyModalOpen(true)
+            setUploadMsg(
+              updated.status === 'approved'
+                ? `✓ "${file.name}" passed security scan and is now active`
+                : `⚠ "${file.name}" flagged for review — see scan results`
+            )
+            await load()
+          } else {
+            attempts++
+            setTimeout(poll, 2000)
+          }
+        } catch {
+          setScanPolling(false)
+        }
+      }
+      setTimeout(poll, 2000)
     } catch (err: unknown) {
       setUploadMsg(`Upload failed: ${err instanceof Error ? err.message : String(err)}`)
+      setUploading(false)
     } finally {
       setUploading(false)
-      setTimeout(() => setUploadMsg(null), 4000)
+      setTimeout(() => setUploadMsg(null), 8000)
     }
   }
 
@@ -333,7 +369,28 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
         </button>
 
-        {uploadMsg && (
+        {/* Scan status badge */}
+        {scanSubmission && (
+          <button
+            onClick={() => setAnomalyModalOpen(true)}
+            className={clsx(
+              'flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-colors',
+              scanPolling
+                ? 'bg-amber-950/40 border-amber-800/50 text-amber-400'
+                : scanSubmission.status === 'approved'
+                  ? 'bg-emerald-950/40 border-emerald-800/50 text-emerald-400'
+                  : 'bg-red-950/40 border-red-800/50 text-red-400'
+            )}
+          >
+            {scanPolling
+              ? <><Loader2 size={11} className="animate-spin" /> Scanning…</>
+              : scanSubmission.status === 'approved'
+                ? <><ShieldCheck size={11} /> Scan passed</>
+                : <><ShieldAlert size={11} /> Review needed</>}
+          </button>
+        )}
+
+        {uploadMsg && !scanSubmission && (
           <span className={clsx('text-xs px-3 py-1.5 rounded-lg border', uploadMsg.includes('failed')
             ? 'bg-red-950/50 text-red-400 border-red-800'
             : 'bg-emerald-950/50 text-emerald-400 border-emerald-800'
@@ -534,6 +591,13 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
           }}
         />
       )}
+
+      {/* LLM scan result modal */}
+      <TrainerAnomalyModal
+        open={anomalyModalOpen}
+        onClose={() => setAnomalyModalOpen(false)}
+        submission={scanSubmission}
+      />
     </div>
   )
 }

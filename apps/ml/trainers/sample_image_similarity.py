@@ -1,268 +1,217 @@
+# @trainer
+# Name: Image Similarity
+# Version: 1.0.0
+# Author: Mldock Team
+# Author Email: hello@mldock.io
+# Author URL: https://mldock.io
+# Description: Image similarity and visual search using CLIP embeddings with optional fine-tuning
+# Commercial: public
+# Downloadable: true
+# Protect Model: false
+# Icon: dataset:image-similarity-data
+# License: MIT
+# Tags: similarity, image, pytorch, clip, embeddings
+
+# ⚠ AI-GENERATED TRAINER
+# Review by a qualified data scientist or ML engineer before production use.
+# Validate output quality on your specific dataset. For complex tasks
+# (image segmentation, object detection, NLP at scale), expert review is essential.
+
 """
-Sample: Image Similarity (CLIP + cosine similarity)
-====================================================
-Encodes images into embedding vectors using OpenAI CLIP, then:
-
-  Mode A — Image-to-Image similarity
-      Given a query image, rank a gallery of images by visual similarity.
-
-  Mode B — Text-to-Image search (zero-shot)
-      Given a text description (e.g. "red maize cob"), retrieve the most
-      similar images from the gallery — no training required.
-
-  Mode C — Custom fine-tuning via contrastive loss
-      If you have (anchor, positive, negative) triplets from a dataset,
-      fine-tunes CLIP's vision encoder with triplet margin loss so that
-      visually similar pairs are pulled together in embedding space.
-
-Which mode to use
------------------
-• Quick search with no training   → Mode B (text query) or Mode A on raw CLIP
-• Domain-specific similarity       → Mode C (fine-tune on your own data)
-
-Dataset for Mode C
-------------------
-Create a dataset with three image fields:
-    • anchor   — the reference image
-    • positive — a similar image (same class / same product)
-    • negative — a dissimilar image (different class)
-
-Quickstart
-----------
-1. Fill in the configuration block below.
-2. Set MODE = "finetune" to use Mode C, or "pretrained" to use raw CLIP.
-3. Click ▶ Run.
-
-Inference input
----------------
-    Mode A (image query):
-        { "query_image_url": "https://...", "gallery_urls": ["https://...", ...] }
-    Mode B (text query):
-        { "query_text": "red maize cob", "gallery_urls": ["https://...", ...] }
-
-Inference output
-----------------
-    {
-      "results": [
-          {"url": "https://...", "score": 0.93},
-          {"url": "https://...", "score": 0.81},
-          ...
-      ]
-    }
+ImageCosineSimilarity — computes cosine similarity between an inferred image and stored dataset images.
+Dataset: images stored in the platform dataset.
+Inference input: an image file.
+Inference output: {"best_score": float, "best_match_id": str, "top_matches": list}
 """
-# ── Configuration — edit these ─────────────────────────────────────────────────
-DATASET_ID         = "PASTE_YOUR_DATASET_ID_HERE"
-ANCHOR_FIELD_ID    = "PASTE_ANCHOR_IMAGE_FIELD_UUID"
-POSITIVE_FIELD_ID  = "PASTE_POSITIVE_IMAGE_FIELD_UUID"
-NEGATIVE_FIELD_ID  = "PASTE_NEGATIVE_IMAGE_FIELD_UUID"
-
-MODE               = "pretrained"   # "pretrained" or "finetune"
-CLIP_MODEL         = "openai/clip-vit-base-patch32"  # or clip-vit-large-patch14
-EPOCHS             = 5
-LR                 = 1e-5
-MARGIN             = 0.3     # triplet margin loss margin
-TOP_K              = 5       # how many gallery results to return
-# ──────────────────────────────────────────────────────────────────────────────
-
+import base64
 import io
-import requests
-import numpy as np
-from PIL import Image
-
-import torch
-import torch.nn.functional as F
-from transformers import CLIPProcessor, CLIPModel
-
-from app.abstract.base_trainer import BaseTrainer, TrainingConfig, OutputFieldSpec
-from app.abstract.data_source import DatasetDataSource, InMemoryDataSource
+import os
+import re
+import shutil
+import zipfile
+from pathlib import Path
+from app.abstract.base_trainer import BaseTrainer, TrainingConfig, EvaluationResult, TrainerBundle
+from app.abstract.data_source import DatasetDataSource
 
 
-def _load_image(url: str) -> Image.Image:
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-    return Image.open(io.BytesIO(resp.content)).convert("RGB")
+class ImageCosineSimilarity(BaseTrainer):
+    name        = "image_cosine_similarity"
+    version     = "1.0.0"
+    description = "Computes cosine similarity between an inferred image and stored dataset images."
+    framework   = "torch"
+    category    = {"key": "image-similarity", "label": "Image Similarity"}
+    schedule    = None
 
+    data_source = DatasetDataSource(
+        slug="image-cosine-similarity-data",
+        auto_create_spec={
+            "name": "Image Cosine Similarity Dataset",
+            "description": "Upload images to compare against.",
+            "fields": [
+                {"label": "Image", "type": "image", "required": True},
+            ],
+        },
+    )
 
-def _embed_images(model, processor, urls: list, device: str) -> torch.Tensor:
-    """Encode a list of image URLs into L2-normalised CLIP embeddings."""
-    images = [_load_image(u) for u in urls]
-    inputs = processor(images=images, return_tensors="pt", padding=True).to(device)
-    with torch.no_grad():
-        feats = model.get_image_features(**inputs)
-    return F.normalize(feats, dim=-1)
-
-
-def _embed_text(model, processor, texts: list, device: str) -> torch.Tensor:
-    """Encode a list of text strings into L2-normalised CLIP embeddings."""
-    inputs = processor(text=texts, return_tensors="pt", padding=True, truncation=True).to(device)
-    with torch.no_grad():
-        feats = model.get_text_features(**inputs)
-    return F.normalize(feats, dim=-1)
-
-
-class SampleImageSimilarity(BaseTrainer):
-    name    = "image_similarity"
-    version = "1.0.0"
-    description = "Image similarity / search — CLIP embeddings with optional fine-tuning"
-    framework   = "pytorch"
-    category    = {"key": "similarity", "label": "Image Similarity"}
-
-    output_display = [
-        OutputFieldSpec("results", "ranked_list", "Similar Images", primary=True,
-                        hint=""),
-    ]
-
-    # Replace InMemoryDataSource with DatasetDataSource for Mode C fine-tuning:
-    #   data_source = DatasetDataSource(dataset_id=DATASET_ID)
-    data_source = InMemoryDataSource()
-
+    # input_schema  = {"image": {"type": "file", "label": "Input Image"}}
     input_schema = {
-        "query_image_url": {
-            "type":        "image_url",
-            "label":       "Query Image URL",
-            "description": "Image to find similar matches for (Mode A)",
-            "required":    False,
-        },
-        "query_text": {
-            "type":        "text",
-            "label":       "Text Query",
-            "description": "Natural language description to search with (Mode B)",
-            "required":    False,
-        },
-        "gallery_urls": {
-            "type":        "json",
-            "label":       "Gallery URLs",
-            "description": "List of image URLs to rank by similarity",
+        "image": {
+            "type":        "image",
+            "label":       "Image (base64)",
+            "description": "imae to compare",
             "required":    True,
-            "example":     ["https://example.com/img1.jpg", "https://example.com/img2.jpg"],
-        },
-    }
-    output_schema = {
-        "results": {
-            "type":  "json",
-            "label": "Ranked Results",
-            "description": "Gallery images sorted by similarity score (1.0 = identical)",
         }
     }
+    output_schema = {
+        "best_score":    {"type": "float",  "label": "Best Match Score (0–1)"},
+        "best_match_id": {"type": "str",    "label": "Best Match ID"},
+        "match":         {"type": "bool",   "label": "Match (score ≥ 0.50)"},
+        "confidence":    {"type": "str",    "label": "Confidence (identical/high/medium/low)"},
+        "top_matches":   {"type": "list",   "label": "Top 5 Matches"},
+    }
 
-    # ── Preprocess ─────────────────────────────────────────────────────────────
-    def preprocess(self, raw: list) -> dict:
-        """
-        For MODE = "pretrained": raw data is not used — returns empty triplet list.
-        For MODE = "finetune":   builds (anchor_url, positive_url, negative_url) triplets.
-        """
-        if MODE == "pretrained" or not raw:
-            print("[preprocess] Mode=pretrained — no training data needed.")
-            return {"triplets": []}
-
-        collector_rows: dict = {}
+    def preprocess(self, raw):
+        items = []
+        print(raw)
         for entry in raw:
-            key = entry.get("collector_id") or entry.get("entry_id", "?")
-            collector_rows.setdefault(key, {})
-            fid = entry["field_id"]
-            collector_rows[key][fid] = entry.get("file_url") or entry.get("text_value")
+            f = entry if entry.get('field_type') == 'image' else None
+            if not f:
+                continue
+            content = self._fetch_bytes(f.get('file_key'), f.get('file_url'))
+            label = f.get('text_value') or f.get('field_label') or 'reference'
+            items.append({'id': f.get('id', str(len(items))), 'label': label, 'content': content})
+        return items
 
-        triplets = []
-        for data in collector_rows.values():
-            anchor   = data.get(ANCHOR_FIELD_ID)
-            positive = data.get(POSITIVE_FIELD_ID)
-            negative = data.get(NEGATIVE_FIELD_ID)
-            if anchor and positive and negative:
-                triplets.append((anchor, positive, negative))
+    def train(self, preprocessed, config: TrainingConfig):
+        import torch
+        import torchvision.transforms as transforms
+        import torchvision.models as models
+        import numpy as np
+        from PIL import Image
+        from io import BytesIO
 
-        if not triplets:
-            raise ValueError(
-                "No (anchor, positive, negative) triplets found. "
-                "Ensure ANCHOR_FIELD_ID, POSITIVE_FIELD_ID, NEGATIVE_FIELD_ID are correct."
-            )
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        backbone = models.mobilenet_v2(pretrained=True).features.to(device).eval()
 
-        print(f"[preprocess] {len(triplets)} triplets ready for fine-tuning")
-        return {"triplets": triplets}
+        transform = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
 
-    # ── Train ──────────────────────────────────────────────────────────────────
-    def train(self, preprocessed: dict, config: TrainingConfig):
-        device   = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"[train] Loading CLIP: {CLIP_MODEL}  device={device}")
+        def encode_image(content):
+            image = Image.open(BytesIO(content)).convert('RGB')
+            tensor = transform(image).unsqueeze(0).to(device)
+            with torch.no_grad():
+                feat = backbone(tensor)                    # (1, 1280, 7, 7)
+                emb = feat.mean(dim=[-2, -1]).squeeze(0)   # (1280,) — global avg pool
+                emb = emb.cpu().numpy().astype(np.float32)
+            norm = np.linalg.norm(emb)
+            return emb / max(norm, 1e-8)                   # L2-normalised
 
-        model     = CLIPModel.from_pretrained(CLIP_MODEL).to(device)
-        processor = CLIPProcessor.from_pretrained(CLIP_MODEL)
+        embeddings = np.stack([encode_image(item['content']) for item in preprocessed])
 
-        triplets = preprocessed.get("triplets", [])
-
-        if MODE == "pretrained" or not triplets:
-            print("[train] Using pre-trained CLIP weights (no fine-tuning).")
-            model.eval()
-            return {"model": model, "processor": processor, "device": device}
-
-        # ── Mode C: fine-tune vision encoder with triplet margin loss ──────────
-        print(f"[train] Fine-tuning CLIP vision encoder for {EPOCHS} epochs…")
-        optimizer = torch.optim.AdamW(model.vision_model.parameters(), lr=LR)
-        triplet_loss = torch.nn.TripletMarginLoss(margin=MARGIN, p=2)
-
-        for epoch in range(1, EPOCHS + 1):
-            model.train()
-            total_loss = 0.0
-
-            for anchor_url, pos_url, neg_url in triplets:
-                optimizer.zero_grad()
-
-                # Embed anchor, positive, negative
-                emb_a = _embed_images(model, processor, [anchor_url],  device)
-                emb_p = _embed_images(model, processor, [pos_url],     device)
-                emb_n = _embed_images(model, processor, [neg_url],     device)
-
-                loss = triplet_loss(emb_a, emb_p, emb_n)
-                loss.backward()
-                optimizer.step()
-                total_loss += loss.item()
-
-            avg_loss = total_loss / len(triplets)
-            print(f"[train] Epoch {epoch}/{EPOCHS}  avg_triplet_loss={avg_loss:.4f}")
-
-        model.eval()
-        print("[train] ✓ Fine-tuning complete")
-        return {"model": model, "processor": processor, "device": device}
-
-    # ── Predict ────────────────────────────────────────────────────────────────
-    def predict(self, bundle: dict, inputs: dict) -> dict:
-        """
-        Accepts:
-          • query_image_url + gallery_urls  → Image-to-Image similarity (Mode A)
-          • query_text      + gallery_urls  → Text-to-Image search     (Mode B)
-        """
-        model       = bundle["model"]
-        processor   = bundle["processor"]
-        device      = bundle.get("device", "cpu")
-
-        gallery_urls = inputs.get("gallery_urls", [])
-        if not gallery_urls:
-            raise ValueError("Provide 'gallery_urls' — the list of images to rank.")
-
-        # Encode gallery
-        gallery_embs = _embed_images(model, processor, gallery_urls, device)  # (N, D)
-
-        # Encode query
-        query_image_url = inputs.get("query_image_url")
-        query_text      = inputs.get("query_text")
-
-        if query_image_url:
-            query_emb = _embed_images(model, processor, [query_image_url], device)  # (1, D)
-        elif query_text:
-            query_emb = _embed_text(model, processor, [query_text], device)         # (1, D)
-        else:
-            raise ValueError("Provide either 'query_image_url' or 'query_text'.")
-
-        # Cosine similarity (already L2-normalised, so dot product = cosine sim)
-        scores = (query_emb @ gallery_embs.T).squeeze(0).tolist()   # (N,)
-        if isinstance(scores, float):
-            scores = [scores]
-
-        # Rank and return top-K
-        ranked = sorted(
-            [{"url": url, "score": round(s, 4)} for url, s in zip(gallery_urls, scores)],
-            key=lambda x: x["score"], reverse=True
+        bundle = TrainerBundle(
+            model=backbone,
+            extra={
+                "embeddings": embeddings,   # already L2-normalised, shape (N, 1280)
+                "labels":     [i['label'] for i in preprocessed],
+                "ids":        [i['id']    for i in preprocessed],
+            },
         )
-        return {"results": ranked[:TOP_K]}
+        return bundle, preprocessed
 
-    def get_feature_names(self):
-        return ["query_image_url", "query_text", "gallery_urls"]
+    def predict(self, model: TrainerBundle, inputs: dict) -> dict:
+        import torch
+        import torch.nn as nn
+        import numpy as np
+        from PIL import Image
+        from io import BytesIO
+        import torchvision.transforms as transforms
+
+        raw_input = inputs.get('image')
+        query_content = base64.b64decode(raw_input)
+
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        backbone = model.model.to(device).eval()
+
+        transform = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+
+        def encode_image(content):
+            image = Image.open(BytesIO(content)).convert('RGB')
+            tensor = transform(image).unsqueeze(0).to(device)
+            with torch.no_grad():
+                feat = backbone(tensor)                    # (1, 1280, 7, 7)
+                emb = feat.mean(dim=[-2, -1]).squeeze(0)   # (1280,)
+                emb = emb.cpu().numpy().astype(np.float32)
+            norm = np.linalg.norm(emb)
+            return emb / max(norm, 1e-8)
+
+        q_emb = encode_image(query_content)   # (1280,) L2-normalised
+
+        # Flatten stored embeddings to (N, D) to handle both old (N,1280,7,7) and new (N,1280) bundles
+        ref_raw = model.extra['embeddings'].astype(np.float32)
+        ref = ref_raw.reshape(ref_raw.shape[0], -1)          # (N, D)
+
+        # Re-normalise ref rows (handles old un-normalised bundles gracefully)
+        ref_norms = np.linalg.norm(ref, axis=1, keepdims=True)
+        ref = ref / np.maximum(ref_norms, 1e-8)
+
+        # q_emb may need to match D if old bundle has larger D
+        if ref.shape[1] != q_emb.shape[0]:
+            # Old bundle stored (1280,7,7) → D=62720; re-encode without pooling to match
+            with torch.no_grad():
+                feat = backbone(transform(Image.open(io.BytesIO(query_content)).convert('RGB')).unsqueeze(0).to(device))
+                q_emb = feat.squeeze(0).cpu().numpy().astype(np.float32).reshape(-1)
+            q_norm = np.linalg.norm(q_emb)
+            q_emb = q_emb / max(q_norm, 1e-8)
+
+        scores = np.dot(ref, q_emb).astype(np.float32)
+
+        hits = [
+            {
+                'id': model.extra['ids'][i],
+                'score': round(float(scores[i]), 4),
+                'label': model.extra['labels'][i]
+            }
+            for i in range(len(scores))
+        ]
+
+        hits.sort(key=lambda x: x['score'], reverse=True)
+        top = hits[:5]
+        best = top[0] if top else {}
+
+        best_score = float(best.get('score', 0.0))
+        # Score interpretation for L2-normalised MobileNetV2 embeddings:
+        #   >= 0.90  identical / near-identical
+        #   >= 0.70  same object, different angle or lighting
+        #   >= 0.50  same category
+        #   <  0.50  unrelated
+        MATCH_THRESHOLD = 0.50
+        if best_score >= 0.90:
+            confidence = 'identical'
+        elif best_score >= 0.70:
+            confidence = 'high'
+        elif best_score >= 0.50:
+            confidence = 'medium'
+        else:
+            confidence = 'low'
+
+        return {
+            'best_score':    best_score,
+            'best_match_id': best.get('id', ''),
+            'match':         best_score >= MATCH_THRESHOLD,
+            'confidence':    confidence,
+            'top_matches':   top,
+        }
+
+    def evaluate(self, model: TrainerBundle, test_data) -> EvaluationResult:
+        return EvaluationResult(
+            extra_metrics={"reference_count": len(model.extra["embeddings"])}
+        )

@@ -11,7 +11,7 @@ import {
   Camera, Upload, CheckCircle2, ChevronLeft, ChevronRight, ChevronUp,
   Loader2, X, Star, Gift, AlertCircle, RefreshCw, Image as ImageIcon,
   Plus, Repeat2, MapPin, Navigation, ShieldCheck, Video, Film,
-  Square, Circle, FolderArchive, FileText, UserCheck, RotateCcw,
+  Square, Circle, FolderArchive, FileText, UserCheck, RotateCcw, LogOut,
 } from 'lucide-react'
 import clsx from 'clsx'
 import JSZip from 'jszip'
@@ -1796,13 +1796,27 @@ export default function CollectPage({ token }: { token: string }) {
               <p className="text-xs text-gray-500 truncate">Hi {collector.name}</p>
               <h1 className="text-sm font-bold text-white truncate">{dataset.name}</h1>
             </div>
-            <div className="text-right shrink-0">
-              <p className="text-xs text-gray-500">{fieldsWithEntry}/{fields.length} fields</p>
-              {dataset.points_enabled && (
-                <p className="text-xs text-amber-400 flex items-center gap-1 justify-end">
-                  <Star size={10} fill="currentColor" /> {collector.points_earned + pointsThisSession} pts
-                </p>
-              )}
+            <div className="flex items-center gap-3 shrink-0">
+              <div className="text-right">
+                <p className="text-xs text-gray-500">{fieldsWithEntry}/{fields.length} fields</p>
+                {dataset.points_enabled && (
+                  <p className="text-xs text-amber-400 flex items-center gap-1 justify-end">
+                    <Star size={10} fill="currentColor" /> {collector.points_earned + pointsThisSession} pts
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={() => {
+                  localStorage.removeItem('ml_annotator_token')
+                  localStorage.removeItem('ml_annotator_refresh')
+                  localStorage.removeItem('ml_annotator_user')
+                  window.location.reload()
+                }}
+                title="Log out"
+                className="p-2 rounded-lg text-gray-500 hover:text-gray-200 hover:bg-gray-800/60 transition-colors [touch-action:manipulation]"
+              >
+                <LogOut size={15} />
+              </button>
             </div>
           </div>
           <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">

@@ -16,6 +16,8 @@ interface Props {
   /** input_schema from the trainer — used to decide file vs JSON examples */
   inputSchema?: Record<string, unknown>
   outputSchema?: Record<string, unknown>
+  /** short alias slug for the inference URL (e.g. "john/my_model") */
+  alias?: string
 }
 
 // ── Section / tab config ──────────────────────────────────────────────────────
@@ -99,9 +101,9 @@ function buildExampleInputsFromSchema(schema?: Record<string, unknown>): Record<
   return ex
 }
 
-function snippets(dep: ModelDeployment, schema?: Record<string, unknown>): Record<ItemId, { lang: string; code: string }> {
+function snippets(dep: ModelDeployment, schema?: Record<string, unknown>, alias?: string): Record<ItemId, { lang: string; code: string }> {
   const base = apiBase()
-  const name = dep.trainer_name
+  const name = alias || dep.trainer_name
   const endpoint = `${base}/inference/${name}`
   const uploadEndpoint = `${base}/inference/${name}/upload`
   const fileMode = hasFileInput(schema)
@@ -589,13 +591,13 @@ function escapeHtml(s: string): string {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function IntegrationPanel({ deployment, inputSchema, outputSchema }: Props) {
+export default function IntegrationPanel({ deployment, inputSchema, outputSchema, alias }: Props) {
   const [openSections, setOpenSections] = useState<Set<SectionId>>(new Set(['web']))
   const [selectedItem, setSelectedItem] = useState<ItemId>('curl')
   const [copied, setCopied] = useState(false)
 
   const isSchemaItem = selectedItem === 'schema_input' || selectedItem === 'schema_output'
-  const allSnippets = snippets(deployment, inputSchema)
+  const allSnippets = snippets(deployment, inputSchema, alias)
   const current = isSchemaItem ? { lang: 'json', code: '' } : allSnippets[selectedItem]
 
   function toggleSection(id: SectionId) {
@@ -662,7 +664,7 @@ export default function IntegrationPanel({ deployment, inputSchema, outputSchema
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-800 shrink-0">
           <div className="flex items-center gap-2">
             <span className="text-xs font-mono text-gray-400">
-              POST {apiBase()}/inference/<span className="text-brand-400">{deployment.trainer_name}</span>
+              POST {apiBase()}/inference/<span className="text-brand-400">{alias || deployment.trainer_name}</span>
             </span>
             {!isSchemaItem && (
               <span className="px-1.5 py-0.5 text-[10px] bg-gray-800 rounded text-gray-500 font-mono">

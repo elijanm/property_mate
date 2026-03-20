@@ -1,3 +1,16 @@
+# @trainer
+# Name: Churn Predictor
+# Version: 1.0.0
+# Author: Mldock Team
+# Author Email: hello@mldock.io
+# Author URL: https://mldock.io
+# Description: Predicts customer churn probability from subscription and engagement data
+# Commercial: public
+# Downloadable: true
+# Protect Model: false
+# License: MIT
+# Tags: classification, churn, sklearn, tabular
+
 """
 Customer Churn Predictor — predicts the probability a customer will churn.
 

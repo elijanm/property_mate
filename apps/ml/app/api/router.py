@@ -7,6 +7,7 @@ from app.api.v1 import billing
 from app.api.v1 import discover
 from app.api.v1 import consent
 from app.api.v1 import watermark
+from app.api.v1 import trainer_submissions, marketplace, clients
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(editor.router)
@@ -40,3 +41,6 @@ api_router.include_router(billing.router)
 api_router.include_router(discover.router)
 api_router.include_router(consent.router)
 api_router.include_router(watermark.router)
+api_router.include_router(trainer_submissions.router)
+api_router.include_router(marketplace.router)
+api_router.include_router(clients.router)

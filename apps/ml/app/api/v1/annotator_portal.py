@@ -9,7 +9,7 @@ import app.services.annotator_service as annotator_svc
 
 router = APIRouter(prefix="/annotator", tags=["annotator"])
 
-_annotator = Depends(require_roles("annotator"))
+_annotator = Depends(require_roles("annotator", "engineer", "admin"))
 
 
 # ── Request schemas ───────────────────────────────────────────────────────────

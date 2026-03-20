@@ -1,3 +1,17 @@
+# @trainer
+# Name: Image Classifier
+# Version: 1.0.0
+# Author: Mldock Team
+# Author Email: hello@mldock.io
+# Author URL: https://mldock.io
+# Description: Custom image classifier — ResNet-18 fine-tuned on your own labeled image dataset
+# Commercial: public
+# Downloadable: true
+# Protect Model: false
+# Icon: dataset:image-classifier-data
+# License: MIT
+# Tags: classification, image, pytorch, transfer-learning
+
 """
 Sample: Image Classifier (ResNet-18 transfer learning)
 ======================================================

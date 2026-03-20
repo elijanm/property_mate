@@ -677,6 +677,9 @@ async def get_form_definition(token: str) -> dict:
             "points_redemption_info": profile.points_redemption_info,
             "require_location": profile.require_location,
             "location_purpose": profile.location_purpose,
+            "require_consent": profile.require_consent,
+            "consent_template_id": profile.consent_template_id,
+            "consent_type": profile.consent_type,
         },
         "collector": {
             "id": str(collector.id),

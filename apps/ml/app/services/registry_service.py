@@ -4,6 +4,7 @@ Dynamic trainer discovery and registration.
 Scans TRAINER_PLUGIN_DIR for Python files, imports them, and finds
 classes that inherit from BaseTrainer. Persists registrations in MongoDB.
 """
+import hashlib
 import importlib.util
 import inspect
 import sys
@@ -21,6 +22,49 @@ logger = structlog.get_logger(__name__)
 
 # In-process registry: trainer_name -> class
 _TRAINER_CLASSES: Dict[str, Type[BaseTrainer]] = {}
+
+# Metadata header keys recognized from file comments
+_METADATA_KEYS = {
+    "name": "Name",
+    "version": "Version",
+    "author": "Author",
+    "author email": "Author Email",
+    "author url": "Author URL",
+    "git": "Git",
+    "description": "Description",
+    "commercial": "Commercial",
+    "downloadable": "Downloadable",
+    "protect model": "Protect Model",
+    "icon": "Icon",
+    "license": "License",
+    "tags": "Tags",
+}
+
+
+def _parse_metadata_header(source: str) -> Dict[str, str]:
+    """
+    Read lines from top of file that start with '#' and parse 'Key: Value' format.
+    Stops when a line doesn't start with '#'.
+    Returns a dict with normalized keys matching _METADATA_KEYS values.
+    """
+    metadata: Dict[str, str] = {}
+    for line in source.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            break
+        content = stripped.lstrip("#").strip()
+        if ":" not in content:
+            continue
+        raw_key, _, value = content.partition(":")
+        normalized = raw_key.strip().lower()
+        if normalized in _METADATA_KEYS:
+            metadata[_METADATA_KEYS[normalized]] = value.strip()
+    return metadata
+
+
+def _compute_file_hash(org_id: str, file_bytes: bytes) -> str:
+    """SHA-256 hash namespaced by org_id."""
+    return hashlib.sha256((org_id or "system").encode() + b":" + file_bytes).hexdigest()
 
 
 def register_class(cls: Type[BaseTrainer], plugin_file: str = "") -> None:
@@ -93,10 +137,23 @@ async def scan_and_register_plugins(owner_email: Optional[str] = None, org_id: O
         except Exception as exc:
             logger.error("trainer_plugin_scan_failed", file=str(py_file), error=str(exc))
             continue
+        try:
+            file_bytes = py_file.read_bytes()
+            file_source = file_bytes.decode("utf-8", errors="replace")
+            file_metadata = _parse_metadata_header(file_source)
+        except Exception:
+            file_bytes = b""
+            file_metadata = {}
         for cls in classes:
             try:
                 register_class(cls, plugin_file=str(py_file))
-                await _upsert_db_registration(cls, str(py_file), owner_email=owner_email, org_id=org_id)
+                await _upsert_db_registration(
+                    cls, str(py_file),
+                    owner_email=owner_email,
+                    org_id=org_id,
+                    metadata=file_metadata,
+                    file_bytes=file_bytes,
+                )
                 await _ensure_trainer_datasets(cls, org_id=org_id)
             except Exception as exc:
                 logger.error("trainer_plugin_register_failed", file=str(py_file),
@@ -202,12 +259,60 @@ async def _upsert_db_registration(
     plugin_file: str,
     owner_email: Optional[str] = None,
     org_id: Optional[str] = None,
+    metadata: Optional[Dict[str, str]] = None,
+    file_bytes: Optional[bytes] = None,
 ) -> None:
+    metadata = metadata or {}
     name = cls.trainer_name()
+    effective_org = org_id or ""
+    namespace = effective_org if effective_org else "system"
+    full_name = f"{namespace}/{name}"
+
+    # Compute a short human-readable alias for the inference URL
+    if not effective_org:
+        alias = name  # system trainer: /inference/iris_classifier
+    elif owner_email:
+        prefix = owner_email.split("@")[0].lower().replace(".", "_")
+        alias = f"{prefix}/{name}"  # user trainer: /inference/john/my_model
+    else:
+        alias = f"{effective_org[:8]}/{name}"
+
+    # Compute file hash for change detection
+    new_hash = _compute_file_hash(effective_org, file_bytes or b"")
+
     existing = await TrainerRegistration.find_one(TrainerRegistration.name == name)
     now = utc_now()
     info = cls.to_dict()
+
+    # Map metadata header fields to model fields
+    meta_fields: dict = {}
+    if metadata.get("Author"):
+        meta_fields["author"] = metadata["Author"]
+    if metadata.get("Author Email"):
+        meta_fields["author_email"] = metadata["Author Email"]
+    if metadata.get("Author URL"):
+        meta_fields["author_url"] = metadata["Author URL"]
+    if metadata.get("Git"):
+        meta_fields["git_url"] = metadata["Git"]
+    if metadata.get("Commercial"):
+        meta_fields["commercial"] = metadata["Commercial"].lower()
+    if metadata.get("Downloadable"):
+        meta_fields["downloadable"] = metadata["Downloadable"].lower() in ("true", "yes", "1")
+    if metadata.get("Protect Model"):
+        meta_fields["protect_model"] = metadata["Protect Model"].lower() in ("true", "yes", "1")
+    if metadata.get("Icon"):
+        meta_fields["icon_url"] = metadata["Icon"]
+    if metadata.get("License"):
+        meta_fields["license"] = metadata["License"]
+
     if existing:
+        # Hash check: if file changed, mark as pending_review and deactivate
+        approval_status = existing.approval_status
+        is_active = True
+        if file_bytes is not None and existing.submission_hash and existing.submission_hash != new_hash:
+            approval_status = "pending_review"
+            is_active = False
+
         update: dict = {
             "version": info["version"],
             "description": info["description"],
@@ -219,8 +324,14 @@ async def _upsert_db_registration(
             "tags": info["tags"],
             "output_display": info.get("output_display", []),
             "derived_metrics": info.get("derived_metrics", []),
-            "is_active": True,
+            "namespace": namespace,
+            "full_name": full_name,
+            "alias": alias,
+            "submission_hash": new_hash,
+            "approval_status": approval_status,
+            "is_active": is_active,
             "updated_at": now,
+            **meta_fields,
         }
         # When a user explicitly uploads, stamp ownership so it appears in their list
         if owner_email:
@@ -242,6 +353,12 @@ async def _upsert_db_registration(
             output_display=info.get("output_display", []),
             derived_metrics=info.get("derived_metrics", []),
             owner_email=owner_email,
-            org_id=org_id or "",
+            org_id=effective_org,
+            namespace=namespace,
+            full_name=full_name,
+            alias=alias,
+            submission_hash=new_hash,
+            approval_status="approved",
+            **meta_fields,
         )
         await reg.insert()
