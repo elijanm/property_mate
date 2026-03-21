@@ -6,6 +6,7 @@ interface User {
   full_name: string
   role: string
   org_id: string
+  is_onboarded: boolean
 }
 
 interface AuthCtx {
@@ -17,6 +18,7 @@ interface AuthCtx {
   register: (email: string, password: string, full_name: string) => Promise<void>
   logout: () => void
   clearPending: () => void
+  setOnboarded: () => void     // flip is_onboarded = true in state + localStorage
   loading: boolean
 }
 
@@ -77,8 +79,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const clearPending = () => setPendingEmail(null)
 
+  const setOnboarded = () => {
+    if (!user) return
+    const updated = { ...user, is_onboarded: true }
+    localStorage.setItem('ml_user', JSON.stringify(updated))
+    setUser(updated)
+  }
+
   return (
-    <Ctx.Provider value={{ user, token, pendingEmail, login, loginWithToken, register, logout, clearPending, loading }}>
+    <Ctx.Provider value={{ user, token, pendingEmail, login, loginWithToken, register, logout, clearPending, setOnboarded, loading }}>
       {children}
     </Ctx.Provider>
   )

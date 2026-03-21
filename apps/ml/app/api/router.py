@@ -8,6 +8,8 @@ from app.api.v1 import discover
 from app.api.v1 import consent
 from app.api.v1 import watermark
 from app.api.v1 import trainer_submissions, marketplace, clients
+from app.api.v1 import org_config
+from app.api.v1 import mlflow_proxy
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(editor.router)
@@ -44,3 +46,5 @@ api_router.include_router(watermark.router)
 api_router.include_router(trainer_submissions.router)
 api_router.include_router(marketplace.router)
 api_router.include_router(clients.router)
+api_router.include_router(org_config.router)
+api_router.include_router(mlflow_proxy.router)

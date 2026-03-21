@@ -39,9 +39,12 @@ export default function FeedbackPanel({ deployment, allDeployments, onSubmitted 
     const load = async () => {
       setLoadingLogs(true)
       setSelected(null)
+      // Only pass deploymentId filter when a non-default version was explicitly selected,
+      // so we don't miss logs served by a different active deployment record.
+      const deployIdFilter = selectedDeployId !== deployment.id ? selectedDeployId : undefined
       try {
         const [recentLogs, schema] = await Promise.all([
-          inferenceApi.recentLogs(deployment.trainer_name, 20, selectedDeployId),
+          inferenceApi.recentLogs(deployment.trainer_name, 20, deployIdFilter),
           inferenceApi.getSchema(deployment.trainer_name).catch(() => null),
         ])
         setLogs(recentLogs)
@@ -51,7 +54,7 @@ export default function FeedbackPanel({ deployment, allDeployments, onSubmitted 
       finally { setLoadingLogs(false) }
     }
     load()
-  }, [deployment.trainer_name, selectedDeployId])
+  }, [deployment.trainer_name, selectedDeployId, deployment.id])
 
   function selectLog(log: InferenceLogSummary, spec?: OutputFieldSpec[]) {
     setSelected(log)

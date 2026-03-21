@@ -404,9 +404,12 @@ async def get_training_artifacts(deployment_id: str):
                 else:
                     ext = "." + entry.path.rsplit(".", 1)[-1].lower() if "." in entry.path else ""
                     if ext in IMAGE_EXTS:
+                        # Route through our proxy so the browser can load it
+                        # (http://mlflow:5000 is only reachable inside Docker)
+                        from urllib.parse import urlencode
                         url = (
-                            f"{settings.MLFLOW_TRACKING_URI}/get-artifact"
-                            f"?run_uuid={run_id}&path={entry.path}"
+                            f"/api/v1/mlflow/artifact?"
+                            + urlencode({"run_uuid": run_id, "path": entry.path})
                         )
                         collected.append({
                             "path": entry.path,

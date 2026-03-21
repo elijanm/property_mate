@@ -965,6 +965,32 @@ async def get_dataset_overview(org_id: str, dataset_id: str) -> dict:
         for fid, cnt in sorted(field_counts.items(), key=lambda x: x[1], reverse=True)
     ]
 
+    # ── Quality metrics (image entries only) ──────────────────────────────────
+    scored = [e for e in entries if e.quality_score is not None]
+    good_count     = sum(1 for e in scored if e.quality_score >= 70 and not e.quality_issues)
+    poor_count     = sum(1 for e in scored if e.quality_score < 70 or bool(e.quality_issues))
+    no_score_count = total_entries - len(scored)
+
+    issue_counts: dict = defaultdict(int)
+    for e in scored:
+        for issue in (e.quality_issues or []):
+            issue_counts[issue] += 1
+
+    avg_quality = round(sum(e.quality_score for e in scored) / len(scored), 1) if scored else None
+
+    quality_stats = {
+        "scored": len(scored),
+        "no_score": no_score_count,
+        "good": good_count,
+        "poor": poor_count,
+        "avg_score": avg_quality,
+        "good_pct": round(good_count / len(scored) * 100, 1) if scored else 0,
+        "issues": [
+            {"label": k, "count": v}
+            for k, v in sorted(issue_counts.items(), key=lambda x: x[1], reverse=True)
+        ],
+    }
+
     return {
         "dataset_id": dataset_id,
         "name": profile.name,
@@ -988,6 +1014,7 @@ async def get_dataset_overview(org_id: str, dataset_id: str) -> dict:
         "daily_trend": daily_trend,
         "top_collectors": top_collectors,
         "field_breakdown": field_breakdown,
+        "quality": quality_stats,
     }
 
 

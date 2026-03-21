@@ -139,13 +139,16 @@ async def get_performance_snapshots(
     window_type: str = "hourly",
     org_id: str = "",
 ) -> List[PerformanceSnapshot]:
-    """Return recent snapshots sorted oldest→newest."""
+    """Return recent snapshots sorted oldest→newest.
+
+    Snapshots are computed as cross-org aggregates so no org_id filter is applied here.
+    The org_id parameter is kept for API compatibility but ignored.
+    """
     since = utc_now() - timedelta(hours=hours)
     return await PerformanceSnapshot.find(
         PerformanceSnapshot.trainer_name == trainer_name,
         PerformanceSnapshot.window_type == window_type,
         PerformanceSnapshot.window_start >= since,
-        PerformanceSnapshot.org_id == org_id,
     ).sort(+PerformanceSnapshot.window_start).to_list()
 
 

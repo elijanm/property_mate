@@ -43,6 +43,11 @@ class ResetPasswordRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
+    otp: str = ""   # security OTP (required when sent via request-security-otp)
+
+
+class RequestSecurityOtpRequest(BaseModel):
+    action: str = "change your password"
 
 
 @router.post("/register")
@@ -121,26 +126,51 @@ async def reset_password(body: ResetPasswordRequest):
     return {"ok": True}
 
 
-@router.post("/change-password")
-async def change_password(body: ChangePasswordRequest, authorization: Optional[str] = Header(None)):
-    """Change password for the currently authenticated user."""
+@router.post("/request-security-otp")
+async def request_security_otp(body: RequestSecurityOtpRequest, authorization: Optional[str] = Header(None)):
+    """Send a 6-digit OTP to the user's email for confirming a sensitive action."""
+    from fastapi import HTTPException
     if not authorization or not authorization.startswith("Bearer "):
-        from fastapi import HTTPException
         raise HTTPException(status_code=401, detail="Not authenticated")
     token = authorization.split(" ", 1)[1]
     user = await auth_service.get_current_user(token)
-    await auth_service.change_password(user, body.current_password, body.new_password)
+    await auth_service.send_security_otp(user, body.action)
+    return {"ok": True, "message": f"Security code sent to {user.email}"}
+
+
+@router.post("/change-password")
+async def change_password(body: ChangePasswordRequest, authorization: Optional[str] = Header(None)):
+    """Change password. Requires current_password + OTP (request via /request-security-otp first)."""
+    from fastapi import HTTPException
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = authorization.split(" ", 1)[1]
+    user = await auth_service.get_current_user(token)
+    await auth_service.change_password(user, body.current_password, body.new_password, body.otp)
     return {"ok": True}
 
 
 @router.post("/login")
 async def login(body: LoginRequest):
     user, access, refresh = await auth_service.login(body.email, body.password)
+    # Auto-mark existing users as onboarded if they've already customised their workspace
+    # (prevents the setup wizard from appearing for users who registered before this feature)
+    if not user.is_onboarded and user.org_id:
+        try:
+            from app.models.org_config import OrgConfig
+            cfg = await OrgConfig.find_one({"org_id": user.org_id})
+            # Consider onboarded if slug exists AND org_name was manually set
+            # (auto-generated names end with "_org", e.g. "Mike_org")
+            if cfg and cfg.slug and cfg.org_name and not cfg.org_name.endswith("_org"):
+                await user.set({"is_onboarded": True})
+                user.is_onboarded = True
+        except Exception:
+            pass
     return {
         "access_token": access,
         "refresh_token": refresh,
         "token_type": "bearer",
-        "user": {"email": user.email, "full_name": user.full_name, "role": user.role, "org_id": user.org_id},
+        "user": _user_dict(user),
     }
 
 
@@ -162,12 +192,23 @@ async def me(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Not authenticated")
     token = authorization.split(" ", 1)[1]
     user = await auth_service.get_current_user(token)
-    return {"email": user.email, "full_name": user.full_name, "role": user.role, "org_id": user.org_id, "last_login_at": user.last_login_at}
+    return {**_user_dict(user), "last_login_at": user.last_login_at}
 
 
 class UpdateProfileRequest(BaseModel):
     full_name: Optional[str] = None
     role: Optional[str] = None
+    is_onboarded: Optional[bool] = None
+
+
+def _user_dict(user) -> dict:
+    return {
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": user.role,
+        "org_id": user.org_id,
+        "is_onboarded": user.is_onboarded,
+    }
 
 
 @router.patch("/profile")
@@ -192,5 +233,8 @@ async def update_profile(body: UpdateProfileRequest, authorization: Optional[str
     if body.full_name is not None:
         user.full_name = body.full_name.strip()
 
+    if body.is_onboarded is not None:
+        user.is_onboarded = body.is_onboarded
+
     await user.save()
-    return {"email": user.email, "full_name": user.full_name, "role": user.role, "org_id": user.org_id}
+    return _user_dict(user)

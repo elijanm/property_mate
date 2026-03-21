@@ -177,6 +177,15 @@ export interface DatasetOverview {
   daily_trend: { date: string; count: number }[]
   top_collectors: { name: string; email: string; entries: number; points: number }[]
   field_breakdown: { field_id: string; label: string; count: number }[]
+  quality: {
+    scored: number
+    no_score: number
+    good: number
+    poor: number
+    avg_score: number | null
+    good_pct: number
+    issues: { label: string; count: number }[]
+  }
 }
 
 export interface DatasetCreatePayload {

@@ -26,18 +26,15 @@ async def get_current_user(
 
     if x_api_key:
         from app.services.api_key_service import validate_key
-        from app.utils.datetime import utc_now
         key_record = await validate_key(x_api_key)
         if not key_record:
             raise HTTPException(status_code=401, detail="Invalid or expired API key")
-        # Synthesise a user from the key — API keys get engineer-level access
-        user = MLUser(
-            email=key_record.owner_email,
-            hashed_password="",
-            role="engineer",
-            is_active=True,
-        )
-        return user
+        # Look up actual user so org_id is populated
+        actual = await MLUser.find_one({"email": key_record.owner_email, "is_active": True})
+        if actual:
+            return actual
+        # Fallback for edge-case where user record is gone
+        return MLUser(email=key_record.owner_email, hashed_password="", role="engineer", is_active=True)
 
     raise HTTPException(status_code=401, detail="Not authenticated — provide Bearer token or X-Api-Key")
 

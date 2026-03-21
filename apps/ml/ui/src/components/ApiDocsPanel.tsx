@@ -5,6 +5,10 @@ import clsx from 'clsx'
 
 interface Props {
   deployment: ModelDeployment
+  /** full inference alias, e.g. "acme/my_model" — uses trainer_name if not provided */
+  alias?: string
+  /** org slug prefix for display (first segment of alias when org-owned) */
+  orgSlug?: string
 }
 
 function apiBase() {
@@ -63,10 +67,10 @@ function CodeBlock({ code, lang }: { code: string; lang: string }) {
 
 type Tab = 'overview' | 'request' | 'response' | 'examples'
 
-export default function ApiDocsPanel({ deployment }: Props) {
+export default function ApiDocsPanel({ deployment, alias, orgSlug }: Props) {
   const [tab, setTab] = useState<Tab>('overview')
   const base = apiBase()
-  const name = deployment.trainer_name
+  const name = alias || deployment.trainer_name
   const inputSchema = (deployment.input_schema as Record<string, unknown>) ?? {}
   const outputSchema = (deployment.output_schema as Record<string, unknown>) ?? {}
   const hasFileField = Object.values(inputSchema).some((f: unknown) => {
@@ -77,12 +81,12 @@ export default function ApiDocsPanel({ deployment }: Props) {
   const exOutputs = buildExampleOutputs(outputSchema)
 
   const curlExample = hasFileField
-    ? `curl -X POST "${base}/inference/${name}/upload" \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -F "file=@/path/to/input.jpg"`
-    : `curl -X POST "${base}/inference/${name}" \\\n  -H "Authorization: Bearer <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify({ inputs: exInputs }, null, 2)}'`
+    ? `curl -X POST "${base}/inference/${name}/upload" \\\n  -H "X-Api-Key: <YOUR_API_KEY>" \\\n  -F "file=@/path/to/input.jpg"`
+    : `curl -X POST "${base}/inference/${name}" \\\n  -H "X-Api-Key: <YOUR_API_KEY>" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify({ inputs: exInputs }, null, 2)}'`
 
   const pythonExample = hasFileField
-    ? `import requests\n\nAPI_KEY = "<YOUR_API_KEY>"\n\nwith open("input.jpg", "rb") as f:\n    r = requests.post(\n        "${base}/inference/${name}/upload",\n        headers={"Authorization": f"Bearer {API_KEY}"},\n        files={"file": f},\n    )\nprint(r.json())`
-    : `import requests\n\nAPI_KEY = "<YOUR_API_KEY>"\n\nr = requests.post(\n    "${base}/inference/${name}",\n    headers={\n        "Authorization": f"Bearer {API_KEY}",\n        "Content-Type": "application/json",\n    },\n    json=${JSON.stringify({ inputs: exInputs }, null, 4)},\n)\nprint(r.json())`
+    ? `import requests\n\nAPI_KEY = "<YOUR_API_KEY>"\n\nwith open("input.jpg", "rb") as f:\n    r = requests.post(\n        "${base}/inference/${name}/upload",\n        headers={"X-Api-Key": API_KEY},\n        files={"file": f},\n    )\nprint(r.json())`
+    : `import requests\n\nAPI_KEY = "<YOUR_API_KEY>"\n\nr = requests.post(\n    "${base}/inference/${name}",\n    headers={\n        "X-Api-Key": API_KEY,\n        "Content-Type": "application/json",\n    },\n    json=${JSON.stringify({ inputs: exInputs }, null, 4)},\n)\nprint(r.json())`
 
   const TABS: { id: Tab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
@@ -97,7 +101,16 @@ export default function ApiDocsPanel({ deployment }: Props) {
       <div className="flex items-center gap-2 pb-2 border-b border-gray-800">
         <BookOpen size={15} className="text-brand-400" />
         <h3 className="text-sm font-semibold text-white">API Reference</h3>
-        <span className="text-xs text-gray-500">— {name}</span>
+        <span className="text-xs text-gray-500">—</span>
+        {orgSlug && (
+          <span className="text-xs font-mono text-indigo-400">{orgSlug}/</span>
+        )}
+        <span className="text-xs font-mono text-brand-400">{deployment.trainer_name}</span>
+        {orgSlug && (
+          <span className="px-1.5 py-0.5 text-[10px] bg-indigo-900/40 border border-indigo-700/40 rounded text-indigo-300 font-mono">
+            org: {orgSlug}
+          </span>
+        )}
       </div>
 
       {/* Sub-tabs */}
@@ -140,8 +153,8 @@ export default function ApiDocsPanel({ deployment }: Props) {
             <h4 className="text-xs font-semibold text-gray-300 mb-2 flex items-center gap-1.5">
               <Lock size={12} className="text-amber-400" /> Authentication
             </h4>
-            <p className="text-xs text-gray-500 mb-2">Pass your API key as a Bearer token in the <code className="text-amber-300">Authorization</code> header:</p>
-            <CodeBlock code={`Authorization: Bearer <YOUR_API_KEY>`} lang="http" />
+            <p className="text-xs text-gray-500 mb-2">Pass your API key in the <code className="text-amber-300">X-Api-Key</code> header:</p>
+            <CodeBlock code={`X-Api-Key: <YOUR_API_KEY>`} lang="http" />
             <p className="text-[11px] text-gray-600 mt-2">Get your API key from <strong className="text-gray-400">Settings → API Keys</strong>.</p>
           </div>
         </div>
@@ -310,8 +323,8 @@ export default function ApiDocsPanel({ deployment }: Props) {
             <CodeBlock
               lang="javascript"
               code={hasFileField
-                ? `const API_KEY = "<YOUR_API_KEY>";\n\nasync function runInference(file) {\n  const form = new FormData();\n  form.append("file", file);\n  const r = await fetch("${base}/inference/${name}/upload", {\n    method: "POST",\n    headers: { Authorization: \`Bearer \${API_KEY}\` },\n    body: form,\n  });\n  return r.json();\n}`
-                : `const API_KEY = "<YOUR_API_KEY>";\n\nconst r = await fetch("${base}/inference/${name}", {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${API_KEY}\`,\n    "Content-Type": "application/json",\n  },\n  body: JSON.stringify({ inputs: ${JSON.stringify(exInputs)} }),\n});\nconst result = await r.json();\nconsole.log(result);`
+                ? `const API_KEY = "<YOUR_API_KEY>";\n\nasync function runInference(file) {\n  const form = new FormData();\n  form.append("file", file);\n  const r = await fetch("${base}/inference/${name}/upload", {\n    method: "POST",\n    headers: { "X-Api-Key": API_KEY },\n    body: form,\n  });\n  return r.json();\n}`
+                : `const API_KEY = "<YOUR_API_KEY>";\n\nconst r = await fetch("${base}/inference/${name}", {\n  method: "POST",\n  headers: {\n    "X-Api-Key": API_KEY,\n    "Content-Type": "application/json",\n  },\n  body: JSON.stringify({ inputs: ${JSON.stringify(exInputs)} }),\n});\nconst result = await r.json();\nconsole.log(result);`
               }
             />
           </div>

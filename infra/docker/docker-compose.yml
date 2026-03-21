@@ -330,7 +330,14 @@ services:
         mc mb --ignore-existing local/pms-ml &&
         mc mb --ignore-existing local/pms-media &&
         mc mb --ignore-existing local/pms-voice &&
-        echo 'MinIO buckets ready'
+        mc anonymous set download local/pms-ml &&
+        mc anonymous set download local/pms-media &&
+        mc anonymous set download local/pms-voice &&
+        printf '[{\"AllowedOrigins\":[\"*\"],\"AllowedMethods\":[\"GET\",\"PUT\",\"POST\",\"DELETE\",\"HEAD\"],\"AllowedHeaders\":[\"*\"],\"ExposeHeaders\":[\"ETag\"],\"MaxAgeSeconds\":3600}]' > /tmp/cors.json &&
+        mc cors set local/pms-ml /tmp/cors.json &&
+        mc cors set local/pms-media /tmp/cors.json &&
+        mc cors set local/pms-voice /tmp/cors.json &&
+        echo 'MinIO buckets + CORS ready'
       "
 
   # ── ML / AI Stack ────────────────────────────────────────────

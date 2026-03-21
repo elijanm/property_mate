@@ -4,7 +4,7 @@ export interface LoginResponse {
   access_token: string
   refresh_token: string
   token_type: string
-  user: { email: string; full_name: string; role: string; org_id: string }
+  user: { email: string; full_name: string; role: string; org_id: string; is_onboarded: boolean }
 }
 
 export interface RegisterResponse {
@@ -41,12 +41,15 @@ export const authApi = {
   resetPassword: (token: string, new_password: string) =>
     client.post<{ ok: boolean }>('/auth/reset-password', { token, new_password }).then(r => r.data),
 
-  changePassword: (current_password: string, new_password: string) =>
-    client.post<{ ok: boolean }>('/auth/change-password', { current_password, new_password }).then(r => r.data),
+  requestSecurityOtp: (action = 'change your password') =>
+    client.post<{ ok: boolean; message: string }>('/auth/request-security-otp', { action }).then(r => r.data),
+
+  changePassword: (current_password: string, new_password: string, otp = '') =>
+    client.post<{ ok: boolean }>('/auth/change-password', { current_password, new_password, otp }).then(r => r.data),
 
   registerWithInvite: (email: string, password: string, fullName: string, inviteToken: string) =>
     client.post('/auth/register-invite', { email, password, full_name: fullName, invite_token: inviteToken }).then(r => r.data),
 
-  updateProfile: (data: { full_name?: string; role?: string }) =>
+  updateProfile: (data: { full_name?: string; role?: string; is_onboarded?: boolean }) =>
     client.patch('/auth/profile', data).then(r => r.data),
 }

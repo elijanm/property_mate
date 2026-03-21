@@ -22,6 +22,10 @@ class MLUser(Document):
     # Password reset
     password_reset_token: Optional[str] = None
     password_reset_expires_at: Optional[datetime] = None
+    # Security OTP (used to confirm sensitive actions, e.g. password change)
+    security_otp: Optional[str] = None
+    security_otp_expires_at: Optional[datetime] = None
+    is_onboarded: bool = False        # False until user completes workspace-setup wizard
     created_at: datetime = Field(default_factory=utc_now)
     last_login_at: Optional[datetime] = None
 

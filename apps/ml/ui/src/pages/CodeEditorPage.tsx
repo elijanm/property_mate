@@ -7,17 +7,20 @@ import {
   Trash2, Save, AlertCircle, Loader2, PackageCheck,
   Terminal, Cpu, Wallet, Clock, Sparkles,
   ArrowLeft, Send, Paperclip, Wand2, CheckCircle2, BarChart2,
-  MessageSquare,
+  MessageSquare, ShieldAlert, RotateCcw,
 } from 'lucide-react'
 import { editorApi, type FileNode, type EditorDataset } from '@/api/editor'
 import { configApi } from '@/api/config'
 import { walletApi } from '@/api/wallet'
 import { datasetsApi } from '@/api/datasets'
 import { trainersApi } from '@/api/trainers'
+import { trainerSubmissionsApi } from '@/api/trainerSubmissions'
 import { useAuth } from '@/context/AuthContext'
 import type { Wallet as WalletData } from '@/types/wallet'
 import type { DatasetProfile } from '@/types/dataset'
+import type { TrainerSubmission } from '@/types/trainerSubmission'
 import DatasetUploadModal from '@/components/DatasetUploadModal'
+import TrainerAnomalyModal from '@/components/TrainerAnomalyModal'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -2243,11 +2246,39 @@ export default function CodeEditorPage() {
   const [showUploadModal, setShowUploadModal] = useState(false)
   const emptyDatasetSlugRef = useRef<string | null>(null)
 
-  // Install status
+  // Install / security-scan status
   const [installing, setInstalling] = useState(false)
-  const [installStatus, setInstallStatus] = useState<'idle' | 'ok' | 'error'>('idle')
+  const [installStatus, setInstallStatus] = useState<'idle' | 'scanning' | 'pending_admin' | 'ok' | 'error'>('idle')
+  const [scanSubmission, setScanSubmission] = useState<TrainerSubmission | null>(null)
+  const [anomalyModalOpen, setAnomalyModalOpen] = useState(false)
+
+  // Sidebar: files vs pending review
+  const [sidebarView, setSidebarView] = useState<'files' | 'pending'>('files')
+  const [pendingSubmissions, setPendingSubmissions] = useState<TrainerSubmission[]>([])
+  const [pendingLoading, setPendingLoading] = useState(false)
+  const [resubmitting, setResubmitting] = useState<string | null>(null)
 
   const activeTabData = tabs.find(t => t.path === activeTab) ?? null
+
+  // When switching to a different Python file, check if its trainer is already approved or under review
+  useEffect(() => {
+    if (!activeTabData || !activeTabData.name.endsWith('.py')) {
+      setInstallStatus('idle')
+      return
+    }
+    const trainerName = activeTabData.name.replace(/\.py$/, '')
+    // Check pending list first (fast, local)
+    const isPending = pendingSubmissions.some(
+      s => s.trainer_name === trainerName && (s.status === 'pending_admin' || s.status === 'flagged')
+    )
+    if (isPending) {
+      setInstallStatus('pending_admin')
+      return
+    }
+    trainersApi.get(trainerName)
+      .then(reg => setInstallStatus((reg as any)?.status === 'active' ? 'ok' : 'idle'))
+      .catch(() => setInstallStatus('idle'))
+  }, [activeTab, pendingSubmissions]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Load ───────────────────────────────────────────────────────────────────
 
@@ -2270,12 +2301,22 @@ export default function CodeEditorPage() {
     try { setWallet(await walletApi.get()) } catch {}
   }, [])
 
+  const loadPendingSubmissions = useCallback(async () => {
+    setPendingLoading(true)
+    try {
+      const { items } = await trainerSubmissionsApi.list()
+      setPendingSubmissions(items.filter(s => s.status === 'pending_admin' || s.status === 'flagged'))
+    } catch {}
+    finally { setPendingLoading(false) }
+  }, [])
+
   useEffect(() => {
     loadTree()
     loadDatasets()
     loadWallet()
+    loadPendingSubmissions()
     configApi.getUiConfig().then(c => setShowCostDebug(c.show_cost_debug)).catch(() => {})
-  }, [loadTree, loadDatasets, loadWallet])
+  }, [loadTree, loadDatasets, loadWallet, loadPendingSubmissions])
 
   // Persist AI sessions to localStorage whenever they change
   useEffect(() => {
@@ -2597,62 +2638,122 @@ export default function CodeEditorPage() {
 
   const handleInstall = async () => {
     if (!activeTabData) return
+
+    // Block if this trainer already has a pending review
+    const trainerName = activeTabData.name.replace(/\.py$/, '')
+    const alreadyPending = pendingSubmissions.find(
+      s => s.trainer_name === trainerName && (s.status === 'pending_admin' || s.status === 'flagged')
+    )
+    if (alreadyPending) {
+      setLogOpen(true)
+      addLog(`⚠ "${trainerName}" is already under admin review — wait for approval before resubmitting.`, 'error')
+      setSidebarView('pending')
+      return
+    }
+
     setInstalling(true)
     setInstallStatus('idle')
+    setScanSubmission(null)
     setLogOpen(true)
-    addLog('● Installing trainer plugin…', 'connected')
+    addLog('● Submitting trainer for security scan…', 'connected')
 
     try {
-      // Save first so the server sees the latest content
+      // Save first so the server has the latest content
       if (activeTabData.dirty) await handleSave()
 
-      // Wrap content as a File object for multipart upload
+      // Wrap content as a File for multipart upload
       const blob = new Blob([activeTabData.content], { type: 'text/x-python' })
-      const file = new File([blob], activeTabData.name.endsWith('.py') ? activeTabData.name : `${activeTabData.name}.py`, { type: 'text/x-python' })
+      const file = new File(
+        [blob],
+        activeTabData.name.endsWith('.py') ? activeTabData.name : `${activeTabData.name}.py`,
+        { type: 'text/x-python' }
+      )
 
-      const result = await trainersApi.upload(file)
-      const registeredTrainer = result.trainer as Record<string, unknown> | null | undefined
-      const trainerDisplayName = (registeredTrainer?.name as string) ?? activeTabData.name
-      addLog(`✓ Installed: ${trainerDisplayName}`, 'done')
-      setInstallStatus('ok')
-      setTimeout(() => setInstallStatus('idle'), 3000)
+      // Submit through the security-scan pipeline (not direct install)
+      let submission = await trainerSubmissionsApi.upload(file)
+      setScanSubmission(submission)
+      addLog(`● Security scan started (id: ${submission.id.slice(0, 8)}…)`, 'connected')
+      setInstallStatus('scanning')
 
-      // Check if trainer has a dataset datasource and whether it's empty
-      const dsInfo = (registeredTrainer?.data_source_info as Record<string, unknown>) ?? {}
-      const dsType = dsInfo?.type as string | undefined
-      if (dsType === 'dataset') {
-        const dsSlug = dsInfo?.dataset_slug as string | undefined
-        const dsId   = dsInfo?.dataset_id  as string | undefined
-        if (dsSlug || dsId) {
-          try {
-            let dataset = null
-            if (dsSlug) {
-              dataset = await datasetsApi.getBySlug(dsSlug)
-            } else if (dsId) {
-              dataset = await datasetsApi.get(dsId)
-            }
-            if (dataset) {
-              const { count } = await datasetsApi.getEntryCount(dataset.id)
-              if (count === 0) {
-                addLog(`⚠ Dataset "${dataset.name}" is empty — add training data to run.`, 'error')
-                setEmptyDataset(dataset)
-                setShowUploadModal(true)
-              } else {
-                addLog(`✓ Dataset "${dataset.name}" has ${count} entries — ready to run.`, 'info')
+      // Poll until scan finishes (max 60 attempts × 2 s = 2 min)
+      let attempts = 0
+      while (submission.status === 'scanning' && attempts < 60) {
+        await new Promise(r => setTimeout(r, 2000))
+        submission = await trainerSubmissionsApi.get(submission.id)
+        setScanSubmission(submission)
+        attempts++
+      }
+
+      const scan = submission.llm_scan_result ?? {}
+
+      if (submission.status === 'approved') {
+        addLog(`✓ Security scan passed — trainer is active.`, 'done')
+        setInstallStatus('ok')
+
+        // Check if trainer's dataset is empty
+        const registeredTrainer = submission.parsed_metadata as Record<string, unknown> | null | undefined
+        const dsInfo = (registeredTrainer?.data_source_info as Record<string, unknown>) ?? {}
+        const dsType = dsInfo?.type as string | undefined
+        if (dsType === 'dataset') {
+          const dsSlug = dsInfo?.dataset_slug as string | undefined
+          const dsId   = dsInfo?.dataset_id  as string | undefined
+          if (dsSlug || dsId) {
+            try {
+              let dataset: DatasetProfile | null = null
+              if (dsSlug) dataset = await datasetsApi.getBySlug(dsSlug)
+              else if (dsId) dataset = await datasetsApi.get(dsId)
+              if (dataset) {
+                const { count } = await datasetsApi.getEntryCount(dataset.id)
+                if (count === 0) {
+                  addLog(`⚠ Dataset "${dataset.name}" is empty — add training data to run.`, 'error')
+                  setEmptyDataset(dataset)
+                  setShowUploadModal(true)
+                } else {
+                  addLog(`✓ Dataset "${dataset.name}" has ${count} entries — ready to run.`, 'info')
+                }
               }
-            }
-          } catch {
-            // Non-fatal — dataset check failed but install succeeded
+            } catch { /* non-fatal */ }
           }
         }
+      } else if (submission.status === 'pending_admin') {
+        const severity = scan.severity ?? 'low'
+        addLog(`⚠ Security issues detected (severity: ${severity}) — submitted for admin review.`, 'error')
+        addLog(`  Admin must approve before this trainer becomes active.`, 'error')
+        setInstallStatus('pending_admin')
+        setAnomalyModalOpen(true)
+        // Refresh pending list and switch sidebar to Pending tab
+        loadPendingSubmissions().then(() => setSidebarView('pending'))
+      } else if (submission.status === 'flagged' || submission.status === 'rejected') {
+        addLog(`✗ Trainer rejected: ${scan.summary ?? 'Security policy violation'}`, 'error')
+        setInstallStatus('error')
+        setAnomalyModalOpen(true)
+        setTimeout(() => setInstallStatus('idle'), 5000)
+      } else {
+        // Still scanning after timeout
+        addLog(`⚠ Scan timed out — check Trainers page for status.`, 'error')
+        setInstallStatus('pending_admin')
       }
     } catch (err: any) {
-      addLog(`✗ Install failed: ${err?.response?.data?.detail ?? err?.message ?? 'Unknown error'}`, 'error')
+      addLog(`✗ Submission failed: ${err?.response?.data?.detail ?? err?.message ?? 'Unknown error'}`, 'error')
       setInstallStatus('error')
       setTimeout(() => setInstallStatus('idle'), 3000)
     } finally {
       setInstalling(false)
     }
+  }
+
+  // ── Open file from Pending panel ──────────────────────────────────────────
+  // Opens the flagged file in the editor so the user can view/edit it.
+  // Does NOT re-trigger the scan — the submission is still under review.
+  const handleResubmit = async (sub: TrainerSubmission) => {
+    setResubmitting(sub.id)
+    const allFiles = _flattenTree(tree)
+    const match = allFiles.find(f => f.name === `${sub.trainer_name}.py`)
+    if (match) {
+      await openFile(match)
+    }
+    setSidebarView('files')
+    setResubmitting(null)
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -2766,32 +2867,52 @@ export default function CodeEditorPage() {
         {/* Install */}
         {!isViewer && (
           <button
-            onClick={handleInstall}
-            disabled={installing || !activeTabData}
-            title="Upload file as trainer plugin (same as TrainersPage → Upload Plugin)"
+            onClick={installStatus === 'error' && scanSubmission ? () => setAnomalyModalOpen(true) : handleInstall}
+            disabled={installing || !activeTabData || installStatus === 'pending_admin' || installStatus === 'ok' || installStatus === 'scanning'}
+            title={
+              installStatus === 'pending_admin'
+                ? 'Under admin review — wait for approval. See the Pending tab on the left.'
+                : installStatus === 'ok'
+                ? 'Scan already passed'
+                : 'Submit trainer for security scan — admin approval required before activation'
+            }
             className={clsx(
-              'flex items-center gap-1.5 px-3 py-1.5 text-xs border rounded-lg transition-colors disabled:opacity-40 font-medium',
+              'flex items-center gap-1.5 px-3 py-1.5 text-xs border rounded-lg transition-colors disabled:opacity-50 font-medium',
               installStatus === 'ok'
-                ? 'bg-green-900/40 border-green-700/60 text-green-400'
+                ? 'bg-green-900/40 border-green-700/60 text-green-400 cursor-default'
+                : installStatus === 'scanning'
+                ? 'bg-blue-900/40 border-blue-700/60 text-blue-300 cursor-default'
+                : installStatus === 'pending_admin'
+                ? 'bg-amber-900/40 border-amber-700/60 text-amber-300 cursor-not-allowed'
                 : installStatus === 'error'
                 ? 'bg-red-900/40 border-red-700/60 text-red-400'
                 : 'bg-indigo-900/50 border-indigo-700/60 text-indigo-300 hover:bg-indigo-800/60 hover:text-white',
             )}
           >
-            {installing ? <Loader2 size={12} className="animate-spin" /> : <PackageCheck size={12} />}
-            {installStatus === 'ok' ? 'Installed!' : installStatus === 'error' ? 'Failed' : installing ? 'Installing…' : 'Install'}
+            {installing || installStatus === 'scanning'
+              ? <Loader2 size={12} className="animate-spin" />
+              : installStatus === 'pending_admin'
+              ? <ShieldAlert size={12} />
+              : <PackageCheck size={12} />}
+            {installing ? 'Submitting…'
+              : installStatus === 'scanning' ? 'Scanning…'
+              : installStatus === 'ok' ? 'Scan Passed!'
+              : installStatus === 'pending_admin' ? 'Under Review'
+              : installStatus === 'error' ? 'Scan Failed'
+              : 'Submit & Scan'}
           </button>
         )}
 
-        {/* Run */}
+        {/* Run — only available after scan is approved */}
         {!isViewer && (
           <button
             onClick={handleRun}
-            disabled={running || !activeTabData}
+            disabled={running || !activeTabData || installStatus !== 'ok'}
+            title={installStatus !== 'ok' ? 'Submit & scan trainer first — run is blocked until scan passes' : 'Run trainer'}
             className="flex items-center gap-1.5 px-4 py-1.5 text-xs bg-green-700 hover:bg-green-600 text-white border border-green-600 rounded-lg transition-colors disabled:opacity-40 font-medium"
           >
             {running ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-            {running ? 'Running…' : 'Run'}
+            {running ? 'Running…' : installStatus !== 'ok' ? 'Run (scan first)' : 'Run'}
           </button>
         )}
 
@@ -2872,37 +2993,145 @@ export default function CodeEditorPage() {
 
         {/* File explorer sidebar */}
         <aside className="w-52 flex-shrink-0 border-r border-gray-800 flex flex-col bg-gray-950 overflow-hidden">
-          {/* My Files section */}
-          <div className="px-3 py-2 border-b border-gray-800 text-[10px] text-gray-500 uppercase tracking-wider font-medium">
-            My Files
-          </div>
-          <div className="flex-1 overflow-y-auto p-1 min-h-0">
-            {treeLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 size={16} className="animate-spin text-gray-600" />
-              </div>
-            ) : _flattenTree(tree).filter(n => !n.name.startsWith('sample_')).length === 0 && tree.filter(n => n.type === 'dir' || !n.name.startsWith('sample_')).length === 0 ? (
-              <p className="px-3 py-6 text-xs text-gray-600 text-center">
-                No files yet.<br />Click <strong>+ New File</strong> to start.
-              </p>
-            ) : (
-              <FileTree
-                nodes={tree.filter(n => n.type === 'dir' || !n.name.startsWith('sample_'))}
-                openPaths={openDirs}
-                activePath={activeTab}
-                onToggleDir={toggleDir}
-                onOpenFile={openFile}
-                onDelete={setDeleteTarget}
-              />
-            )}
+          {/* Sidebar tab switcher */}
+          <div className="flex border-b border-gray-800 flex-shrink-0">
+            <button
+              onClick={() => setSidebarView('files')}
+              className={clsx(
+                'flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-medium transition-colors',
+                sidebarView === 'files'
+                  ? 'text-white border-b-2 border-brand-500 -mb-px'
+                  : 'text-gray-500 hover:text-gray-300'
+              )}
+            >
+              <FileCode size={11} /> Files
+            </button>
+            <button
+              onClick={() => { setSidebarView('pending'); loadPendingSubmissions() }}
+              className={clsx(
+                'flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-medium transition-colors relative',
+                sidebarView === 'pending'
+                  ? 'text-amber-400 border-b-2 border-amber-500 -mb-px'
+                  : 'text-gray-500 hover:text-gray-300'
+              )}
+            >
+              <ShieldAlert size={11} /> Pending
+              {pendingSubmissions.length > 0 && (
+                <span className="absolute top-1 right-2 w-3.5 h-3.5 rounded-full bg-amber-500 text-[8px] text-black font-bold flex items-center justify-center">
+                  {pendingSubmissions.length}
+                </span>
+              )}
+            </button>
           </div>
 
-          {/* Templates section */}
-          <TemplatesSection
-            tree={tree}
-            activePath={activeTab}
-            onFork={forkSampleFile}
-          />
+          {sidebarView === 'files' ? (
+            <>
+              <div className="flex-1 overflow-y-auto p-1 min-h-0">
+                {treeLoading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 size={16} className="animate-spin text-gray-600" />
+                  </div>
+                ) : _flattenTree(tree).filter(n => !n.name.startsWith('sample_')).length === 0 && tree.filter(n => n.type === 'dir' || !n.name.startsWith('sample_')).length === 0 ? (
+                  <p className="px-3 py-6 text-xs text-gray-600 text-center">
+                    No files yet.<br />Click <strong>+ New File</strong> to start.
+                  </p>
+                ) : (
+                  <FileTree
+                    nodes={tree.filter(n => n.type === 'dir' || !n.name.startsWith('sample_'))}
+                    openPaths={openDirs}
+                    activePath={activeTab}
+                    onToggleDir={toggleDir}
+                    onOpenFile={openFile}
+                    onDelete={setDeleteTarget}
+                  />
+                )}
+              </div>
+              <TemplatesSection
+                tree={tree}
+                activePath={activeTab}
+                onFork={forkSampleFile}
+              />
+            </>
+          ) : (
+            <div className="flex-1 overflow-y-auto min-h-0">
+              {pendingLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 size={16} className="animate-spin text-gray-600" />
+                </div>
+              ) : pendingSubmissions.length === 0 ? (
+                <div className="px-3 py-8 text-center">
+                  <CheckCircle2 size={20} className="text-emerald-600 mx-auto mb-2" />
+                  <p className="text-xs text-gray-600">No pending reviews</p>
+                </div>
+              ) : (
+                <div className="p-2 space-y-2">
+                  {pendingSubmissions.map(sub => {
+                    const severity = sub.llm_scan_result?.severity ?? 'low'
+                    const isPending = sub.status === 'pending_admin'
+                    return (
+                      <div key={sub.id} className="bg-gray-900 border border-gray-800 rounded-lg p-2.5 text-xs">
+                        <div className="flex items-start gap-1.5 mb-1.5">
+                          <ShieldAlert size={11} className={clsx('flex-shrink-0 mt-0.5', isPending ? 'text-amber-400' : 'text-red-400')} />
+                          <span className="font-mono text-gray-200 truncate flex-1 leading-tight">{sub.trainer_name}.py</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          <span className={clsx(
+                            'px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wide',
+                            isPending ? 'bg-amber-900/60 text-amber-400' : 'bg-red-900/60 text-red-400'
+                          )}>
+                            {isPending ? 'Pending Review' : 'Flagged'}
+                          </span>
+                          <span className={clsx(
+                            'px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wide',
+                            severity === 'critical' || severity === 'malicious' ? 'bg-red-900/40 text-red-400' :
+                            severity === 'high' ? 'bg-orange-900/40 text-orange-400' :
+                            'bg-yellow-900/40 text-yellow-500'
+                          )}>
+                            {severity}
+                          </span>
+                        </div>
+                        {sub.llm_scan_result?.summary && (
+                          <p className="text-[10px] text-gray-500 mb-2 leading-snug line-clamp-2">
+                            {sub.llm_scan_result.summary}
+                          </p>
+                        )}
+                        {(sub.llm_scan_result?.issues ?? []).length > 0 && (
+                          <ul className="mb-2 space-y-0.5">
+                            {(sub.llm_scan_result.issues ?? []).slice(0, 3).map((issue, i) => (
+                              <li key={i} className="text-[10px] text-gray-600 flex gap-1">
+                                <span className="text-amber-600 flex-shrink-0">·</span>
+                                <span className="line-clamp-1">{issue}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        <p className="text-[9px] text-gray-700 mb-2">
+                          {new Date(sub.submitted_at).toLocaleDateString()}
+                        </p>
+                        {isPending ? (
+                          <p className="text-[10px] text-amber-600/80 mb-2">
+                            Waiting for admin approval. Once approved, re-open the file and submit again.
+                          </p>
+                        ) : null}
+                        <button
+                          onClick={() => handleResubmit(sub)}
+                          disabled={resubmitting === sub.id}
+                          className="w-full flex items-center justify-center gap-1.5 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-[11px] text-gray-300 hover:text-white transition-colors disabled:opacity-40"
+                          title="Open the file in the editor"
+                        >
+                          {resubmitting === sub.id
+                            ? <Loader2 size={10} className="animate-spin" />
+                            : <FileCode size={10} />
+                          }
+                          Open File
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </aside>
 
         {/* Editor + logs column */}
@@ -3209,6 +3438,13 @@ export default function CodeEditorPage() {
           }}
         />
       )}
+
+      {/* Security scan result modal */}
+      <TrainerAnomalyModal
+        open={anomalyModalOpen}
+        onClose={() => setAnomalyModalOpen(false)}
+        submission={scanSubmission}
+      />
 
       {/* Delete confirm dialog */}
       {deleteTarget && (

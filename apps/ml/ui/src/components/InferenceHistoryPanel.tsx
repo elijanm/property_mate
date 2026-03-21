@@ -19,18 +19,27 @@ export default function InferenceHistoryPanel({ deployment, allDeployments, refr
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [correcting, setCorrecting] = useState<string | null>(null)
 
+  // Filter by deployment_id only when a different version was explicitly selected.
+  // When showing the default/initial deployment, show all logs for the trainer so we
+  // don't miss logs served by a different active deployment record with the same version.
+  const deploymentIdFilter = selectedDeploy.id !== deployment.id ? selectedDeploy.id : undefined
+
   const load = useCallback(async () => {
     setLoading(true)
+    setLoadError(null)
     try {
-      const res = await inferenceApi.getLogs(deployment.trainer_name, page, 50, selectedDeploy.id)
+      const res = await inferenceApi.getLogs(deployment.trainer_name, page, 50, deploymentIdFilter)
       setLogs(res.items)
       setTotal(res.total)
-    } catch {}
+    } catch (err: unknown) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to load inference logs')
+    }
     finally { setLoading(false) }
-  }, [deployment.trainer_name, page, selectedDeploy.id])
+  }, [deployment.trainer_name, page, deploymentIdFilter])
 
   useEffect(() => { load() }, [load, refreshTrigger])
 
@@ -70,7 +79,11 @@ export default function InferenceHistoryPanel({ deployment, allDeployments, refr
         </button>
       </div>
 
-      {logs.length === 0 && (
+      {loadError && (
+        <div className="text-center py-4 text-red-400 text-xs">{loadError}</div>
+      )}
+
+      {!loadError && logs.length === 0 && (
         <div className="text-center py-16 text-gray-600 text-sm">No inferences yet.</div>
       )}
 

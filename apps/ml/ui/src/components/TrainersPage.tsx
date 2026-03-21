@@ -281,7 +281,7 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
     setUploadMsg(null)
     setScanSubmission(null)
     try {
-      // Use submission API — triggers LLM security scan in background
+      // Use submission API — triggers security scan in background
       const submission = await trainerSubmissionsApi.upload(file)
       setScanSubmission(submission)
       setUploadMsg(`Uploaded "${file.name}" — running security scan…`)
@@ -592,7 +592,7 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
         />
       )}
 
-      {/* LLM scan result modal */}
+      {/* Scan result modal */}
       <TrainerAnomalyModal
         open={anomalyModalOpen}
         onClose={() => setAnomalyModalOpen(false)}

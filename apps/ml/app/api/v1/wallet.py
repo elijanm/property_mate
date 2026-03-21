@@ -155,6 +155,20 @@ async def verify_topup(body: TopupVerifyRequest, user=Depends(get_current_user))
         reference=body.reference,
         description=f"Wallet top-up via Paystack (ref: {body.reference})",
     )
+    # Record in revenue ledger
+    try:
+        from app.services.ml_billing_service import record_revenue
+        from app.models.revenue_ledger import REV_WALLET_TOPUP
+        await record_revenue(
+            type=REV_WALLET_TOPUP,
+            amount_usd=payment["amount_usd"],
+            user_email=user.email,
+            org_id=user.org_id,
+            description=f"Wallet top-up via Paystack",
+            reference=body.reference,
+        )
+    except Exception:
+        pass
     logger.info(
         "wallet_credited",
         user_email=user.email,

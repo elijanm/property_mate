@@ -10,6 +10,74 @@ from app.utils.datetime import utc_now
 logger = structlog.get_logger(__name__)
 
 
+# ── Revenue recording ─────────────────────────────────────────────────────────
+
+async def record_revenue(
+    type: str,
+    amount_usd: float,
+    user_email: str,
+    org_id: str,
+    description: str,
+    plan_id: Optional[str] = None,
+    plan_name: Optional[str] = None,
+    reference: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> None:
+    """Append an entry to the revenue ledger."""
+    from app.models.revenue_ledger import RevenueLedger
+    entry = RevenueLedger(
+        org_id=org_id,
+        user_email=user_email,
+        type=type,
+        amount_usd=amount_usd,
+        plan_id=plan_id,
+        plan_name=plan_name,
+        description=description,
+        reference=reference,
+        metadata=metadata or {},
+    )
+    await entry.insert()
+
+
+# ── Proration ─────────────────────────────────────────────────────────────────
+
+def calculate_proration(
+    old_price: float,
+    new_price: float,
+) -> dict:
+    """
+    Calculate proration amounts for a mid-month plan change.
+    Returns:
+        days_remaining   – calendar days left in the current month
+        days_in_month    – total days in current month
+        proration_fraction – days_remaining / days_in_month
+        credit_usd       – refund for unused days on old plan
+        charge_usd       – charge for remaining days on new plan
+        net_usd          – net charge (positive = user owes, negative = platform owes user)
+    """
+    now = utc_now().replace(tzinfo=None)   # work in naive UTC throughout
+    if now.month == 12:
+        next_month_start = now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        next_month_start = now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    days_in_month = (next_month_start - month_start).days
+    days_remaining = (next_month_start - now).days + 1
+
+    frac = days_remaining / days_in_month
+    credit = round(old_price * frac, 2)
+    charge = round(new_price * frac, 2)
+    net = round(charge - credit, 2)
+    return {
+        "days_remaining": days_remaining,
+        "days_in_month": days_in_month,
+        "proration_fraction": round(frac, 4),
+        "credit_usd": credit,
+        "charge_usd": charge,
+        "net_usd": net,
+    }
+
+
 # ── Pricing config ────────────────────────────────────────────────────────────
 
 async def get_pricing_config() -> MLPricingConfig:

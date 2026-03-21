@@ -139,6 +139,31 @@ async def register(
     await user.insert()
     logger.info("ml_user_registered", email=email, role=role, org_id=org_id)
 
+    # Auto-create org config for non-annotators
+    if role != "annotator" and org_id and org_id != "system":
+        try:
+            from app.models.org_config import OrgConfig
+            from app.utils.datetime import utc_now as _utc_now
+            existing_cfg = await OrgConfig.find_one(OrgConfig.org_id == org_id)
+            if not existing_cfg:
+                # Build org name from first name e.g. "Mike_org"
+                first_name = (full_name or email.split("@")[0]).split()[0].capitalize()
+                base_slug = re.sub(r"[^a-z0-9]", "", first_name.lower())[:12] or "user"
+                short_id = str(uuid.uuid4()).replace("-", "")[:8]
+                slug = f"{base_slug}-{short_id}"
+                org_cfg = OrgConfig(
+                    org_id=org_id,
+                    org_name=f"{first_name}_org",
+                    display_name=f"{first_name}_org",
+                    slug=slug,
+                    org_type="individual",
+                    created_at=_utc_now(),
+                    updated_at=_utc_now(),
+                )
+                await org_cfg.insert()
+        except Exception as _cfg_err:
+            logger.warning("ml_org_config_create_failed", email=email, org_id=org_id, error=str(_cfg_err))
+
     if not skip_verification:
         import asyncio
         asyncio.create_task(_send_welcome_email(user, otp, token))
@@ -170,7 +195,7 @@ async def verify_by_otp(email: str, otp: str) -> MLUser:
         return user
     if not user.verification_otp or user.verification_otp != otp:
         raise HTTPException(status_code=400, detail="Invalid verification code")
-    if user.otp_expires_at and utc_now() > user.otp_expires_at:
+    if user.otp_expires_at and utc_now().replace(tzinfo=None) > user.otp_expires_at.replace(tzinfo=None):
         raise HTTPException(status_code=400, detail="Verification code has expired — please request a new one")
     await user.set({
         "is_verified": True,
@@ -290,9 +315,45 @@ async def reset_password(token: str, new_password: str) -> None:
     logger.info("ml_password_reset", email=user.email)
 
 
-async def change_password(user: MLUser, current_password: str, new_password: str) -> None:
+async def send_security_otp(user: MLUser, action: str = "change your password") -> None:
+    """Generate a 6-digit OTP, save it on the user, and email it. Expires in 10 minutes."""
+    import random
+    otp = f"{random.randint(0, 999999):06d}"
+    expires = utc_now() + timedelta(minutes=10)
+    await user.set({
+        "security_otp": otp,
+        "security_otp_expires_at": expires,
+    })
+    from app.core.email import send_email, _security_otp_html
+    import asyncio
+    asyncio.create_task(
+        send_email(
+            user.email,
+            "MLDock.io — Security verification code",
+            _security_otp_html(user.full_name, otp, action),
+        )
+    )
+    logger.info("security_otp_sent", email=user.email)
+
+
+async def verify_security_otp(user: MLUser, otp: str) -> None:
+    """Validate the security OTP. Raises HTTPException on failure."""
+    if not user.security_otp or user.security_otp != otp:
+        raise HTTPException(status_code=400, detail="Invalid security code")
+    expires = user.security_otp_expires_at
+    if expires:
+        now_naive = utc_now().replace(tzinfo=None)
+        exp_naive = expires.replace(tzinfo=None) if expires.tzinfo else expires
+        if now_naive > exp_naive:
+            raise HTTPException(status_code=400, detail="Security code has expired — please request a new one")
+    await user.set({"security_otp": None, "security_otp_expires_at": None})
+
+
+async def change_password(user: MLUser, current_password: str, new_password: str, otp: str = "") -> None:
     if not _verify(current_password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if otp:
+        await verify_security_otp(user, otp)
     if len(new_password) < 8:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
     await user.set({"hashed_password": _hash(new_password)})

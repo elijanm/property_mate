@@ -171,7 +171,7 @@ async def save_file(body: SaveFileRequest, user=Depends(require_roles("engineer"
     async with aiofiles.open(full, "w") as f:
         await f.write(body.content)
     try:
-        await scan_and_register_plugins(owner_email=user.email)
+        await scan_and_register_plugins(owner_email=user.email, org_id=user.org_id or None)
     except Exception:
         pass
     return {"saved": True, "path": body.path}

@@ -15,6 +15,22 @@ from app.utils.s3_url import refresh_output_urls
 
 router = APIRouter(prefix="/inference", tags=["inference"])
 
+
+async def _resolve_org_slug(org_slug: str) -> tuple[str, bool]:
+    """Resolve an org slug (current or previous) to (org_id, is_deprecated).
+    Raises 404 if not found.
+    """
+    from app.models.org_config import OrgConfig
+    # Try current slug first
+    cfg = await OrgConfig.find_one({"slug": org_slug})
+    if cfg:
+        return cfg.org_id, False
+    # Fall back to previous_slugs for backward-compat aliases
+    cfg = await OrgConfig.find_one({"previous_slugs": org_slug})
+    if cfg:
+        return cfg.org_id, True
+    raise HTTPException(status_code=404, detail=f"Organisation '{org_slug}' not found")
+
 _any_role = Depends(require_roles("viewer", "engineer", "admin"))
 _engineer = Depends(require_roles("engineer", "admin"))
 
@@ -95,7 +111,7 @@ def _extract_predicted_label_hint(outputs: Any, display_spec: list) -> Optional[
 
 @router.post("/{trainer_name}")
 async def run_inference(trainer_name: str, body: PredictRequest, user=Depends(get_current_user)):
-    """Run inference with a JSON body."""
+    """Run inference with a JSON body (system trainer)."""
     try:
         result, log_id = await predict(
             trainer_name=trainer_name,
@@ -107,6 +123,8 @@ async def run_inference(trainer_name: str, body: PredictRequest, user=Depends(ge
             user_email=user.email,
         )
         return {"trainer_name": trainer_name, "prediction": result, "log_id": log_id}
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
@@ -133,7 +151,7 @@ async def run_inference_upload(
     session_id: Optional[str] = Form(None),
     user=Depends(get_current_user),
 ):
-    """Run inference by uploading a file."""
+    """Run inference by uploading a file (system trainer)."""
     data = await file.read()
     filename = file.filename or "upload"
     mime = file.content_type or "application/octet-stream"
@@ -162,12 +180,13 @@ async def run_inference_upload(
             user_email=user.email,
         )
         return {"trainer_name": trainer_name, "prediction": result, "log_id": log_id}
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
         import traceback
         tb = traceback.extract_tb(exc.__traceback__)
-        # find the innermost frame inside user trainer code (skip framework frames)
         trainer_frame = next(
             (f for f in reversed(tb) if "ml_plugin_" in (f.filename or "") or "trainers/" in (f.filename or "")),
             tb[-1] if tb else None,
@@ -179,29 +198,10 @@ async def run_inference_upload(
         raise HTTPException(status_code=500, detail=f"Inference failed at {location}: {exc}")
 
 
-@router.get("/{trainer_name}/schema", dependencies=[_any_role])
-async def get_schema(trainer_name: str):
-    """Returns the input + output schema for the active deployment, including output_display spec."""
-    from app.models.model_deployment import ModelDeployment
-    from app.models.trainer_registration import TrainerRegistration
-    dep = await ModelDeployment.find_one(
-        ModelDeployment.trainer_name == trainer_name,
-        ModelDeployment.status == "active",
-        ModelDeployment.is_default == True,  # noqa: E712
-    )
-    if not dep:
-        raise HTTPException(status_code=404, detail=f"No active deployment for '{trainer_name}'")
-    reg = await TrainerRegistration.find_one(TrainerRegistration.name == trainer_name)
-    return {
-        "trainer_name": trainer_name,
-        "alias": reg.alias if reg and reg.alias else trainer_name,
-        "version": dep.version,
-        "model_uri": dep.model_uri,
-        "input_schema": dep.input_schema or {},
-        "output_schema": dep.output_schema if hasattr(dep, "output_schema") else {},
-        "output_display": reg.output_display if reg else [],
-    }
-
+# ── Sub-resource routes (MUST be before org-slug catch-all) ───────────────────
+# Any POST /{trainer_name}/X route must be registered before
+# POST /{org_slug}/{trainer_name}, otherwise FastAPI's first-match routing
+# swallows "X" as the trainer_name parameter of the org route.
 
 class CompareRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
@@ -209,16 +209,11 @@ class CompareRequest(BaseModel):
     deployment_ids: List[str]
 
 
-@router.post("/{trainer_name}/compare", dependencies=[_any_role])
-async def compare_versions(trainer_name: str, body: CompareRequest):
-    """
-    Run the same inputs against multiple deployments in parallel and return
-    side-by-side results for version comparison.
-    """
+async def _run_compare(trainer_name: str, body: CompareRequest) -> dict:
+    """Shared implementation for both compare routes."""
     from app.services.inference_service import predict_by_deployment_id
     from app.models.model_deployment import ModelDeployment as Dep
 
-    # Validate deployment IDs belong to this trainer
     deployments = {str(d.id): d for d in await Dep.find(
         Dep.trainer_name == trainer_name
     ).to_list()}
@@ -244,7 +239,7 @@ async def compare_versions(trainer_name: str, body: CompareRequest):
                 "result": result,
                 "log_id": log_id,
                 "error": None,
-                "latency_ms": None,  # latency is inside predict_by_deployment_id already
+                "latency_ms": None,
             }
         except Exception as exc:
             return {
@@ -260,6 +255,239 @@ async def compare_versions(trainer_name: str, body: CompareRequest):
 
     comparisons = await asyncio.gather(*[run_one(dep_id) for dep_id in body.deployment_ids])
     return {"trainer_name": trainer_name, "comparisons": list(comparisons)}
+
+
+@router.post("/{trainer_name}/compare", dependencies=[_any_role])
+async def compare_versions(trainer_name: str, body: CompareRequest):
+    """Run the same inputs against multiple deployments and return side-by-side results."""
+    return await _run_compare(trainer_name, body)
+
+
+# ── Org-slug routes ───────────────────────────────────────────────────────────
+# POST /inference/{org_slug}/{trainer_name}
+# POST /inference/{org_slug}/{trainer_name}/upload
+# POST /inference/{org_slug}/{trainer_name}/compare
+# GET  /inference/{org_slug}/{trainer_name}/schema
+# Registered AFTER all /{trainer_name}/SUFFIX routes above so FastAPI
+# doesn't swallow known suffixes as trainer_name segments.
+
+@router.post("/{org_slug}/{trainer_name}")
+async def run_inference_org(
+    org_slug: str,
+    trainer_name: str,
+    body: PredictRequest,
+    user=Depends(get_current_user),
+):
+    """Run inference against an org-owned trainer via its slug-prefixed URL."""
+    from fastapi.responses import JSONResponse
+    namespace, is_deprecated = await _resolve_org_slug(org_slug)
+    try:
+        result, log_id = await predict(
+            trainer_name=trainer_name,
+            inputs=body.inputs,
+            model_version=body.model_version,
+            caller_org_id=user.org_id,
+            session_id=body.session_id,
+            org_id=user.org_id,
+            user_email=user.email,
+            namespace_constraint=namespace,
+        )
+        payload = {"trainer_name": f"{org_slug}/{trainer_name}", "prediction": result, "log_id": log_id}
+        if is_deprecated:
+            response = JSONResponse(content=payload)
+            response.headers["X-Slug-Deprecated"] = "true"
+            response.headers["X-Slug-Hint"] = "This org slug has changed. Update your integration URL."
+            return response
+        return payload
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        import traceback
+        tb = traceback.extract_tb(exc.__traceback__)
+        trainer_frame = next(
+            (f for f in reversed(tb) if "ml_plugin_" in (f.filename or "") or "trainers/" in (f.filename or "")),
+            tb[-1] if tb else None,
+        )
+        location = (
+            f"{Path(trainer_frame.filename).name}:{trainer_frame.lineno} in {trainer_frame.name}"
+            if trainer_frame else "unknown location"
+        )
+        raise HTTPException(status_code=500, detail=f"Inference failed at {location}: {exc}")
+
+
+@router.post("/{org_slug}/{trainer_name}/upload")
+async def run_inference_org_upload(
+    org_slug: str,
+    trainer_name: str,
+    file: UploadFile = File(...),
+    extra: Optional[str] = Form(None),
+    version: Optional[str] = Form(None),
+    session_id: Optional[str] = Form(None),
+    user=Depends(get_current_user),
+):
+    """Run inference by uploading a file against an org-owned trainer."""
+    from fastapi.responses import JSONResponse
+    namespace, is_deprecated = await _resolve_org_slug(org_slug)
+    data = await file.read()
+    filename = file.filename or "upload"
+    mime = file.content_type or "application/octet-stream"
+
+    inputs: dict = {
+        "file_b64": _file_to_b64(data),
+        "file_name": filename,
+        "mime_type": mime,
+    }
+    if mime.startswith("image/"):
+        inputs["image_b64"] = inputs["file_b64"]
+    if extra:
+        try:
+            inputs.update(json.loads(extra))
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="`extra` must be a valid JSON string")
+
+    try:
+        result, log_id = await predict(
+            trainer_name=trainer_name,
+            inputs=inputs,
+            model_version=version or None,
+            caller_org_id=user.org_id,
+            session_id=session_id,
+            org_id=user.org_id,
+            user_email=user.email,
+            namespace_constraint=namespace,
+        )
+        payload = {"trainer_name": f"{org_slug}/{trainer_name}", "prediction": result, "log_id": log_id}
+        if is_deprecated:
+            response = JSONResponse(content=payload)
+            response.headers["X-Slug-Deprecated"] = "true"
+            response.headers["X-Slug-Hint"] = "This org slug has changed. Update your integration URL."
+            return response
+        return payload
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        import traceback
+        tb = traceback.extract_tb(exc.__traceback__)
+        trainer_frame = next(
+            (f for f in reversed(tb) if "ml_plugin_" in (f.filename or "") or "trainers/" in (f.filename or "")),
+            tb[-1] if tb else None,
+        )
+        location = (
+            f"{Path(trainer_frame.filename).name}:{trainer_frame.lineno} in {trainer_frame.name}"
+            if trainer_frame else "unknown location"
+        )
+        raise HTTPException(status_code=500, detail=f"Inference failed at {location}: {exc}")
+
+
+@router.get("/{org_slug}/{trainer_name}/schema", dependencies=[_any_role])
+async def get_schema_org(org_slug: str, trainer_name: str):
+    """Returns schema for an org-owned trainer via its slug-prefixed URL."""
+    await _resolve_org_slug(org_slug)  # validates slug exists (ignore deprecated flag)
+    return await get_schema(trainer_name)
+
+
+@router.post("/{org_slug}/{trainer_name}/compare", dependencies=[_any_role])
+async def compare_versions_org(org_slug: str, trainer_name: str, body: CompareRequest):
+    """Compare versions of an org-owned trainer via its slug-prefixed URL."""
+    await _resolve_org_slug(org_slug)  # validates slug exists
+    return await _run_compare(trainer_name, body)
+
+
+@router.get("/{trainer_name}/schema", dependencies=[_any_role])
+async def get_schema(trainer_name: str):
+    """Returns the input + output schema for the active deployment, including output_display spec."""
+    from app.models.model_deployment import ModelDeployment
+    from app.models.trainer_registration import TrainerRegistration
+    dep = await ModelDeployment.find_one(
+        ModelDeployment.trainer_name == trainer_name,
+        ModelDeployment.status == "active",
+        ModelDeployment.is_default == True,  # noqa: E712
+    )
+    if not dep:
+        raise HTTPException(status_code=404, detail=f"No active deployment for '{trainer_name}'")
+    reg = await TrainerRegistration.find_one(TrainerRegistration.name == trainer_name)
+
+    # Use reg.org_id as the authoritative ownership source.
+    # reg.namespace may have been incorrectly reset to "system" by past system-wide
+    # scan_and_register_plugins() calls that ran without org context (app startup, train task).
+    reg_org_id = (reg.org_id if reg else "") or ""
+    if reg_org_id:
+        namespace = reg_org_id
+    else:
+        namespace = (reg.namespace if reg and reg.namespace else None) or "system"
+
+    full_name = reg.full_name if reg and reg.full_name else trainer_name
+
+    # Compute / repair alias.
+    # Force recompute when:
+    #   - alias is empty, OR
+    #   - trainer is org-owned but alias has no "/" prefix (was corrupted by a system scan)
+    alias = (reg.alias or "") if reg else ""
+    is_org_owned = namespace not in ("system", "")
+    alias_needs_prefix = is_org_owned and "/" not in alias
+
+    if not alias or alias_needs_prefix:
+        if not is_org_owned:
+            alias = trainer_name  # system trainer — no prefix
+        else:
+            from app.models.org_config import OrgConfig
+            org_cfg = await OrgConfig.find_one(OrgConfig.org_id == namespace)
+            if org_cfg and org_cfg.slug:
+                alias = f"{org_cfg.slug}/{trainer_name}"
+            elif reg and reg.owner_email:
+                prefix = reg.owner_email.split("@")[0].lower().replace(".", "_")
+                alias = f"{prefix}/{trainer_name}"
+            else:
+                alias = f"{namespace[:8]}/{trainer_name}"
+
+        # Repair the stored record so future calls and inference routing are correct
+        if reg:
+            await reg.set({
+                "alias": alias,
+                "namespace": namespace,
+                "full_name": f"{namespace}/{trainer_name}",
+            })
+
+    return {
+        "trainer_name": trainer_name,
+        "alias": alias,
+        "namespace": namespace,
+        "full_name": full_name,
+        "version": dep.version,
+        "model_uri": dep.model_uri,
+        "input_schema": dep.input_schema or {},
+        "output_schema": dep.output_schema if hasattr(dep, "output_schema") else {},
+        "output_display": reg.output_display if reg else [],
+    }
+
+
+@router.get("/logs/debug")
+async def debug_inference_logs(user=Depends(get_current_user)):
+    """Debug: show org_id and log counts to help diagnose missing logs."""
+    from app.models.inference_log import InferenceLog
+    total_all = await InferenceLog.count()
+    total_mine = await InferenceLog.find(InferenceLog.org_id == user.org_id).count()
+    recent = await InferenceLog.find().sort(-InferenceLog.created_at).limit(5).to_list()
+    return {
+        "your_org_id": user.org_id,
+        "total_logs_in_db": total_all,
+        "total_logs_matching_your_org": total_mine,
+        "last_5_logs": [
+            {
+                "id": str(l.id),
+                "trainer_name": l.trainer_name,
+                "org_id": l.org_id,
+                "deployment_id": l.deployment_id,
+                "error": l.error,
+                "created_at": l.created_at.isoformat(),
+            }
+            for l in recent
+        ],
+    }
 
 
 @router.get("/logs/all")

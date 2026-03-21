@@ -1,7 +1,7 @@
 """
 Trainer submission and approval API.
 
-Handles the secure upload → LLM scan → admin review → approve/reject flow
+Handles the secure upload → security scan → admin review → approve/reject flow
 for user-uploaded trainer plugins.
 """
 from __future__ import annotations
@@ -75,7 +75,7 @@ async def _run_security_scan_background(
     trainer_name: str,
     owner_email: str,
 ) -> None:
-    """Background task: run LLM scan, update submission, create ticket/violation if needed."""
+    """Background task: run security scan, update submission, create ticket/violation if needed."""
     from app.services.trainer_security_service import (
         scan_trainer_security,
         create_admin_ticket,
@@ -185,7 +185,7 @@ async def upload_trainer(
     file: UploadFile = File(...),
     current_user: MLUser = Depends(get_current_user),
 ):
-    """Upload a .py trainer file. Triggers background LLM security scan."""
+    """Upload a .py trainer file. Triggers background security scan."""
     if not file.filename or not file.filename.endswith(".py"):
         raise HTTPException(status_code=400, detail="Only .py files are accepted")
 
@@ -287,6 +287,21 @@ async def get_submission(
             raise HTTPException(status_code=403, detail="Access denied")
 
     return _submission_dict(submission)
+
+
+@router.get("/trainer-submissions/{submission_id}/source", dependencies=[RequireAdmin])
+async def get_submission_source(submission_id: str):
+    """Return the raw source code of a submission (admin only)."""
+    import os
+    submission = await TrainerSubmission.get(submission_id)
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    file_key = submission.file_key or ""
+    if not file_key or not os.path.exists(file_key):
+        raise HTTPException(status_code=404, detail="Source file not found on disk")
+    with open(file_key, "r", errors="replace") as f:
+        source = f.read()
+    return {"submission_id": submission_id, "trainer_name": submission.trainer_name, "source": source}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -425,6 +440,49 @@ class TicketUpdateRequest(BaseModel):
     status: Optional[str] = None
     assigned_to: Optional[str] = None
     admin_note: Optional[str] = None
+
+
+@router.get("/debug/security-llm", dependencies=[RequireAdmin])
+async def debug_security_llm():
+    """
+    Test the LLM configuration used by the trainer security scanner.
+    Returns which provider responded and what env vars are visible.
+    Admin only.
+    """
+    import os
+    from app.services.trainer_security_service import _call_ollama, _call_openai
+
+    test_prompt = 'Respond with JSON only: {"ok": true, "msg": "security LLM test"}'
+
+    result = {
+        "env": {
+            "OLLAMA_BASE_URL": os.environ.get("OLLAMA_BASE_URL", ""),
+            "OLLAMA_SECURITY_MODEL": os.environ.get("OLLAMA_SECURITY_MODEL", ""),
+            "OLLAMA_MODEL": os.environ.get("OLLAMA_MODEL", ""),
+            "OPENAI_API_KEY_set": bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")),
+            "OPENAI_MODEL": os.environ.get("OPENAI_MODEL", ""),
+            "LLM_PROVIDER": os.environ.get("LLM_PROVIDER", ""),
+            "LLM_MODEL": os.environ.get("LLM_MODEL", ""),
+            "LLM_BASE_URL": os.environ.get("LLM_BASE_URL", ""),
+        },
+        "ollama": {"ok": False, "error": None, "model": None},
+        "openai": {"ok": False, "error": None, "model": None},
+    }
+
+    try:
+        raw, model = await _call_ollama(test_prompt)
+        result["ollama"] = {"ok": True, "model": model, "response_preview": raw[:120]}
+    except Exception as exc:
+        result["ollama"]["error"] = str(exc)
+
+    try:
+        raw, model = await _call_openai(test_prompt)
+        result["openai"] = {"ok": True, "model": model, "response_preview": raw[:120]}
+    except Exception as exc:
+        result["openai"]["error"] = str(exc)
+
+    result["will_scan"] = result["ollama"]["ok"] or result["openai"]["ok"]
+    return result
 
 
 @router.patch("/admin-tickets/{ticket_id}", dependencies=[RequireAdmin])

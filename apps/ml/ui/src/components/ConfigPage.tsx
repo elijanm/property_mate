@@ -1,16 +1,22 @@
 import { useState, useEffect } from 'react'
 import { configApi, type TrainingConfig, type DeviceInfo, type CudaDeviceDetail } from '@/api/config'
-import { Cpu, Save, Loader2, CheckCircle2, Zap, Globe, Eye } from 'lucide-react'
+import { orgConfigApi } from '@/api/orgConfig'
+import { useAuth } from '@/context/AuthContext'
+import { useOrgConfig } from '@/context/OrgConfigContext'
+import { Cpu, Save, Loader2, CheckCircle2, Zap, Globe, Eye, Building2 } from 'lucide-react'
 import clsx from 'clsx'
 
-type Tab = 'training' | 'discovery'
+type Tab = 'training' | 'discovery' | 'organisation'
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'training',  label: 'Training' },
-  { id: 'discovery', label: 'Discovery' },
+  { id: 'training',     label: 'Training' },
+  { id: 'discovery',    label: 'Discovery' },
+  { id: 'organisation', label: 'Organisation' },
 ]
 
 export default function ConfigPage() {
+  const { user } = useAuth()
+  const { orgConfig, refetch: refetchOrgConfig } = useOrgConfig()
   const [config, setConfig] = useState<TrainingConfig | null>(null)
   const [device, setDevice] = useState<DeviceInfo | null>(null)
   const [loading, setLoading] = useState(true)
@@ -19,11 +25,41 @@ export default function ConfigPage() {
   const [form, setForm] = useState<Partial<TrainingConfig>>({})
   const [tab, setTab] = useState<Tab>('training')
 
+  // Org config local form state (seeded from context)
+  const [orgSlug, setOrgSlug] = useState('')
+  const [orgDisplayName, setOrgDisplayName] = useState('')
+  const [orgSaving, setOrgSaving] = useState(false)
+  const [orgSaved, setOrgSaved] = useState(false)
+  const [orgError, setOrgError] = useState('')
+
   useEffect(() => {
     Promise.all([configApi.get(), configApi.getDevice()]).then(([cfg, dev]) => {
       setConfig(cfg); setForm(cfg); setDevice(dev)
     }).catch(() => {}).finally(() => setLoading(false))
   }, [])
+
+  // Seed local org form state when context loads
+  useEffect(() => {
+    if (orgConfig) {
+      setOrgSlug(orgConfig.slug)
+      setOrgDisplayName(orgConfig.display_name)
+    }
+  }, [orgConfig?.org_id])
+
+  const saveOrg = async () => {
+    setOrgSaving(true)
+    setOrgError('')
+    try {
+      await orgConfigApi.update({ slug: orgSlug, display_name: orgDisplayName })
+      refetchOrgConfig()
+      setOrgSaved(true)
+      setTimeout(() => setOrgSaved(false), 2000)
+    } catch (err: any) {
+      setOrgError(err?.response?.data?.detail ?? err?.message ?? 'Failed to save')
+    } finally {
+      setOrgSaving(false)
+    }
+  }
 
   const save = async () => {
     setSaving(true)
@@ -123,6 +159,81 @@ export default function ConfigPage() {
               {saving ? 'Saving…' : saved ? 'Saved!' : 'Save Config'}
             </button>
             {saved && <span className="text-xs text-green-400">Saved.</span>}
+          </div>
+        </div>
+      )}
+
+      {/* ── Organisation Tab ──────────────────────────────────────────────── */}
+      {tab === 'organisation' && (
+        <div className="space-y-6">
+          <div className="bg-gray-900 rounded-2xl p-5 border border-gray-800 space-y-5">
+            <h3 className="text-sm font-semibold text-gray-200 flex items-center gap-2">
+              <Building2 size={15} /> Organisation Identity
+            </h3>
+            <p className="text-xs text-gray-500 leading-relaxed">
+              Set a unique slug for your organisation. It appears in inference API URLs and trainer aliases
+              — e.g. <span className="font-mono text-brand-400">/inference/acme/my_model</span>.
+              Only admins can change the slug.
+            </p>
+
+            {/* Display name */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-gray-400">Display Name</label>
+              <input
+                type="text"
+                value={orgDisplayName}
+                onChange={e => setOrgDisplayName(e.target.value)}
+                placeholder="Acme Corp"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-brand-500"
+              />
+            </div>
+
+            {/* Slug */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-gray-400">
+                API Slug
+                {user?.role !== 'admin' && (
+                  <span className="ml-2 text-gray-600">(admin only)</span>
+                )}
+              </label>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-600 font-mono">/inference/</span>
+                <input
+                  type="text"
+                  value={orgSlug}
+                  onChange={e => setOrgSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+                  disabled={user?.role !== 'admin'}
+                  placeholder="acme"
+                  className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 font-mono focus:outline-none focus:border-brand-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                />
+                <span className="text-xs text-gray-600 font-mono">/&lt;trainer_name&gt;</span>
+              </div>
+              <p className="text-[11px] text-gray-600">3–40 chars, lowercase alphanumeric and hyphens only</p>
+            </div>
+
+            {/* Current org_id info */}
+            {orgConfig && (
+              <div className="bg-gray-800/50 rounded-lg p-3 text-xs space-y-1">
+                <p className="text-gray-500">Current org ID: <span className="font-mono text-gray-400">{orgConfig.org_id}</span></p>
+                {orgConfig.slug && (
+                  <p className="text-gray-500">Active alias prefix: <span className="font-mono text-brand-400">{orgConfig.slug}/</span></p>
+                )}
+                {!orgConfig.slug && (
+                  <p className="text-gray-600 italic">No slug set — trainers will be called by name only.</p>
+                )}
+              </div>
+            )}
+
+            {orgError && <p className="text-xs text-red-400">{orgError}</p>}
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button onClick={saveOrg} disabled={orgSaving || user?.role !== 'admin'}
+              className="flex items-center gap-2 px-6 py-2.5 bg-brand-600 hover:bg-brand-700 disabled:opacity-40 rounded-xl text-sm font-semibold text-white transition-colors">
+              {orgSaving ? <Loader2 size={15} className="animate-spin" /> : orgSaved ? <CheckCircle2 size={15} /> : <Save size={15} />}
+              {orgSaving ? 'Saving…' : orgSaved ? 'Saved!' : 'Save Organisation'}
+            </button>
+            {orgSaved && <span className="text-xs text-green-400">Saved.</span>}
           </div>
         </div>
       )}

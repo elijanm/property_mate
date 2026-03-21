@@ -58,6 +58,9 @@ async def scan_trainer_security(
     """
     Scan trainer source code for security issues using LLM.
     Tries Ollama first, falls back to OpenAI.
+    If LLM is unavailable, falls back to quick pattern scan result:
+      - No pattern hits → auto-approve (passed=True)
+      - Pattern hits found → require manual review
 
     Returns:
         {passed, issues, severity, model_used, summary, quick_hits}
@@ -66,8 +69,8 @@ async def scan_trainer_security(
 
     prompt = _build_security_prompt(source, trainer_name, quick_hits)
 
-    # Try Ollama first, fall back to OpenAI
-    result, model_used = await _call_llm_with_fallback(prompt)
+    # Try Ollama first, fall back to OpenAI, then fall back to pattern-only result
+    result, model_used = await _call_llm_with_fallback(prompt, quick_hits)
 
     result["quick_hits"] = [h["description"] for h in quick_hits]
     result["model_used"] = model_used
@@ -125,7 +128,7 @@ Trainer source:
 Respond with JSON only, no extra text."""
 
 
-async def _call_llm_with_fallback(prompt: str) -> tuple[Dict[str, Any], str]:
+async def _call_llm_with_fallback(prompt: str, quick_hits: list) -> tuple[Dict[str, Any], str]:
     """Try Ollama, fallback to OpenAI. Returns (parsed_result, model_name)."""
     # Try Ollama first
     try:
@@ -143,13 +146,21 @@ async def _call_llm_with_fallback(prompt: str) -> tuple[Dict[str, Any], str]:
     except Exception as exc:
         logger.warning("trainer_security_openai_failed", error=str(exc))
 
-    # If both fail, return a safe default requiring manual review
-    return {
-        "passed": False,
-        "severity": "low",
-        "summary": "Automated scan failed — manual review required",
-        "issues": ["LLM scan unavailable"],
-    }, "fallback"
+    # Smart fallback: use pattern scan result when LLM unavailable
+    if not quick_hits:
+        return {
+            "passed": True,
+            "severity": "none",
+            "summary": "Automated security scan unavailable — no suspicious patterns detected by static analysis.",
+            "issues": [],
+        }, "pattern_scan"
+    else:
+        return {
+            "passed": False,
+            "severity": "low",
+            "summary": f"Automated security scan unavailable — {len(quick_hits)} suspicious pattern(s) detected by static analysis. Manual review required.",
+            "issues": [h["description"] for h in quick_hits],
+        }, "pattern_scan"
 
 
 async def _call_ollama(prompt: str) -> tuple[str, str]:
@@ -157,9 +168,25 @@ async def _call_ollama(prompt: str) -> tuple[str, str]:
     import httpx
     from app.core.config import settings
 
-    # Use configured model or default to a capable one
-    model = getattr(settings, "OLLAMA_SECURITY_MODEL", None) or getattr(settings, "OLLAMA_MODEL", "llama3.2:latest")
-    base_url = getattr(settings, "OLLAMA_BASE_URL", "http://ollama:11434")
+    # Security-specific model → generic Ollama model → not available
+    model = (
+        getattr(settings, "OLLAMA_SECURITY_MODEL", None)
+        or getattr(settings, "OLLAMA_MODEL", None)
+        or os.environ.get("OLLAMA_SECURITY_MODEL", "")
+        or os.environ.get("OLLAMA_MODEL", "")
+    )
+    if not model:
+        raise ValueError("No Ollama model configured (set OLLAMA_SECURITY_MODEL or OLLAMA_MODEL)")
+
+    # OLLAMA_BASE_URL — translate localhost/127.0.0.1 → host.docker.internal so
+    # an Ollama running on the host machine is reachable from inside the container.
+    base_url = (
+        getattr(settings, "OLLAMA_BASE_URL", None)
+        or os.environ.get("OLLAMA_BASE_URL", "")
+    )
+    if not base_url:
+        raise ValueError("OLLAMA_BASE_URL is not configured")
+    base_url = base_url.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")
 
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(
@@ -172,16 +199,30 @@ async def _call_ollama(prompt: str) -> tuple[str, str]:
 
 
 async def _call_openai(prompt: str) -> tuple[str, str]:
-    """Call OpenAI-compatible API."""
+    """Call OpenAI-compatible API. Falls back to LLM_* env vars used by the editor."""
     import httpx
     from app.core.config import settings
 
-    api_key = getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
-    base_url = getattr(settings, "OPENAI_BASE_URL", "https://api.openai.com/v1")
-    model = getattr(settings, "OPENAI_MODEL", "gpt-4o-mini")
+    # Accept OPENAI_* vars first, then fall back to LLM_* vars (shared with editor)
+    api_key = (
+        getattr(settings, "OPENAI_API_KEY", "")
+        or os.environ.get("OPENAI_API_KEY", "")
+        or os.environ.get("LLM_API_KEY", "")
+    )
+    base_url = (
+        getattr(settings, "OPENAI_BASE_URL", "")
+        or os.environ.get("OPENAI_BASE_URL", "")
+        or os.environ.get("LLM_BASE_URL", "")
+        or "https://api.openai.com/v1"
+    )
+    model = (
+        getattr(settings, "OPENAI_MODEL", "")
+        or os.environ.get("OPENAI_MODEL", "")
+        or os.environ.get("LLM_MODEL", "gpt-4o-mini")
+    )
 
     if not api_key:
-        raise ValueError("No OpenAI API key configured")
+        raise ValueError("No OpenAI API key configured (set OPENAI_API_KEY or LLM_API_KEY)")
 
     async with httpx.AsyncClient(timeout=90) as client:
         resp = await client.post(

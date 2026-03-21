@@ -12,6 +12,7 @@ import VersionComparePanel from './VersionComparePanel'
 import IntegrationPanel from './IntegrationPanel'
 import ApiDocsPanel from './ApiDocsPanel'
 import { trainersApi } from '@/api/trainers'
+import { useOrgConfig } from '@/context/OrgConfigContext'
 import {
   Brain, FlaskConical, ThumbsUp, BarChart2, Clock, History,
   Cpu, ChevronRight, Target, TrendingUp, GitCompare, ChevronDown,
@@ -52,6 +53,9 @@ export default function ModelWorkspace({ deployment, onClose }: Props) {
   const [schema, setSchema] = useState<Record<string, unknown>>({})
   const [outputSchema, setOutputSchema] = useState<Record<string, unknown>>({})
   const [trainerAlias, setTrainerAlias] = useState<string | undefined>()
+  const [trainerNamespace, setTrainerNamespace] = useState<string | undefined>()
+  const { orgConfig } = useOrgConfig()
+  const orgSlug = orgConfig?.slug ?? ''
 
   // Version management
   const [versions, setVersions] = useState<ModelDeployment[]>([deployment])
@@ -63,7 +67,8 @@ export default function ModelWorkspace({ deployment, onClose }: Props) {
     trainersApi.getSchema(deployment.trainer_name).then(s => {
       setSchema(s.input_schema ?? s)
       if (s.output_schema) setOutputSchema(s.output_schema)
-      if (s.alias) setTrainerAlias(s.alias)
+      if (s.namespace) setTrainerNamespace(s.namespace)
+      if (s.alias)    setTrainerAlias(s.alias)
     }).catch(() => {})
     if (!sessionStorage.getItem('ml_session_id')) {
       sessionStorage.setItem('ml_session_id', Math.random().toString(36).slice(2))
@@ -88,6 +93,8 @@ export default function ModelWorkspace({ deployment, onClose }: Props) {
     setLastInputs(inputs ?? null)
     setResults(prev => [{ result, ts: new Date().toLocaleTimeString() }, ...prev].slice(0, 50))
     setTab('results')
+    // Trigger refresh of Inferences + Feedback panels so the new log appears
+    setFeedbackRefresh(n => n + 1)
   }
 
   const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
@@ -314,18 +321,34 @@ export default function ModelWorkspace({ deployment, onClose }: Props) {
           />
         )}
 
-        {tab === 'integration' && (
-          <IntegrationPanel
-            deployment={current}
-            inputSchema={schema}
-            outputSchema={outputSchema}
-            alias={trainerAlias}
-          />
-        )}
+        {(tab === 'integration' || tab === 'api-docs') && (() => {
+          // system trainers → no prefix; org trainers → {org_slug}/{trainer_name}
+          const isSystem = !trainerNamespace || trainerNamespace === 'system'
 
-        {tab === 'api-docs' && (
-          <ApiDocsPanel deployment={current} />
-        )}
+          // displaySlug: the org slug segment shown in the URL
+          // Priority: user's own org slug from context → prefix already stored in trainerAlias → nothing
+          const aliasPrefix = trainerAlias?.includes('/') ? trainerAlias.split('/')[0] : undefined
+          const displaySlug: string | undefined = isSystem
+            ? undefined
+            : orgSlug || aliasPrefix || undefined
+
+          const effectiveAlias = isSystem
+            ? current.trainer_name
+            : displaySlug
+              ? `${displaySlug}/${current.trainer_name}`
+              : current.trainer_name
+
+          if (tab === 'integration') return (
+            <IntegrationPanel
+              deployment={current}
+              inputSchema={schema}
+              outputSchema={outputSchema}
+              alias={effectiveAlias}
+              orgSlug={displaySlug}
+            />
+          )
+          return <ApiDocsPanel deployment={current} alias={effectiveAlias} orgSlug={displaySlug} />
+        })()}
       </div>
     </div>
   )

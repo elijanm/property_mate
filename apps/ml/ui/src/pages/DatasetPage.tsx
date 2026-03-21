@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, Globe, Lock, GitFork, Link2, BarChart2, MapPin, TrendingUp, Award, Video, Film, Share2, ExternalLink, UserMinus, RefreshCw, ThumbsUp, ThumbsDown, Phone, Loader2, Download } from 'lucide-react'
+import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, Globe, Lock, GitFork, Link2, BarChart2, MapPin, TrendingUp, Award, Video, Film, Share2, ExternalLink, UserMinus, RefreshCw, ThumbsUp, ThumbsDown, Phone, Loader2, Download, CheckCircle2 } from 'lucide-react'
 import type { DatasetOverview } from '@/types/dataset'
 import clsx from 'clsx'
 import { datasetsApi } from '@/api/datasets'
@@ -1582,6 +1582,56 @@ function OverviewPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose:
                     )
                   })}
                 </div>
+              </div>
+            )}
+
+            {/* Quality metrics */}
+            {overview.quality && overview.quality.scored > 0 && (
+              <div>
+                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                  <CheckCircle2 size={12} /> Image Quality
+                </h3>
+                {/* Score bar */}
+                <div className="bg-gray-800/40 rounded-xl p-3 space-y-3 mb-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-400">{overview.quality.scored} scored entries</span>
+                    {overview.quality.avg_score != null && (
+                      <span className={`text-sm font-bold ${overview.quality.avg_score >= 70 ? 'text-emerald-400' : overview.quality.avg_score >= 50 ? 'text-amber-400' : 'text-red-400'}`}>
+                        {overview.quality.avg_score}/100 avg
+                      </span>
+                    )}
+                  </div>
+                  <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden flex">
+                    <div className="h-full bg-emerald-500" style={{ width: `${overview.quality.good_pct}%` }} title={`Good: ${overview.quality.good}`} />
+                    <div className="h-full bg-red-500" style={{ width: `${100 - overview.quality.good_pct}%` }} title={`Poor: ${overview.quality.poor}`} />
+                  </div>
+                  <div className="flex gap-4 text-[10px]">
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> Good: {overview.quality.good} ({overview.quality.good_pct}%)</span>
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> Poor: {overview.quality.poor}</span>
+                    {overview.quality.no_score > 0 && <span className="text-gray-600">No score: {overview.quality.no_score}</span>}
+                  </div>
+                </div>
+                {/* Issue breakdown */}
+                {overview.quality.issues.length > 0 && (
+                  <div className="space-y-1.5">
+                    {overview.quality.issues.map(iss => {
+                      const pct = Math.round(iss.count / overview.quality.scored * 100)
+                      const colors: Record<string, string> = {
+                        blurry: 'bg-purple-500', dark: 'bg-blue-700', overexposed: 'bg-yellow-400',
+                        low_res: 'bg-orange-500', poor: 'bg-red-500',
+                      }
+                      return (
+                        <div key={iss.label} className="flex items-center gap-2">
+                          <span className="text-xs text-gray-300 w-20 capitalize">{iss.label.replace('_', ' ')}</span>
+                          <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                            <div className={`h-full rounded-full ${colors[iss.label] || 'bg-gray-500'}`} style={{ width: `${pct}%` }} />
+                          </div>
+                          <span className="text-xs text-gray-400 w-8 text-right">{iss.count}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             )}
 

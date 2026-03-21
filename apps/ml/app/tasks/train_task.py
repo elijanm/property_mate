@@ -171,8 +171,12 @@ def train_model_task(self, job_id: str, injected_data_b64: Optional[str] = None)
     async def _run():
         await init_db()
         from app.services.registry_service import scan_and_register_plugins
-        await scan_and_register_plugins()
         job = await TrainingJob.get(job_id)
+        # Scan with the job owner's context so org namespace/alias are preserved
+        await scan_and_register_plugins(
+            owner_email=job.owner_email if job else None,
+            org_id=job.org_id if job else None,
+        )
         if job and job.compute_type == "cloud_gpu":
             from app.services.gpu_dispatch_service import run_cloud_training
             await run_cloud_training(job, injected_data=injected)

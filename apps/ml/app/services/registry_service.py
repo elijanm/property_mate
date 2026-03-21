@@ -268,14 +268,20 @@ async def _upsert_db_registration(
     namespace = effective_org if effective_org else "system"
     full_name = f"{namespace}/{name}"
 
-    # Compute a short human-readable alias for the inference URL
+    # Compute a short human-readable alias: prefer org slug, fall back to email prefix
     if not effective_org:
         alias = name  # system trainer: /inference/iris_classifier
-    elif owner_email:
-        prefix = owner_email.split("@")[0].lower().replace(".", "_")
-        alias = f"{prefix}/{name}"  # user trainer: /inference/john/my_model
     else:
-        alias = f"{effective_org[:8]}/{name}"
+        from app.models.org_config import OrgConfig
+        org_cfg = await OrgConfig.find_one(OrgConfig.org_id == effective_org)
+        org_slug = org_cfg.slug if org_cfg and org_cfg.slug else None
+        if org_slug:
+            alias = f"{org_slug}/{name}"
+        elif owner_email:
+            prefix = owner_email.split("@")[0].lower().replace(".", "_")
+            alias = f"{prefix}/{name}"
+        else:
+            alias = f"{effective_org[:8]}/{name}"
 
     # Compute file hash for change detection
     new_hash = _compute_file_hash(effective_org, file_bytes or b"")
@@ -338,6 +344,15 @@ async def _upsert_db_registration(
             update["owner_email"] = owner_email
         if org_id:
             update["org_id"] = org_id
+        # Preserve org-owned namespace/alias during a system-wide scan (no org context).
+        # Without this, every app restart and every code-save strips the org slug from
+        # user trainers, making them appear as system trainers in integration/API docs.
+        is_system_scan = not effective_org
+        existing_is_org_owned = existing.namespace and existing.namespace not in ("system", "")
+        if is_system_scan and existing_is_org_owned:
+            update.pop("namespace", None)
+            update.pop("full_name", None)
+            update.pop("alias", None)
         await existing.set(update)
     else:
         reg = TrainerRegistration(

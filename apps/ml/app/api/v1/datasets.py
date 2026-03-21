@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.dependencies.auth import RequireEngineer
+from app.dependencies.auth import RequireEngineer, RequireViewer
 from app.models.ml_user import MLUser
 import app.services.dataset_service as svc
 
@@ -96,7 +96,7 @@ async def list_datasets(user: MLUser = RequireEngineer):
 
 
 @router.get("/public")
-async def list_public_datasets(user: MLUser = RequireEngineer):
+async def list_public_datasets(user: MLUser = RequireViewer):
     """Return all public datasets (including caller's own public datasets)."""
     items = await svc.list_public_datasets(exclude_org_id="")
     return [_profile_dict(p) for p in items]
@@ -190,7 +190,7 @@ async def get_entries(
     include_archived: bool = False,
     page: int = 1,
     page_size: int = 50,
-    user: MLUser = RequireEngineer,
+    user: MLUser = RequireViewer,
 ):
     return await svc.get_entries(
         user.org_id, dataset_id,
@@ -204,7 +204,7 @@ async def get_entries(
 
 
 @router.get("/{dataset_id}/entry-count")
-async def get_entry_count(dataset_id: str, user: MLUser = RequireEngineer):
+async def get_entry_count(dataset_id: str, user: MLUser = RequireViewer):
     """Return the total number of entries in a dataset (fast check for empty state)."""
     count = await svc.get_entry_count(user.org_id, dataset_id)
     return {"dataset_id": dataset_id, "count": count}
@@ -367,7 +367,7 @@ async def delete_entry(dataset_id: str, entry_id: str, user: MLUser = RequireEng
 
 
 @router.get("/{dataset_id}/entries/{entry_id}/file")
-async def proxy_entry_file(dataset_id: str, entry_id: str, user: MLUser = RequireEngineer):
+async def proxy_entry_file(dataset_id: str, entry_id: str, user: MLUser = RequireViewer):
     """
     Proxy an entry's S3 file through the backend, applying watermark on-the-fly
     for image entries if the org has watermarking active.

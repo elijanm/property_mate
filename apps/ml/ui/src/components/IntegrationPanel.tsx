@@ -16,8 +16,10 @@ interface Props {
   /** input_schema from the trainer — used to decide file vs JSON examples */
   inputSchema?: Record<string, unknown>
   outputSchema?: Record<string, unknown>
-  /** short alias slug for the inference URL (e.g. "john/my_model") */
+  /** full alias used in inference URL (e.g. "acme/my_model" or "iris_classifier") */
   alias?: string
+  /** org slug prefix — shown as badge when trainer is org-owned */
+  orgSlug?: string
 }
 
 // ── Section / tab config ──────────────────────────────────────────────────────
@@ -101,11 +103,14 @@ function buildExampleInputsFromSchema(schema?: Record<string, unknown>): Record<
   return ex
 }
 
-function snippets(dep: ModelDeployment, schema?: Record<string, unknown>, alias?: string): Record<ItemId, { lang: string; code: string }> {
+function snippets(dep: ModelDeployment, schema?: Record<string, unknown>, alias?: string, orgSlug?: string): Record<ItemId, { lang: string; code: string }> {
   const base = apiBase()
   const name = alias || dep.trainer_name
   const endpoint = `${base}/inference/${name}`
   const uploadEndpoint = `${base}/inference/${name}/upload`
+  const nsNote = orgSlug
+    ? `# Org: ${orgSlug}  |  Trainer: ${name}\n`
+    : ''
   const fileMode = hasFileInput(schema)
   const exampleInputs = buildExampleInputsFromSchema(schema)
   const jsonExample = JSON.stringify({ inputs: Object.keys(exampleInputs).length ? exampleInputs : { value: 42 } }, null, 2)
@@ -114,19 +119,19 @@ function snippets(dep: ModelDeployment, schema?: Record<string, unknown>, alias?
     // ── Web / HTTP ──────────────────────────────────────────────────────────
     curl: {
       lang: 'bash',
-      code: fileMode ? `# File upload (image, video, document)
+      code: fileMode ? `${nsNote}# ── File upload (image, video, document) ──────────────────────────
 curl -X POST "${uploadEndpoint}" \\
-  -H "Authorization: Bearer <YOUR_API_KEY>" \\
+  -H "X-Api-Key: <YOUR_API_KEY>" \\
   -F "file=@/path/to/your/file.jpg" \\
   -F "extra={}"
 
-# JSON body
+# ── JSON body (pass an image URL or other inputs) ───────────────
 curl -X POST "${endpoint}" \\
-  -H "Authorization: Bearer <YOUR_API_KEY>" \\
+  -H "X-Api-Key: <YOUR_API_KEY>" \\
   -H "Content-Type: application/json" \\
   -d '{"inputs": {"image_url": "https://example.com/image.jpg"}}'` :
-`curl -X POST "${endpoint}" \\
-  -H "Authorization: Bearer <YOUR_API_KEY>" \\
+`${nsNote}curl -X POST "${endpoint}" \\
+  -H "X-Api-Key: <YOUR_API_KEY>" \\
   -H "Content-Type: application/json" \\
   -d '${jsonExample}'`,
     },
@@ -135,14 +140,16 @@ curl -X POST "${endpoint}" \\
       lang: 'python',
       code: fileMode ? `import requests
 
-API_KEY = "<YOUR_API_KEY>"
+${nsNote}API_KEY = "<YOUR_API_KEY>"
 BASE    = "${base}"
+TRAINER = "${name}"
+HEADERS = {"X-Api-Key": API_KEY}
 
 # ── File upload ───────────────────────────────────────────
 with open("image.jpg", "rb") as f:
     resp = requests.post(
-        f"{BASE}/inference/${name}/upload",
-        headers={"Authorization": f"Bearer {API_KEY}"},
+        f"{BASE}/inference/{TRAINER}/upload",
+        headers=HEADERS,
         files={"file": ("image.jpg", f, "image/jpeg")},
     )
 
@@ -150,25 +157,20 @@ print(resp.json())
 
 # ── JSON body ─────────────────────────────────────────────
 resp = requests.post(
-    f"{BASE}/inference/${name}",
-    headers={
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json",
-    },
+    f"{BASE}/inference/{TRAINER}",
+    headers={**HEADERS, "Content-Type": "application/json"},
     json={"inputs": {"image_url": "https://example.com/image.jpg"}},
 )
 print(resp.json())` :
 `import requests
 
-API_KEY = "<YOUR_API_KEY>"
+${nsNote}API_KEY = "<YOUR_API_KEY>"
 BASE    = "${base}"
+TRAINER = "${name}"
 
 resp = requests.post(
-    f"{BASE}/inference/${name}",
-    headers={
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json",
-    },
+    f"{BASE}/inference/{TRAINER}",
+    headers={"X-Api-Key": API_KEY},
     json={"inputs": {"value": 42}},
 )
 print(resp.json())`,
@@ -176,17 +178,18 @@ print(resp.json())`,
 
     javascript: {
       lang: 'javascript',
-      code: fileMode ? `const API_KEY = "<YOUR_API_KEY>";
+      code: fileMode ? `${nsNote}const API_KEY = "<YOUR_API_KEY>";
 const BASE    = "${base}";
+const TRAINER = "${name}";
 
 // ── File upload (browser) ─────────────────────────────────
 async function runFromFile(file) {
   const form = new FormData();
   form.append("file", file);
 
-  const res = await fetch(\`\${BASE}/inference/${name}/upload\`, {
+  const res = await fetch(\`\${BASE}/inference/\${TRAINER}/upload\`, {
     method: "POST",
-    headers: { Authorization: \`Bearer \${API_KEY}\` },
+    headers: { "X-Api-Key": API_KEY },
     body: form,
   });
   return res.json();
@@ -194,10 +197,10 @@ async function runFromFile(file) {
 
 // ── JSON body ─────────────────────────────────────────────
 async function runFromUrl(imageUrl) {
-  const res = await fetch(\`\${BASE}/inference/${name}\`, {
+  const res = await fetch(\`\${BASE}/inference/\${TRAINER}\`, {
     method: "POST",
     headers: {
-      Authorization: \`Bearer \${API_KEY}\`,
+      "X-Api-Key": API_KEY,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ inputs: { image_url: imageUrl } }),
@@ -210,13 +213,14 @@ document.getElementById("fileInput").addEventListener("change", async (e) => {
   const result = await runFromFile(e.target.files[0]);
   console.log(result);
 });` :
-`const API_KEY = "<YOUR_API_KEY>";
+`${nsNote}const API_KEY = "<YOUR_API_KEY>";
 const BASE    = "${base}";
+const TRAINER = "${name}";
 
-const res = await fetch(\`\${BASE}/inference/${name}\`, {
+const res = await fetch(\`\${BASE}/inference/\${TRAINER}\`, {
   method: "POST",
   headers: {
-    Authorization: \`Bearer \${API_KEY}\`,
+    "X-Api-Key": API_KEY,
     "Content-Type": "application/json",
   },
   body: JSON.stringify({ inputs: { value: 42 } }),
@@ -228,15 +232,17 @@ console.log(result);`,
     php_http: {
       lang: 'php',
       code: fileMode ? `<?php
-$apiKey   = "<YOUR_API_KEY>";
-$endpoint = "${uploadEndpoint}";
+${nsNote}$apiKey   = "<YOUR_API_KEY>";
+$base     = "${base}";
+$trainer  = "${name}";
+$endpoint = "{$base}/inference/{$trainer}/upload";
 
 $curl = curl_init();
 curl_setopt_array($curl, [
     CURLOPT_URL            => $endpoint,
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_POST           => true,
-    CURLOPT_HTTPHEADER     => ["Authorization: Bearer {$apiKey}"],
+    CURLOPT_HTTPHEADER     => ["X-Api-Key: {$apiKey}"],
     CURLOPT_POSTFIELDS     => [
         "file" => new CURLFile("/path/to/image.jpg", "image/jpeg", "image.jpg"),
     ],
@@ -248,8 +254,10 @@ curl_close($curl);
 $result = json_decode($response, true);
 print_r($result);` :
 `<?php
-$apiKey   = "<YOUR_API_KEY>";
-$endpoint = "${endpoint}";
+${nsNote}$apiKey   = "<YOUR_API_KEY>";
+$base     = "${base}";
+$trainer  = "${name}";
+$endpoint = "{$base}/inference/{$trainer}";
 
 $data = json_encode(["inputs" => ["value" => 42]]);
 
@@ -259,7 +267,7 @@ curl_setopt_array($curl, [
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_POST           => true,
     CURLOPT_HTTPHEADER     => [
-        "Authorization: Bearer {$apiKey}",
+        "X-Api-Key: {$apiKey}",
         "Content-Type: application/json",
     ],
     CURLOPT_POSTFIELDS     => $data,
@@ -274,15 +282,17 @@ print_r($result);`,
 
     dotnet: {
       lang: 'csharp',
-      code: fileMode ? `using System.Net.Http;
+      code: fileMode ? `// ${nsNote.trim() || `Trainer: ${name}`}
+using System.Net.Http;
 using System.Net.Http.Headers;
 
 var apiKey   = "<YOUR_API_KEY>";
-var endpoint = "${uploadEndpoint}";
+var baseUrl  = "${base}";
+var trainer  = "${name}";
+var endpoint = $"{baseUrl}/inference/{trainer}/upload";
 
 using var client = new HttpClient();
-client.DefaultRequestHeaders.Authorization =
-    new AuthenticationHeaderValue("Bearer", apiKey);
+client.DefaultRequestHeaders.Add("X-Api-Key", apiKey);
 
 using var form    = new MultipartFormDataContent();
 using var stream  = File.OpenRead("image.jpg");
@@ -293,15 +303,17 @@ form.Add(fileContent, "file", "image.jpg");
 var response = await client.PostAsync(endpoint, form);
 var json     = await response.Content.ReadAsStringAsync();
 Console.WriteLine(json);` :
-`using System.Net.Http;
+`// ${nsNote.trim() || `Trainer: ${name}`}
+using System.Net.Http;
 using System.Net.Http.Json;
 
 var apiKey   = "<YOUR_API_KEY>";
-var endpoint = "${endpoint}";
+var baseUrl  = "${base}";
+var trainer  = "${name}";
+var endpoint = $"{baseUrl}/inference/{trainer}";
 
 using var client = new HttpClient();
-client.DefaultRequestHeaders.Authorization =
-    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+client.DefaultRequestHeaders.Add("X-Api-Key", apiKey);
 
 var payload  = new { inputs = new { value = 42 } };
 var response = await client.PostAsJsonAsync(endpoint, payload);
@@ -313,25 +325,27 @@ Console.WriteLine(json);`,
     sdk_python: {
       lang: 'python',
       code: `# pip install mldock-sdk
-from mldock import MLDockClient
+${nsNote}from mldock import MLDockClient
 
 client = MLDockClient(
     base_url="${base}",
-    api_key="<YOUR_API_KEY>",
+    api_key="<YOUR_API_KEY>",   # sent as X-Api-Key header
 )
+
+TRAINER = "${name}"
 
 # Run inference
 ${fileMode ?
-`result = client.predict("${name}", file="image.jpg")` :
-`result = client.predict("${name}", inputs={"value": 42})`}
+`result = client.predict(TRAINER, file="image.jpg")` :
+`result = client.predict(TRAINER, inputs={"value": 42})`}
 print(result)
 
 # Stream results via SSE
-for event in client.predict_stream("${name}", file="image.jpg"):
+for event in client.predict_stream(TRAINER, file="image.jpg"):
     print(event)
 
 # List recent inferences
-logs = client.inference_logs("${name}", limit=20)
+logs = client.inference_logs(TRAINER, limit=20)
 for log in logs:
     print(log.id, log.predicted_label_hint)`,
     },
@@ -339,25 +353,27 @@ for log in logs:
     sdk_npm: {
       lang: 'javascript',
       code: `// npm install @mldock/sdk
-import { MLDockClient } from "@mldock/sdk";
+${nsNote}import { MLDockClient } from "@mldock/sdk";
 
 const client = new MLDockClient({
   baseUrl: "${base}",
   apiKey: "<YOUR_API_KEY>",
 });
 
+const TRAINER = "${name}";
+
 // Run inference
 ${fileMode ?
 `// From a File object (browser)
-const result = await client.predict("${name}", { file });
+const result = await client.predict(TRAINER, { file });
 
 // From a file path (Node.js)
-const result = await client.predict("${name}", { filePath: "./image.jpg" });` :
-`const result = await client.predict("${name}", { inputs: { value: 42 } });`}
+const result = await client.predict(TRAINER, { filePath: "./image.jpg" });` :
+`const result = await client.predict(TRAINER, { inputs: { value: 42 } });`}
 console.log(result);
 
 // Submit feedback (drives confusion matrix)
-await client.submitFeedback("${name}", {
+await client.submitFeedback(TRAINER, {
   inferenceLogId: result.log_id,
   isCorrect: true,
   predictedLabel: result.prediction,
@@ -368,7 +384,7 @@ await client.submitFeedback("${name}", {
       lang: 'php',
       code: `<?php
 // composer require mldock/sdk
-require_once "vendor/autoload.php";
+${nsNote}require_once "vendor/autoload.php";
 
 use MLDock\\Client;
 
@@ -377,14 +393,16 @@ $client = new Client([
     "api_key"  => "<YOUR_API_KEY>",
 ]);
 
+$trainer = "${name}";
+
 // Run inference
 ${fileMode ?
-`$result = $client->predict("${name}", ["file" => "/path/to/image.jpg"]);` :
-`$result = $client->predict("${name}", ["inputs" => ["value" => 42]]);`}
+`$result = $client->predict($trainer, ["file" => "/path/to/image.jpg"]);` :
+`$result = $client->predict($trainer, ["inputs" => ["value" => 42]]);`}
 var_dump($result);
 
 // Submit feedback
-$client->submitFeedback("${name}", [
+$client->submitFeedback($trainer, [
     "inference_log_id" => $result["log_id"],
     "is_correct"       => true,
 ]);`,
@@ -403,8 +421,10 @@ import time
 import requests
 from picamera2 import Picamera2
 
-API_KEY  = "<YOUR_API_KEY>"
-ENDPOINT = "${uploadEndpoint}"
+${nsNote}API_KEY  = "<YOUR_API_KEY>"
+BASE     = "${base}"
+TRAINER  = "${name}"
+ENDPOINT = f"{BASE}/inference/{TRAINER}/upload"
 
 def capture_and_predict():
     cam = Picamera2()
@@ -419,7 +439,7 @@ def capture_and_predict():
 
     resp = requests.post(
         ENDPOINT,
-        headers={"Authorization": f"Bearer {API_KEY}"},
+        headers={"X-Api-Key": API_KEY},
         files={"file": ("capture.jpg", buf, "image/jpeg")},
         timeout=30,
     )
@@ -451,6 +471,8 @@ if __name__ == "__main__":
 const char* WIFI_SSID     = "YOUR_SSID";
 const char* WIFI_PASSWORD = "YOUR_PASSWORD";
 const char* API_KEY       = "<YOUR_API_KEY>";
+const char* BASE_URL      = "${base}";
+// Trainer (namespaced): ${name}
 const char* ENDPOINT      = "${uploadEndpoint}";
 
 // AI-Thinker ESP32-CAM pin map
@@ -497,7 +519,7 @@ void sendFrame() {
 
   HTTPClient http;
   http.begin(ENDPOINT);
-  http.addHeader("Authorization", String("Bearer ") + API_KEY);
+  http.addHeader("X-Api-Key", API_KEY);
 
   // Build multipart body manually
   String boundary = "----ESP32Boundary";
@@ -591,13 +613,13 @@ function escapeHtml(s: string): string {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function IntegrationPanel({ deployment, inputSchema, outputSchema, alias }: Props) {
+export default function IntegrationPanel({ deployment, inputSchema, outputSchema, alias, orgSlug }: Props) {
   const [openSections, setOpenSections] = useState<Set<SectionId>>(new Set(['web']))
   const [selectedItem, setSelectedItem] = useState<ItemId>('curl')
   const [copied, setCopied] = useState(false)
 
   const isSchemaItem = selectedItem === 'schema_input' || selectedItem === 'schema_output'
-  const allSnippets = snippets(deployment, inputSchema, alias)
+  const allSnippets = snippets(deployment, inputSchema, alias, orgSlug)
   const current = isSchemaItem ? { lang: 'json', code: '' } : allSnippets[selectedItem]
 
   function toggleSection(id: SectionId) {
@@ -662,10 +684,17 @@ export default function IntegrationPanel({ deployment, inputSchema, outputSchema
       <div className="flex-1 min-w-0 flex flex-col">
         {/* Toolbar */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-800 shrink-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-mono text-gray-400">
-              POST {apiBase()}/inference/<span className="text-brand-400">{alias || deployment.trainer_name}</span>
+              POST {apiBase()}/inference/
+              {orgSlug && <span className="text-indigo-400">{orgSlug}/</span>}
+              <span className="text-brand-400">{deployment.trainer_name}</span>
             </span>
+            {orgSlug && (
+              <span className="px-1.5 py-0.5 text-[10px] bg-indigo-900/40 border border-indigo-700/40 rounded text-indigo-300 font-mono">
+                org: {orgSlug}
+              </span>
+            )}
             {!isSchemaItem && (
               <span className="px-1.5 py-0.5 text-[10px] bg-gray-800 rounded text-gray-500 font-mono">
                 {current.lang}
@@ -731,11 +760,12 @@ export default function IntegrationPanel({ deployment, inputSchema, outputSchema
 
         {/* Footer tip */}
         <div className="px-4 py-2.5 border-t border-gray-800 shrink-0">
-          <p className="text-[10px] text-gray-600">
-            Replace <span className="text-amber-400/70 font-mono">&lt;YOUR_API_KEY&gt;</span> with a token from{' '}
-            <span className="text-gray-500">Settings → API Keys</span>.
-            Model: <span className="font-mono text-gray-500">{deployment.trainer_name}</span>{' '}
-            v{deployment.mlflow_model_version ?? deployment.version}.
+          <p className="text-[10px] text-gray-600 space-x-2">
+            <span>Replace <span className="text-amber-400/70 font-mono">&lt;YOUR_API_KEY&gt;</span> with a key from <span className="text-gray-500">Settings → API Keys</span> (header: <span className="font-mono text-gray-500">X-Api-Key</span>).</span>
+            {orgSlug && (
+              <span>Org slug: <span className="font-mono text-indigo-400/70">{orgSlug}</span></span>
+            )}
+            <span>v{deployment.mlflow_model_version ?? deployment.version}.</span>
           </p>
         </div>
       </div>

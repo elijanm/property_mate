@@ -27,6 +27,7 @@ import BillingSettingsPage from './components/BillingSettingsPage'
 import UserBillingPage from './pages/UserBillingPage'
 import UsageTrackerPage from './pages/UsageTrackerPage'
 import ProfilePage from './pages/ProfilePage'
+import WorkspaceSetupPage from './pages/WorkspaceSetupPage'
 import AccountsPage from './pages/AccountsPage'
 import DatasetPage from './pages/DatasetPage'
 import AnnotatePage from './pages/AnnotatePage'
@@ -37,11 +38,13 @@ import StaffPage from './pages/StaffPage'
 import ClientsPage from './pages/ClientsPage'
 import MarketplacePage from './pages/MarketplacePage'
 import WatermarkSettingsPage from './pages/WatermarkSettingsPage'
+import TrainerReviewPage from './pages/TrainerReviewPage'
 import AnnotatorPortalPage from './pages/AnnotatorPortalPage'
 import ClaimAccountPage from './pages/ClaimAccountPage'
 import { walletApi } from './api/wallet'
 import type { Wallet as WalletData } from './types/wallet'
 import { useAuth } from './context/AuthContext'
+import { OrgConfigProvider } from './context/OrgConfigContext'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import ForgotPasswordPage from './pages/ForgotPasswordPage'
@@ -62,6 +65,7 @@ import {
   FlaskConical, Bell, Key, Layers, ClipboardList, GitCompare,
   LogOut, User, Loader2, Users, Wallet, BarChart2, Database, Code2,
   ChevronRight, ChevronDown, DollarSign, Pencil, UserCheck, Image as ImageIcon,
+  ShieldAlert,
 } from 'lucide-react'
 import Logo from './components/Logo'
 import clsx from 'clsx'
@@ -76,7 +80,7 @@ if (_INVITE_TOKEN_FROM_URL) {
   sessionStorage.setItem('pending_invite_token', _INVITE_TOKEN_FROM_URL)
 }
 
-type Page = 'models' | 'trainers' | 'editor' | 'annotate' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing' | 'usage' | 'staff' | 'clients' | 'marketplace' | 'profile' | 'accounts' | 'watermark'
+type Page = 'models' | 'trainers' | 'editor' | 'annotate' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'trainer-reviews' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing' | 'usage' | 'staff' | 'clients' | 'marketplace' | 'profile' | 'accounts' | 'watermark'
 
 type NavGroup = {
   id: string
@@ -137,10 +141,11 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Admin',
     icon: <Shield size={16} />,
     items: [
-      { id: 'accounts',  label: 'Accounts',  icon: <UserCheck size={14} /> },
-      { id: 'security',  label: 'Security',  icon: <Shield size={14} /> },
-      { id: 'audit',     label: 'Audit Log', icon: <ClipboardList size={14} /> },
-      { id: 'analytics', label: 'Analytics', icon: <BarChart2 size={14} /> },
+      { id: 'accounts',        label: 'Accounts',        icon: <UserCheck size={14} /> },
+      { id: 'security',        label: 'Security',        icon: <Shield size={14} /> },
+      { id: 'trainer-reviews', label: 'Trainer Reviews', icon: <ShieldAlert size={14} /> },
+      { id: 'audit',           label: 'Audit Log',       icon: <ClipboardList size={14} /> },
+      { id: 'analytics',       label: 'Analytics',       icon: <BarChart2 size={14} /> },
     ],
   },
   {
@@ -152,7 +157,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'billing',  label: 'Billing',   icon: <DollarSign size={14} /> },
       { id: 'usage',    label: 'Usage',     icon: <BarChart2 size={14} /> },
       { id: 'api-keys', label: 'API Keys',  icon: <Key size={14} /> },
-      { id: 'config',    label: 'Config',    icon: <Settings size={14} /> },
+      { id: 'config',    label: 'Config',    icon: <Settings size={14} />, roles: ['admin'] },
       { id: 'watermark', label: 'Watermark', icon: <ImageIcon size={14} />, roles: ['admin'] },
     ],
   },
@@ -189,12 +194,13 @@ const PAGE_TITLE: Record<Page, string> = {
   clients:     'Clients',
   marketplace: 'Trainer Marketplace',
   profile:     'My Profile',
-  accounts:    'All Accounts',
-  watermark:   'Watermark Settings',
+  accounts:         'All Accounts',
+  watermark:        'Watermark Settings',
+  'trainer-reviews': 'Trainer Security Reviews',
 }
 
 export default function App() {
-  const { user, logout, loading: authLoading, pendingEmail, clearPending, login } = useAuth()
+  const { user, logout, loading: authLoading, pendingEmail, clearPending, login, setOnboarded } = useAuth()
 
   // Annotator session — stored separately from engineer/admin session
   const [annotatorUser, setAnnotatorUser] = useState(() => {
@@ -498,7 +504,17 @@ export default function App() {
     )
   }
 
+  // First-login workspace setup — shown once until user completes or skips
+  if (!user.is_onboarded) {
+    return (
+      <OrgConfigProvider>
+        <WorkspaceSetupPage onComplete={() => setOnboarded()} />
+      </OrgConfigProvider>
+    )
+  }
+
   return (
+    <OrgConfigProvider>
     <div className="flex h-screen overflow-hidden bg-gray-950">
       {/* Sidebar */}
       <aside className={clsx(
@@ -827,10 +843,12 @@ export default function App() {
               {page === 'watermark' && <WatermarkSettingsPage />}
               {page === 'profile' && <ProfilePage />}
               {page === 'accounts' && <AccountsPage />}
+              {page === 'trainer-reviews' && <TrainerReviewPage />}
             </div>
           )}
         </div>
       </main>
     </div>
+    </OrgConfigProvider>
   )
 }

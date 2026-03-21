@@ -40,4 +40,9 @@ export const trainerSubmissionsApi = {
     const res = await api.patch(`/admin-tickets/${id}`, { status });
     return res.data;
   },
+
+  getSource: async (id: string): Promise<{ trainer_name: string; source: string }> => {
+    const res = await api.get(`/trainer-submissions/${id}/source`);
+    return res.data;
+  },
 };

@@ -220,19 +220,31 @@ async def predict(
     session_id: Optional[str] = None,
     org_id: str = "",
     user_email: Optional[str] = None,
+    namespace_constraint: Optional[str] = None,
 ) -> tuple:
-    """Load the active deployment and run prediction. Returns (result, log_id)."""
+    """Load the active deployment and run prediction. Returns (result, log_id).
+
+    namespace_constraint: if set, the trainer's namespace must match this value exactly.
+    Used by the /{org_slug}/{trainer_name} route to prevent calling a different org's trainer.
+    """
     import mlflow
     from app.models.trainer_registration import TrainerRegistration
+    from fastapi import HTTPException as _HTTPException
 
-    # Resolve alias → real trainer_name (e.g. "john/iris_classifier" → "iris_classifier")
-    if "/" in trainer_name or not await ModelDeployment.find_one(
-        ModelDeployment.trainer_name == trainer_name,
-        ModelDeployment.status == "active",
-    ):
-        reg_by_alias = await TrainerRegistration.find_one({"alias": trainer_name})
-        if reg_by_alias:
-            trainer_name = reg_by_alias.name
+    # Find trainer registration — needed for access control before touching deployments
+    reg = await TrainerRegistration.find_one(TrainerRegistration.name == trainer_name)
+
+    # Access control
+    is_system = (not reg) or (reg.namespace in ("system", ""))
+    if not is_system:
+        trainer_namespace = reg.namespace
+        # namespace_constraint is set when called via /{org_slug}/{trainer_name} route
+        if namespace_constraint and trainer_namespace != namespace_constraint:
+            raise _HTTPException(status_code=404, detail=f"Trainer '{trainer_name}' not found in the specified organisation")
+        # Caller must be in the same org OR trainer is publicly shared
+        is_public = reg.commercial == "public"
+        if not is_public and caller_org_id != trainer_namespace:
+            raise _HTTPException(status_code=403, detail="Access denied — this trainer belongs to a different organisation")
 
     # Find deployment
     filters = [
@@ -366,18 +378,8 @@ async def predict(
                 else:
                     clean_result[k] = v
 
-        # Inference billing — deduct from wallet if applicable
-        cost_usd = 0.0
-        if error_msg is None and user_email:
-            try:
-                from app.services.ml_billing_service import charge_inference
-                cost_usd = await charge_inference(user_email, org_id, trainer_name)
-            except ValueError as billing_exc:
-                # Re-raise as the prediction itself succeeded — but billing failed
-                raise RuntimeError(str(billing_exc)) from billing_exc
-            except Exception:
-                pass  # billing errors never block inference results
-
+        # Always save the log first — billing comes after so the audit trail is preserved
+        # even if billing fails (e.g. wallet empty).
         log = InferenceLog(
             trainer_name=trainer_name,
             deployment_id=str(dep.id),
@@ -393,7 +395,7 @@ async def predict(
             caller_org_id=caller_org_id,
             session_id=session_id,
             org_id=org_id,
-            cost_usd=cost_usd,
+            cost_usd=0.0,
         )
         await log.insert()
 
@@ -404,6 +406,19 @@ async def predict(
                 await record_request(ab_test, ab_variant, latency, error=error_msg is not None)
             except Exception:
                 pass  # never block inference for metrics
+
+        # Inference billing — deduct from wallet if applicable (after log is saved)
+        if error_msg is None and user_email:
+            try:
+                from app.services.ml_billing_service import charge_inference
+                cost_usd = await charge_inference(user_email, org_id, trainer_name)
+                if cost_usd > 0:
+                    await log.set({"cost_usd": cost_usd})
+            except ValueError as billing_exc:
+                # Billing failed (e.g. wallet empty) — log is already saved, re-raise
+                raise RuntimeError(str(billing_exc)) from billing_exc
+            except Exception:
+                pass  # billing errors never block inference results
 
     return clean_result, str(log.id)
 
