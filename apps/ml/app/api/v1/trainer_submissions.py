@@ -31,6 +31,8 @@ def _submission_dict(s: TrainerSubmission) -> dict:
         "org_id": s.org_id,
         "owner_email": s.owner_email,
         "trainer_name": s.trainer_name,
+        "base_trainer_name": getattr(s, "base_trainer_name", s.trainer_name),
+        "version_num": getattr(s, "version_num", 1),
         "namespace": s.namespace,
         "file_key": s.file_key,
         "submission_hash": s.submission_hash,
@@ -101,17 +103,27 @@ async def _run_security_scan_background(
 
         if passed:
             new_status = "approved"
-            # Auto-activate trainer registration
+            # Auto-activate trainer registration + record approved hash for change-detection
+            import hashlib as _hashlib
+            import os as _os
             from app.models.trainer_registration import TrainerRegistration
             reg = await TrainerRegistration.find_one(
                 TrainerRegistration.name == trainer_name,
                 TrainerRegistration.org_id == org_id,
             )
             if reg:
+                # Compute hash of the approved file so we can detect future changes
+                approved_hash = ""
+                plugin_file = getattr(reg, "plugin_file", None) or submission.file_key
+                if plugin_file and _os.path.exists(plugin_file):
+                    with open(plugin_file, "rb") as _fh:
+                        approved_hash = _hashlib.sha256(_fh.read()).hexdigest()
                 await reg.set({
                     "approval_status": "approved",
                     "is_active": True,
                     "submission_id": submission_id,
+                    "approved_content_hash": approved_hash,
+                    "rejection_reason": "",
                     "updated_at": now,
                 })
         else:
@@ -142,6 +154,25 @@ async def _run_security_scan_background(
                 "admin_ticket_id": ticket_id,
                 "updated_at": now,
             })
+
+            # Notify admin(s) by email
+            try:
+                from app.core.config import settings
+                from app.core.email import send_trainer_flagged_admin
+                admin_email = getattr(settings, "DEFAULT_ADMIN_EMAIL", None) or getattr(settings, "SMTP_FROM", "")
+                if admin_email:
+                    await send_trainer_flagged_admin(
+                        admin_email=admin_email,
+                        trainer_name=trainer_name,
+                        owner_email=owner_email,
+                        org_id=org_id,
+                        severity=severity,
+                        summary=scan_result.get("summary", ""),
+                        issues=scan_result.get("issues", []),
+                        submission_id=submission_id,
+                    )
+            except Exception:
+                pass
 
         await submission.set({
             "status": new_status,
@@ -196,16 +227,97 @@ async def upload_trainer(
     source = file_bytes.decode("utf-8", errors="replace")
 
     # Parse metadata header
+    import re, os
     from app.services.registry_service import _parse_metadata_header, _compute_file_hash
     metadata = _parse_metadata_header(source)
 
-    trainer_name = metadata.get("Name") or file.filename.replace(".py", "")
+    raw_name = metadata.get("Name") or file.filename.replace(".py", "")
     org_id = current_user.org_id or ""
     namespace = org_id if org_id else "system"
     submission_hash = _compute_file_hash(org_id, file_bytes)
 
-    # Persist file to a temp path (or S3 in production)
-    import os
+    # ── Version lineage ────────────────────────────────────────────────────────
+    # Strip any _vN suffix the client injected to get the canonical base name.
+    base_trainer_name = re.sub(r"_v\d+$", "", raw_name)
+
+    # Reject duplicate: same hash already accepted for this org (prevents double-click race).
+    dup = await TrainerSubmission.find_one({
+        "org_id": org_id,
+        "submission_hash": submission_hash,
+        "status": {"$in": ["scanning", "pending_admin", "approved"]},
+    })
+    if dup:
+        raise HTTPException(status_code=409, detail="Identical trainer code is already submitted or active.")
+
+    # Block submission if ANY version of this base name is already pending review/admin.
+    # The pending version must be resolved first before a new one can be submitted.
+    from app.models.trainer_registration import TrainerRegistration as TR2
+    pending_reg = await TR2.find_one({
+        "org_id": org_id,
+        "base_name": base_trainer_name,
+        "approval_status": {"$in": ["pending_review", "pending_admin", "flagged"]},
+    })
+    if pending_reg:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"'{pending_reg.name}' is already pending review. "
+                "Wait for it to be approved or rejected before submitting a new version."
+            ),
+        )
+    # Also check in-flight TrainerSubmission records (covers the race window before registration is written)
+    in_flight_sub = await TrainerSubmission.find_one({
+        "org_id": org_id,
+        "base_trainer_name": base_trainer_name,
+        "status": {"$in": ["scanning", "pending_admin", "flagged"]},
+    })
+    if in_flight_sub:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"'{in_flight_sub.trainer_name}' is already scanning or under review. "
+                "Wait for it to complete before submitting a new version."
+            ),
+        )
+
+    # Server-side version: find the highest version already recorded for this base name + org.
+    existing = await TrainerSubmission.find({
+        "org_id": org_id,
+        "base_trainer_name": base_trainer_name,
+        "status": {"$ne": "rejected"},
+    }).to_list()
+
+    if not existing:
+        # Also check TrainerRegistration in case submissions were pruned
+        from app.models.trainer_registration import TrainerRegistration
+        reg_existing = await TrainerRegistration.find({
+            "org_id": org_id,
+            "base_name": base_trainer_name,
+        }).to_list()
+    else:
+        reg_existing = []
+
+    max_version = 1  # base (no suffix) = v1
+    for s in existing:
+        m = re.search(r"_v(\d+)$", s.trainer_name)
+        if m:
+            max_version = max(max_version, int(m.group(1)))
+        # a record with no suffix counts as v1 (already initialised)
+
+    from app.models.trainer_registration import TrainerRegistration as TR
+    for r in reg_existing:
+        max_version = max(max_version, r.version_num)
+
+    if existing or reg_existing:
+        # There are prior submissions/registrations — bump to next version
+        version_num = max_version + 1
+        trainer_name = f"{base_trainer_name}_v{version_num}"
+    else:
+        # Truly the first submission for this trainer in this org
+        version_num = 1
+        trainer_name = base_trainer_name
+
+    # ── Persist file ───────────────────────────────────────────────────────────
     plugin_dir_base = "/tmp/ml_uploads"
     os.makedirs(plugin_dir_base, exist_ok=True)
     file_key = f"{plugin_dir_base}/{org_id or 'system'}_{trainer_name}_{submission_hash[:8]}.py"
@@ -218,6 +330,8 @@ async def upload_trainer(
         org_id=org_id,
         owner_email=current_user.email,
         trainer_name=trainer_name,
+        base_trainer_name=base_trainer_name,
+        version_num=version_num,
         namespace=namespace,
         file_key=file_key,
         submission_hash=submission_hash,
@@ -301,7 +415,23 @@ async def get_submission_source(submission_id: str):
         raise HTTPException(status_code=404, detail="Source file not found on disk")
     with open(file_key, "r", errors="replace") as f:
         source = f.read()
-    return {"submission_id": submission_id, "trainer_name": submission.trainer_name, "source": source}
+
+    scan = submission.llm_scan_result or {}
+    ast_violations = scan.get("ast_violations") or []
+    # Fallback: if scan used old "issues" list with line numbers, surface those too
+    if not ast_violations:
+        ast_violations = [
+            i for i in scan.get("issues", [])
+            if isinstance(i, dict) and i.get("line")
+        ]
+
+    return {
+        "submission_id": submission_id,
+        "trainer_name": submission.trainer_name,
+        "source": source,
+        "scan_result": scan,
+        "ast_violations": ast_violations,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -331,17 +461,27 @@ async def approve_submission(
         "updated_at": now,
     })
 
-    # Activate trainer registration
+    # Activate trainer registration + store approved_content_hash
+    import os
+    import hashlib
     from app.models.trainer_registration import TrainerRegistration
     reg = await TrainerRegistration.find_one(
         TrainerRegistration.name == submission.trainer_name,
         TrainerRegistration.org_id == submission.org_id,
     )
+    approved_hash = ""
+    if submission.file_key and os.path.exists(submission.file_key):
+        with open(submission.file_key, "rb") as fh:
+            approved_hash = hashlib.sha256(fh.read()).hexdigest()
     if reg:
         await reg.set({
             "approval_status": "approved",
             "is_active": True,
             "submission_id": submission_id,
+            "approved_content_hash": approved_hash,
+            "rejection_reason": "",
+            "base_name": getattr(submission, "base_trainer_name", "") or reg.name,
+            "version_num": getattr(submission, "version_num", 1),
             "updated_at": now,
         })
 
@@ -355,6 +495,18 @@ async def approve_submission(
                 "resolved_at": now,
                 "updated_at": now,
             })
+
+    # Send approval email
+    try:
+        from app.core.email import send_trainer_approved
+        if submission.owner_email:
+            await send_trainer_approved(
+                owner_email=submission.owner_email,
+                trainer_name=submission.trainer_name,
+                reviewed_by=current_user.email,
+            )
+    except Exception:
+        pass
 
     return {"ok": True}
 
@@ -407,6 +559,19 @@ async def reject_submission(
                 "resolved_at": now,
                 "updated_at": now,
             })
+
+    # Send rejection email
+    try:
+        from app.core.email import send_trainer_rejected
+        if submission.owner_email:
+            await send_trainer_rejected(
+                owner_email=submission.owner_email,
+                trainer_name=submission.trainer_name,
+                reason=body.reason,
+                reviewed_by=current_user.email,
+            )
+    except Exception:
+        pass
 
     return {"ok": True}
 

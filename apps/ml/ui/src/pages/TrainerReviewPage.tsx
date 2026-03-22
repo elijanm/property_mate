@@ -24,6 +24,7 @@ function ReviewSlideOver({
   approving: string | null
 }) {
   const [source, setSource] = useState<string | null>(null)
+  const [astViolations, setAstViolations] = useState<{ line: number; rule: string; message: string }[]>([])
   const [loadingSource, setLoadingSource] = useState(true)
   const [copied, setCopied] = useState(false)
   const [codeTab, setCodeTab] = useState<'analysis' | 'code'>('analysis')
@@ -33,10 +34,15 @@ function ReviewSlideOver({
   useEffect(() => {
     setLoadingSource(true)
     trainerSubmissionsApi.getSource(sub.id)
-      .then(r => setSource(r.source))
+      .then(r => {
+        setSource(r.source)
+        setAstViolations(r.ast_violations ?? [])
+      })
       .catch(() => setSource(null))
       .finally(() => setLoadingSource(false))
   }, [sub.id])
+
+  const flaggedLines = new Set(astViolations.map(v => v.line))
 
   const copySource = () => {
     if (!source) return
@@ -142,12 +148,43 @@ function ReviewSlideOver({
                 <div>
                   <p className="text-[11px] text-gray-500 uppercase tracking-widest mb-2">Issues Detected</p>
                   <ul className="space-y-2">
-                    {(scan.issues ?? []).map((issue, i) => (
-                      <li key={i} className="flex items-start gap-2.5 bg-gray-900 border border-gray-800 rounded-lg px-3 py-2.5">
-                        <AlertTriangle size={13} className="text-amber-500 flex-shrink-0 mt-0.5" />
-                        <span className="text-sm text-gray-300">{issue}</span>
-                      </li>
-                    ))}
+                    {(scan.issues ?? []).map((issue, i) => {
+                      if (typeof issue === 'string') {
+                        return (
+                          <li key={i} className="flex items-start gap-2.5 bg-gray-900 border border-gray-800 rounded-lg px-3 py-2.5">
+                            <AlertTriangle size={13} className="text-amber-500 flex-shrink-0 mt-0.5" />
+                            <span className="text-sm text-gray-300">{issue}</span>
+                          </li>
+                        )
+                      }
+                      const isBlock = issue.block
+                      const isIndep = issue.source === 'independent'
+                      return (
+                        <li key={i} className={`bg-gray-900 border rounded-lg px-3 py-2.5 ${isBlock ? 'border-red-800/60' : 'border-gray-800'}`}>
+                          <div className="flex items-start gap-2.5">
+                            <AlertTriangle size={13} className={`flex-shrink-0 mt-0.5 ${isBlock ? 'text-red-400' : 'text-amber-500'}`} />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap mb-1">
+                                {isBlock && (
+                                  <span className="px-1.5 py-0.5 bg-red-900/60 text-red-400 text-[9px] font-bold uppercase rounded">BLOCK</span>
+                                )}
+                                {isIndep && (
+                                  <span className="px-1.5 py-0.5 bg-purple-900/50 text-purple-400 text-[9px] font-bold uppercase rounded" title="Found independently by LLM — AST missed this">LLM-ONLY</span>
+                                )}
+                                {issue.line != null && (
+                                  <span className="text-[10px] text-gray-600 font-mono">line {issue.line}</span>
+                                )}
+                                <span className="text-[10px] text-gray-600 font-mono">{issue.rule}</span>
+                              </div>
+                              <p className="text-sm text-gray-300">{issue.detail || issue.message}</p>
+                              {issue.fix && (
+                                <p className="text-xs text-gray-500 mt-1">Fix: {issue.fix}</p>
+                              )}
+                            </div>
+                          </div>
+                        </li>
+                      )
+                    })}
                   </ul>
                 </div>
               )}
@@ -224,22 +261,31 @@ function ReviewSlideOver({
                   <p className="text-sm text-gray-600">Source file not available</p>
                 </div>
               ) : (
-                <pre className="flex-1 overflow-auto p-4 text-xs font-mono text-gray-300 leading-relaxed whitespace-pre">
-                  {source.split('\n').map((line, i) => (
-                    <div
-                      key={i}
-                      className={clsx(
-                        'flex',
-                        // Highlight lines matching flagged patterns
-                        (scan.quick_hits ?? []).some(h =>
-                          line.includes(h.split(' ')[0])
-                        ) && 'bg-amber-900/20'
-                      )}
-                    >
-                      <span className="select-none w-10 text-right text-gray-700 flex-shrink-0 pr-4">{i + 1}</span>
-                      <span>{line}</span>
-                    </div>
-                  ))}
+                <pre className="flex-1 overflow-auto p-0 text-xs font-mono text-gray-300 leading-relaxed whitespace-pre">
+                  {source.split('\n').map((line, i) => {
+                    const lineNo = i + 1
+                    const violation = astViolations.find(v => v.line === lineNo)
+                    return (
+                      <div
+                        key={i}
+                        title={violation ? `[${violation.rule}] ${violation.message}` : undefined}
+                        className={clsx(
+                          'flex px-4 py-0.5 group',
+                          violation
+                            ? 'bg-red-900/25 border-l-2 border-red-500'
+                            : 'border-l-2 border-transparent'
+                        )}
+                      >
+                        <span className="select-none w-10 text-right text-gray-700 flex-shrink-0 pr-4">{lineNo}</span>
+                        <span className="flex-1">{line}</span>
+                        {violation && (
+                          <span className="ml-3 text-[10px] text-red-400 opacity-0 group-hover:opacity-100 transition-opacity truncate max-w-[200px] flex-shrink-0">
+                            {violation.rule}
+                          </span>
+                        )}
+                      </div>
+                    )
+                  })}
                 </pre>
               )}
             </div>
@@ -383,12 +429,21 @@ function SubmissionRow({
             <div>
               <p className="text-[10px] text-gray-600 uppercase tracking-widest mb-1.5">Scan Issues</p>
               <ul className="space-y-1">
-                {(scan.issues ?? []).map((issue, i) => (
-                  <li key={i} className="flex items-start gap-2 text-xs text-gray-400">
-                    <AlertTriangle size={11} className="text-amber-500 flex-shrink-0 mt-0.5" />
-                    {issue}
-                  </li>
-                ))}
+                {(scan.issues ?? []).map((issue, i) => {
+                  const isStr = typeof issue === 'string'
+                  const isBlock = !isStr && issue.block
+                  const isIndep = !isStr && issue.source === 'independent'
+                  return (
+                    <li key={i} className="flex items-start gap-2 text-xs text-gray-400">
+                      <AlertTriangle size={11} className={`flex-shrink-0 mt-0.5 ${isBlock ? 'text-red-400' : 'text-amber-500'}`} />
+                      <span>
+                        {isIndep && <span className="text-purple-400 mr-1">[LLM]</span>}
+                        {isBlock && <span className="text-red-400 mr-1">[BLOCK]</span>}
+                        {isStr ? issue : (issue.detail || issue.message)}
+                      </span>
+                    </li>
+                  )
+                })}
               </ul>
             </div>
           )}

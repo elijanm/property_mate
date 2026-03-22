@@ -197,6 +197,7 @@ async def deploy_pretrained_from_zip(
 @router.get("")
 async def list_deployments(
     trainer_name: Optional[str] = None,
+    base_name: Optional[str] = None,
     include_all: bool = False,
     user=Depends(get_current_user),
 ):
@@ -204,6 +205,8 @@ async def list_deployments(
     base_filters = [ModelDeployment.status == "active"]
     if trainer_name:
         base_filters.append(ModelDeployment.trainer_name == trainer_name)
+    if base_name:
+        base_filters.append(ModelDeployment.base_name == base_name)
 
     all_deps = await ModelDeployment.find(*base_filters).sort(-ModelDeployment.deployed_at).to_list()
 
@@ -220,7 +223,7 @@ async def list_deployments(
             or (not d.org_id and d.visibility == "viewer")
         ]
 
-    if not include_all and not trainer_name:
+    if not include_all and not trainer_name and not base_name:
         # When listing all trainers without a filter, return only defaults (one per trainer)
         deps = [d for d in deps if d.is_default]
 
@@ -230,16 +233,25 @@ async def list_deployments(
 @router.get("/with-versions")
 async def list_deployments_with_versions(
     trainer_name: Optional[str] = None,
+    base_name: Optional[str] = None,
     user=Depends(get_current_user),
 ):
     """
-    Returns all trainers with ALL their deployed versions and metrics.
-    Each trainer object contains a `versions` array sorted by version number desc.
+    Returns all trainer families with ALL their deployed versions and metrics,
+    grouped by base_name across plugin versions.
+
+    Each entry contains:
+      - top-level fields from the best (highest plugin_version + training_patch) deployment
+      - `versions`: all deployments sorted by (plugin_version desc, training_patch desc)
+      - `version_full`: "v{plugin_version}.0.0.{training_patch}" per version
     """
+    import re as _re
     from collections import defaultdict
     base_filters = [ModelDeployment.status == "active"]
     if trainer_name:
         base_filters.append(ModelDeployment.trainer_name == trainer_name)
+    if base_name:
+        base_filters.append(ModelDeployment.base_name == base_name)
 
     all_deps = await ModelDeployment.find(*base_filters).sort(-ModelDeployment.deployed_at).to_list()
 
@@ -252,22 +264,41 @@ async def list_deployments_with_versions(
             or (not d.org_id and d.visibility == "viewer")
         ]
 
-    # Group by trainer_name
+    # Group by base_name (falls back to stripping _vN suffix for legacy records without base_name)
     grouped: dict = defaultdict(list)
     for d in deps:
-        grouped[d.trainer_name].append(d)
+        key = d.base_name or _re.sub(r"_v\d+$", "", d.trainer_name)
+        grouped[key].append(d)
+
+    def _version_sort_key(d: ModelDeployment):
+        return (d.plugin_version or 0, d.training_patch or 0)
 
     result = []
-    for tname, versions in grouped.items():
-        versions_sorted = sorted(versions, key=lambda d: int(d.mlflow_model_version or "0"), reverse=True)
-        default = next((d for d in versions_sorted if d.is_default), versions_sorted[0])
+    for bname, versions in grouped.items():
+        versions_sorted = sorted(versions, key=_version_sort_key, reverse=True)
+        # Best deployment: prefer is_default=True within highest plugin_version; else just highest
+        best = next(
+            (d for d in versions_sorted if d.is_default and d.plugin_version == versions_sorted[0].plugin_version),
+            versions_sorted[0],
+        )
+        def _vfull(d: ModelDeployment) -> str:
+            # Use stored field; fall back to computing it for legacy records without it
+            if d.version_full:
+                return d.version_full
+            _pv = d.plugin_version or 0
+            _tp = d.training_patch or 0
+            return f"v{_pv}.{_tp // 10}.{_tp % 10}"
+
         result.append({
-            **doc_to_dict(default),
+            **doc_to_dict(best),
+            "base_name": bname,
+            "version_full": _vfull(best),
             "versions": [
                 {
                     **doc_to_dict(d),
                     "metrics": d.metrics or {},
                     "is_current_default": d.is_default,
+                    "version_full": _vfull(d),
                 }
                 for d in versions_sorted
             ],

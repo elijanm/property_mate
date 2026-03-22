@@ -58,6 +58,26 @@ export interface CompareResponse {
   comparisons: VersionComparison[]
 }
 
+export interface AllVersionsResult {
+  deployment_id: string
+  version_full: string | null
+  plugin_version: number
+  training_patch: number
+  mlflow_model_version: string | null
+  is_default: boolean
+  metrics: Record<string, number>
+  prediction: unknown
+  log_id: string | null
+  latency_ms: number | null
+  error: string | null
+}
+
+export interface AllVersionsResponse {
+  trainer_name: string
+  total: number
+  results: AllVersionsResult[]
+}
+
 export interface SSEEvent {
   type: 'inference' | 'feedback' | 'training' | 'ping' | 'connected'
   data: {

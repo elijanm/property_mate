@@ -892,16 +892,26 @@ class DatasetDataSource(DataSource):
         client = AsyncIOMotorClient(_s.MONGODB_URL)
         db = client[_s.MONGODB_DATABASE]
         try:
-            # Resolve dataset: prefer slug, fall back to dataset_id
+            # Resolve dataset by slug — always scoped to the caller's org.
+            # System datasets (org_id="") are never queried directly during training;
+            # the user must clone or reference a public dataset first, which creates
+            # an org-scoped copy that is found here.
             if self.slug:
-                profile = await db["dataset_profiles"].find_one({"slug": self.slug, "deleted_at": None})
+                org_filter = self.org_id if self.org_id else ""
+                profile = await db["dataset_profiles"].find_one({
+                    "slug": self.slug,
+                    "org_id": org_filter,
+                    "deleted_at": None,
+                })
                 if not profile:
                     if self.auto_create_spec:
-                        profile = await self._auto_create_dataset(db, self.slug, self.org_id or "")
+                        # Only auto-create for system trainers (no org) or
+                        # when the trainer declares its own dataset spec.
+                        profile = await self._auto_create_dataset(db, self.slug, org_filter)
                     else:
                         raise ValueError(
-                            f"Dataset with slug {self.slug!r} not found. "
-                            "Create it in the Datasets section first."
+                            f"Dataset with slug {self.slug!r} not found in your workspace. "
+                            "Go to Datasets → Public and clone or reference it first."
                         )
                 resolved_id = str(profile["_id"])
             else:
@@ -915,14 +925,17 @@ class DatasetDataSource(DataSource):
                     raise ValueError(f"Dataset {self.dataset_id!r} not found")
                 resolved_id = self.dataset_id
 
-            # Only enforce org scoping when the dataset is explicitly scoped
-            # (org_id="") means it is a system/shared dataset accessible to all orgs
+            # Org scoping: system datasets (org_id="") are readable by all orgs.
+            # A dataset owned by a different org is only accessible if it is public
+            # OR if the caller has a reference/clone of it (resolved above).
             dataset_org_id = str(profile.get("org_id") or "")
             dataset_visibility = profile.get("visibility", "private")
             if self.org_id and dataset_org_id and dataset_org_id != self.org_id:
-                # Allow read if dataset is public OR if caller org is permitted
                 if dataset_visibility != "public":
-                    raise ValueError(f"Dataset not accessible")
+                    raise ValueError(
+                        f"Dataset '{self.slug or self.dataset_id}' is private and belongs to another org. "
+                        "Reference or clone it first to use it in your trainer."
+                    )
 
             # For referenced datasets, resolve entries from the source dataset
             reference_type = profile.get("reference_type")

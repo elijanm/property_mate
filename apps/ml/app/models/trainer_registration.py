@@ -41,6 +41,18 @@ class TrainerRegistration(Document):
     icon_url: str = ""
     license: str = ""
 
+    # Version lineage
+    base_name: str = ""            # base name without _vN suffix (same as name for v0)
+    version_num: int = 1           # legacy field; use plugin_version instead
+    # Plugin version: 0 = base file (no _vN suffix), 1 = _v1, 2 = _v2, …
+    # Corresponds to the .py filename variant.  Combined with latest_training_patch
+    # it forms the full version string: v{plugin_version}.0.0.{latest_training_patch}
+    plugin_version: int = 0
+    # Incremented each time a training job completes successfully for this plugin file.
+    # Denormalised from the latest ModelDeployment for fast display.
+    latest_training_patch: int = 0
+    cloned_from_org_id: str = ""   # source org_id when cloned across orgs
+
     # Clone hierarchy
     parent_trainer_id: Optional[str] = None
     clone_depth: int = 0
@@ -48,7 +60,13 @@ class TrainerRegistration(Document):
     # Submission & approval
     submission_id: Optional[str] = None
     submission_hash: str = ""           # sha256(org_id + ":" + file_bytes)
+    approved_content_hash: str = ""     # hash of the exact file content that was approved
     approval_status: str = "approved"   # "approved" | "pending_review" | "flagged" | "rejected"
+    rejection_reason: str = ""          # reason shown to user on rejection
+
+    # "public"  = system/global_sample trainers — visible to all orgs, clone-only
+    # "private" = org-owned trainers — only visible to that org, fully runnable
+    visibility: str = "public"       # default "public" for system; set to "private" on insert for org trainers
 
     is_active: bool = True
     is_sample: bool = False          # iris/wine/digits — visible to all roles

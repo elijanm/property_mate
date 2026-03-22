@@ -29,6 +29,9 @@ class TrainingJob(Document):
     gpu_type_id: Optional[str] = None     # e.g. "NVIDIA GeForce RTX 3090"
     remote_job_id: Optional[str] = None   # ID assigned by the cloud provider
 
+    # Dataset override (slug to use instead of trainer's default data_source.slug)
+    dataset_slug_override: Optional[str] = None
+
     # Config snapshot
     training_config: Dict[str, Any] = {}
 

@@ -355,3 +355,144 @@ def _password_reset_html(name: str, reset_url: str) -> str:
 </body>
 </html>
 """
+
+
+# ---------------------------------------------------------------------------
+# Trainer approval / rejection / flagged email templates
+# ---------------------------------------------------------------------------
+
+def _trainer_base_html(header_color: str, icon: str, title: str, body_html: str) -> str:
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:40px 0;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1);">
+        <tr><td style="background:{header_color};padding:32px 40px;text-align:center;">
+          <div style="font-size:40px;">{icon}</div>
+          <h1 style="margin:12px 0 0;color:#ffffff;font-size:22px;font-weight:700;">{title}</h1>
+        </td></tr>
+        <tr><td style="padding:32px 40px;">
+          {body_html}
+        </td></tr>
+        <tr><td style="padding:16px 40px;text-align:center;border-top:1px solid #e5e7eb;">
+          <p style="margin:0;font-size:11px;color:#9ca3af;">MLDock.io · Internal Platform</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+
+
+def trainer_approved_html(trainer_name: str, reviewed_by: str) -> str:
+    body = f"""
+      <p style="margin:0 0 16px;font-size:15px;color:#111827;">
+        Your trainer <strong>{trainer_name}</strong> has been <strong style="color:#16a34a;">approved</strong>
+        and is now active on the platform.
+      </p>
+      <p style="margin:0 0 16px;font-size:14px;color:#4b5563;">
+        You can now run inference and training jobs using this trainer from the ML workspace.
+      </p>
+      <p style="margin:0;font-size:12px;color:#9ca3af;">Reviewed by: {reviewed_by}</p>
+    """
+    return _trainer_base_html("#16a34a", "✅", "Trainer Approved", body)
+
+
+def trainer_rejected_html(trainer_name: str, reason: str, reviewed_by: str) -> str:
+    body = f"""
+      <p style="margin:0 0 16px;font-size:15px;color:#111827;">
+        Your trainer <strong>{trainer_name}</strong> has been <strong style="color:#dc2626;">rejected</strong>.
+      </p>
+      <div style="background:#fef2f2;border-left:4px solid #dc2626;padding:16px;border-radius:4px;margin-bottom:16px;">
+        <p style="margin:0;font-size:13px;color:#991b1b;"><strong>Reason:</strong> {reason}</p>
+      </div>
+      <p style="margin:0 0 8px;font-size:14px;color:#4b5563;">
+        Please review the feedback, make the necessary corrections, and resubmit your trainer for review.
+      </p>
+      <p style="margin:0;font-size:12px;color:#9ca3af;">Reviewed by: {reviewed_by}</p>
+    """
+    return _trainer_base_html("#dc2626", "❌", "Trainer Rejected", body)
+
+
+def trainer_flagged_admin_html(
+    trainer_name: str,
+    owner_email: str,
+    org_id: str,
+    severity: str,
+    summary: str,
+    issues: list,
+    submission_id: str,
+) -> str:
+    sev_color = {"high": "#dc2626", "medium": "#d97706", "low": "#2563eb"}.get(severity.lower(), "#6b7280")
+    def _fmt_issue(i: Any) -> str:
+        if isinstance(i, dict):
+            line = f'<strong>Line {i["line"]}:</strong> ' if i.get("line") else ""
+            src = f' <span style="color:#9ca3af;font-size:11px;">[{i["source"]}]</span>' if i.get("source") else ""
+            return f'{line}[{i.get("rule","?")}] {i.get("detail") or i.get("message","")}{src}'
+        return str(i)
+
+    issues_html = "".join(
+        f'<li style="margin-bottom:8px;font-size:13px;color:#374151;">{_fmt_issue(i)}</li>'
+        for i in (issues or [])
+    )
+    body = f"""
+      <p style="margin:0 0 16px;font-size:15px;color:#111827;">
+        A trainer submission requires your review.
+      </p>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:16px;">
+        <tr><td style="padding:6px 0;font-size:13px;color:#6b7280;width:140px;">Trainer</td>
+            <td style="padding:6px 0;font-size:13px;color:#111827;"><strong>{trainer_name}</strong></td></tr>
+        <tr><td style="padding:6px 0;font-size:13px;color:#6b7280;">Submitted by</td>
+            <td style="padding:6px 0;font-size:13px;color:#111827;">{owner_email}</td></tr>
+        <tr><td style="padding:6px 0;font-size:13px;color:#6b7280;">Org ID</td>
+            <td style="padding:6px 0;font-size:13px;color:#111827;font-family:monospace;">{org_id}</td></tr>
+        <tr><td style="padding:6px 0;font-size:13px;color:#6b7280;">Severity</td>
+            <td style="padding:6px 0;"><span style="background:{sev_color};color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;">{severity.upper()}</span></td></tr>
+        <tr><td style="padding:6px 0;font-size:13px;color:#6b7280;">Submission ID</td>
+            <td style="padding:6px 0;font-size:13px;color:#111827;font-family:monospace;">{submission_id}</td></tr>
+      </table>
+      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:16px;margin-bottom:16px;">
+        <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#111827;">Security Scan Summary</p>
+        <p style="margin:0;font-size:13px;color:#4b5563;">{summary}</p>
+      </div>
+      {'<p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#111827;">Flagged Issues</p><ul style="margin:0;padding-left:20px;">' + issues_html + '</ul>' if issues_html else ''}
+      <p style="margin:16px 0 0;font-size:12px;color:#9ca3af;">Log in to the admin panel to review the source code and approve or reject this submission.</p>
+    """
+    return _trainer_base_html("#d97706", "🚨", "Trainer Flagged for Review", body)
+
+
+async def send_trainer_approved(owner_email: str, trainer_name: str, reviewed_by: str) -> None:
+    await send_email(
+        to=owner_email,
+        subject=f"✅ Trainer '{trainer_name}' Approved",
+        html=trainer_approved_html(trainer_name, reviewed_by),
+    )
+
+
+async def send_trainer_rejected(owner_email: str, trainer_name: str, reason: str, reviewed_by: str) -> None:
+    await send_email(
+        to=owner_email,
+        subject=f"❌ Trainer '{trainer_name}' Rejected",
+        html=trainer_rejected_html(trainer_name, reason, reviewed_by),
+    )
+
+
+async def send_trainer_flagged_admin(
+    admin_email: str,
+    trainer_name: str,
+    owner_email: str,
+    org_id: str,
+    severity: str,
+    summary: str,
+    issues: list,
+    submission_id: str,
+) -> None:
+    await send_email(
+        to=admin_email,
+        subject=f"🚨 Trainer Review Required: '{trainer_name}' [{severity.upper()}]",
+        html=trainer_flagged_admin_html(
+            trainer_name, owner_email, org_id, severity, summary, issues, submission_id
+        ),
+    )

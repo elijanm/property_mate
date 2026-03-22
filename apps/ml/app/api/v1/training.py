@@ -31,6 +31,7 @@ class StartTrainingRequest(BaseModel):
     config_overrides: Optional[dict] = None
     compute_type: str = "local"          # local | cloud_gpu
     gpu_type_id: Optional[str] = None    # e.g. "NVIDIA GeForce RTX 3090"
+    dataset_slug_override: Optional[str] = None  # override trainer's default dataset slug
 
 
 def _detect_local_gpu() -> dict:
@@ -173,6 +174,7 @@ async def start_training(
         org_id=user.org_id,
         compute_type=body.compute_type,
         gpu_type_id=body.gpu_type_id,
+        dataset_slug_override=body.dataset_slug_override,
     )
 
     # Reserve wallet funds after job is created (cloud GPU and paid local)

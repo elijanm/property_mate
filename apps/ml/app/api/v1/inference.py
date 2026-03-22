@@ -8,6 +8,8 @@ from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query
 from pydantic import BaseModel, ConfigDict
 
+from pydantic import field_validator
+
 from app.dependencies.auth import require_roles, get_current_user
 from app.services.inference_service import predict
 from app.utils.serialization import doc_to_dict
@@ -38,9 +40,20 @@ _engineer = Depends(require_roles("engineer", "admin"))
 class PredictRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
     inputs: Any
-    model_version: Optional[str] = None
+    model_version: Optional[str] = None       # target by MLflow version string
+    plugin_version: Optional[int] = None      # target by plugin generation (0, 1, 2 …)
+    training_patch: Optional[int] = None      # target by retraining ordinal (0 = first run)
+    best_metric: Optional[str] = None         # e.g. "accuracy", "f1", "loss" — picks best-scoring deployment
+    best_metric_mode: str = "max"             # "max" (higher is better) or "min" (lower is better)
     org_id: Optional[str] = None
     session_id: Optional[str] = None
+
+    @field_validator("best_metric_mode")
+    @classmethod
+    def _validate_metric_mode(cls, v: str) -> str:
+        if v not in ("max", "min"):
+            raise ValueError("best_metric_mode must be 'max' or 'min'")
+        return v
 
 
 class CorrectionRequest(BaseModel):
@@ -121,6 +134,10 @@ async def run_inference(trainer_name: str, body: PredictRequest, user=Depends(ge
             session_id=body.session_id,
             org_id=user.org_id,
             user_email=user.email,
+            plugin_version=body.plugin_version,
+            training_patch=body.training_patch,
+            best_metric=body.best_metric,
+            best_metric_mode=body.best_metric_mode,
         )
         return {"trainer_name": trainer_name, "prediction": result, "log_id": log_id}
     except HTTPException:
@@ -149,6 +166,10 @@ async def run_inference_upload(
     extra: Optional[str] = Form(None),
     version: Optional[str] = Form(None),
     session_id: Optional[str] = Form(None),
+    plugin_version: Optional[int] = Form(None),
+    training_patch: Optional[int] = Form(None),
+    best_metric: Optional[str] = Form(None),
+    best_metric_mode: str = Form("max"),
     user=Depends(get_current_user),
 ):
     """Run inference by uploading a file (system trainer)."""
@@ -178,6 +199,10 @@ async def run_inference_upload(
             session_id=session_id,
             org_id=user.org_id,
             user_email=user.email,
+            plugin_version=plugin_version,
+            training_patch=training_patch,
+            best_metric=best_metric or None,
+            best_metric_mode=best_metric_mode or "max",
         )
         return {"trainer_name": trainer_name, "prediction": result, "log_id": log_id}
     except HTTPException:
@@ -263,6 +288,69 @@ async def compare_versions(trainer_name: str, body: CompareRequest):
     return await _run_compare(trainer_name, body)
 
 
+class AllVersionsRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    inputs: Any
+
+
+async def _run_all_versions(trainer_name: str, inputs: Any, org_id: str) -> dict:
+    """Discover all active deployments for a trainer (scoped to org_id) and run inference in parallel."""
+    from app.services.inference_service import predict_by_deployment_id
+    from app.models.model_deployment import ModelDeployment as Dep
+
+    deps = await Dep.find(
+        Dep.trainer_name == trainer_name,
+        Dep.org_id == org_id,
+        Dep.status == "active",
+    ).sort(-Dep.plugin_version, -Dep.training_patch).to_list()
+
+    async def run_one(dep):
+        import time
+        t0 = time.monotonic()
+        try:
+            result, log_id = await predict_by_deployment_id(str(dep.id), inputs)
+            return {
+                "deployment_id": str(dep.id),
+                "version_full": getattr(dep, "version_full", None),
+                "plugin_version": getattr(dep, "plugin_version", 0),
+                "training_patch": getattr(dep, "training_patch", 0),
+                "mlflow_model_version": dep.mlflow_model_version,
+                "is_default": dep.is_default,
+                "metrics": dep.metrics or {},
+                "prediction": result,
+                "log_id": log_id,
+                "latency_ms": round((time.monotonic() - t0) * 1000, 1),
+                "error": None,
+            }
+        except Exception as exc:
+            return {
+                "deployment_id": str(dep.id),
+                "version_full": getattr(dep, "version_full", None),
+                "plugin_version": getattr(dep, "plugin_version", 0),
+                "training_patch": getattr(dep, "training_patch", 0),
+                "mlflow_model_version": dep.mlflow_model_version,
+                "is_default": dep.is_default,
+                "metrics": dep.metrics or {},
+                "prediction": None,
+                "log_id": None,
+                "latency_ms": round((time.monotonic() - t0) * 1000, 1),
+                "error": str(exc),
+            }
+
+    results = await asyncio.gather(*[run_one(d) for d in deps])
+    return {"trainer_name": trainer_name, "total": len(results), "results": list(results)}
+
+
+@router.post("/{trainer_name}/all-versions", dependencies=[_any_role])
+async def all_versions_inference(
+    trainer_name: str,
+    body: AllVersionsRequest,
+    user=Depends(get_current_user),
+):
+    """Run inputs against ALL active deployments for this trainer and return a result per version."""
+    return await _run_all_versions(trainer_name, body.inputs, user.org_id)
+
+
 # ── Org-slug routes ───────────────────────────────────────────────────────────
 # POST /inference/{org_slug}/{trainer_name}
 # POST /inference/{org_slug}/{trainer_name}/upload
@@ -291,6 +379,10 @@ async def run_inference_org(
             org_id=user.org_id,
             user_email=user.email,
             namespace_constraint=namespace,
+            plugin_version=body.plugin_version,
+            training_patch=body.training_patch,
+            best_metric=body.best_metric,
+            best_metric_mode=body.best_metric_mode,
         )
         payload = {"trainer_name": f"{org_slug}/{trainer_name}", "prediction": result, "log_id": log_id}
         if is_deprecated:
@@ -325,6 +417,10 @@ async def run_inference_org_upload(
     extra: Optional[str] = Form(None),
     version: Optional[str] = Form(None),
     session_id: Optional[str] = Form(None),
+    plugin_version: Optional[int] = Form(None),
+    training_patch: Optional[int] = Form(None),
+    best_metric: Optional[str] = Form(None),
+    best_metric_mode: str = Form("max"),
     user=Depends(get_current_user),
 ):
     """Run inference by uploading a file against an org-owned trainer."""
@@ -357,6 +453,10 @@ async def run_inference_org_upload(
             org_id=user.org_id,
             user_email=user.email,
             namespace_constraint=namespace,
+            plugin_version=plugin_version,
+            training_patch=training_patch,
+            best_metric=best_metric or None,
+            best_metric_mode=best_metric_mode or "max",
         )
         payload = {"trainer_name": f"{org_slug}/{trainer_name}", "prediction": result, "log_id": log_id}
         if is_deprecated:
@@ -397,6 +497,18 @@ async def compare_versions_org(org_slug: str, trainer_name: str, body: CompareRe
     return await _run_compare(trainer_name, body)
 
 
+@router.post("/{org_slug}/{trainer_name}/all-versions", dependencies=[_any_role])
+async def all_versions_inference_org(
+    org_slug: str,
+    trainer_name: str,
+    body: AllVersionsRequest,
+    user=Depends(get_current_user),
+):
+    """Run inputs against ALL active deployments for an org-owned trainer."""
+    namespace, _ = await _resolve_org_slug(org_slug)
+    return await _run_all_versions(trainer_name, body.inputs, namespace)
+
+
 @router.get("/{trainer_name}/schema", dependencies=[_any_role])
 async def get_schema(trainer_name: str):
     """Returns the input + output schema for the active deployment, including output_display spec."""
@@ -408,8 +520,22 @@ async def get_schema(trainer_name: str):
         ModelDeployment.is_default == True,  # noqa: E712
     )
     if not dep:
-        raise HTTPException(status_code=404, detail=f"No active deployment for '{trainer_name}'")
+        # Fallback: use any active deployment for this trainer
+        dep = await ModelDeployment.find(
+            ModelDeployment.trainer_name == trainer_name,
+            ModelDeployment.status == "active",
+        ).sort(-ModelDeployment.deployed_at).first_or_none()
     reg = await TrainerRegistration.find_one(TrainerRegistration.name == trainer_name)
+    if not dep and reg:
+        # Fallback 2: no deployments for this plugin version — check same base_name family
+        import re as _re
+        _base = getattr(reg, "base_name", None) or _re.sub(r"_v\d+$", "", trainer_name)
+        dep = await ModelDeployment.find(
+            ModelDeployment.base_name == _base,
+            ModelDeployment.status == "active",
+        ).sort(-ModelDeployment.deployed_at).first_or_none()
+    if not dep:
+        raise HTTPException(status_code=404, detail=f"No active deployment for '{trainer_name}'")
 
     # Use reg.org_id as the authoritative ownership source.
     # reg.namespace may have been incorrectly reset to "system" by past system-wide

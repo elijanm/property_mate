@@ -32,6 +32,7 @@ def _cache_set(key: tuple, model) -> None:
 from app.models.inference_log import InferenceLog
 from app.models.model_deployment import ModelDeployment
 from app.services.registry_service import get_trainer_class
+from app.services.trainer_security_service import scrubbed_env
 from app.utils.datetime import utc_now
 from app.api.v1.sse import publish_event
 
@@ -212,6 +213,47 @@ class _OnnxPredictor:
         return outputs[0].tolist() if len(outputs) == 1 else [o.tolist() for o in outputs]
 
 
+async def resolve_best_metric_deployment(
+    trainer_name: str,
+    metric_key: str,
+    metric_mode: str,
+    org_id: str,
+) -> "ModelDeployment":
+    """Return the active deployment with the best value for metric_key.
+
+    metric_mode: "max" (higher is better, e.g. accuracy) or "min" (lower is better, e.g. loss).
+    Tie-break: highest (plugin_version, training_patch) — most-recently-trained wins.
+    Raises HTTPException 400 when no deployment has the requested metric key.
+    """
+    from fastapi import HTTPException as _HTTPException
+
+    deps = await ModelDeployment.find(
+        ModelDeployment.trainer_name == trainer_name,
+        ModelDeployment.org_id == org_id,
+        ModelDeployment.status == "active",
+    ).to_list()
+
+    eligible = [d for d in deps if metric_key in (d.metrics or {})]
+    if not eligible:
+        raise _HTTPException(
+            status_code=400,
+            detail=f"No active deployment for '{trainer_name}' has metric '{metric_key}'. "
+                   f"Available metrics across all deployments: "
+                   f"{sorted({k for d in deps for k in (d.metrics or {})})}",
+        )
+
+    reverse = (metric_mode != "min")
+    eligible.sort(
+        key=lambda d: (
+            d.metrics[metric_key],
+            getattr(d, "plugin_version", 0) or 0,
+            getattr(d, "training_patch", 0) or 0,
+        ),
+        reverse=reverse,
+    )
+    return eligible[0]
+
+
 async def predict(
     trainer_name: str,
     inputs: Any,
@@ -221,6 +263,10 @@ async def predict(
     org_id: str = "",
     user_email: Optional[str] = None,
     namespace_constraint: Optional[str] = None,
+    plugin_version: Optional[int] = None,
+    training_patch: Optional[int] = None,
+    best_metric: Optional[str] = None,
+    best_metric_mode: str = "max",
 ) -> tuple:
     """Load the active deployment and run prediction. Returns (result, log_id).
 
@@ -246,30 +292,65 @@ async def predict(
         if not is_public and caller_org_id != trainer_namespace:
             raise _HTTPException(status_code=403, detail="Access denied — this trainer belongs to a different organisation")
 
-    # Find deployment
-    filters = [
-        ModelDeployment.trainer_name == trainer_name,
-        ModelDeployment.status == "active",
-    ]
-    if model_version:
-        filters.append(ModelDeployment.mlflow_model_version == model_version)
-    else:
-        filters.append(ModelDeployment.is_default == True)  # noqa: E712
+    # ── Explicit version selector: best_metric overrides everything ──────────
+    _has_explicit_selector = bool(model_version or plugin_version is not None or training_patch is not None or best_metric)
 
-    dep = await ModelDeployment.find_one(*filters)
-    if not dep and not model_version:
-        # Fallback: no is_default=True found — use the most recently deployed version
-        dep = await ModelDeployment.find(
+    if best_metric:
+        dep = await resolve_best_metric_deployment(
+            trainer_name=trainer_name,
+            metric_key=best_metric,
+            metric_mode=best_metric_mode,
+            org_id=caller_org_id or "",
+        )
+    else:
+        # Find deployment
+        filters = [
             ModelDeployment.trainer_name == trainer_name,
             ModelDeployment.status == "active",
-        ).sort(-ModelDeployment.deployed_at).first_or_none()
-    if not dep:
-        raise ValueError(f"No active deployment for trainer '{trainer_name}'")
+        ]
+        if model_version:
+            filters.append(ModelDeployment.mlflow_model_version == model_version)
+        if plugin_version is not None:
+            filters.append(ModelDeployment.plugin_version == plugin_version)
+        if training_patch is not None:
+            filters.append(ModelDeployment.training_patch == training_patch)
+        if not model_version and plugin_version is None and training_patch is None:
+            filters.append(ModelDeployment.is_default == True)  # noqa: E712
+
+        dep = await ModelDeployment.find_one(*filters)
+        if not dep and _has_explicit_selector:
+            # Explicit selector was given but nothing matched — clear error
+            selector_info = ", ".join(filter(None, [
+                f"model_version={model_version!r}" if model_version else None,
+                f"plugin_version={plugin_version}" if plugin_version is not None else None,
+                f"training_patch={training_patch}" if training_patch is not None else None,
+            ]))
+            raise ValueError(
+                f"No active deployment for trainer '{trainer_name}' matching {selector_info}"
+            )
+        if not dep:
+            # Fallback 1: no is_default=True — use the most recently deployed for this exact trainer
+            dep = await ModelDeployment.find(
+                ModelDeployment.trainer_name == trainer_name,
+                ModelDeployment.status == "active",
+            ).sort(-ModelDeployment.deployed_at).first_or_none()
+        if not dep and reg:
+            # Fallback 2: trainer has no deployments at all (e.g. freshly upgraded plugin version) —
+            # find the best active deployment across the same base_name family (any plugin version)
+            import re as _re
+            _base = getattr(reg, "base_name", None) or _re.sub(r"_v\d+$", "", trainer_name)
+            dep = await ModelDeployment.find(
+                ModelDeployment.base_name == _base,
+                ModelDeployment.org_id == (caller_org_id or ""),
+                ModelDeployment.status == "active",
+            ).sort(-ModelDeployment.deployed_at).first_or_none()
+        if not dep:
+            raise ValueError(f"No active deployment for trainer '{trainer_name}'")
 
     # A/B traffic routing — check if this trainer has an active test
     ab_test = None
     ab_variant = None
-    if not model_version:  # don't override explicit version requests
+    if not _has_explicit_selector:  # don't override explicit version requests
         from app.services.ab_test_service import get_active_test_for_deployment, route_request
         ab_test = await get_active_test_for_deployment(str(dep.id))
         if ab_test is None:
@@ -318,12 +399,45 @@ async def predict(
             # Trainer defines its own predict(model, inputs) — load the raw model
             # and call it directly, bypassing MLflow schema enforcement entirely.
             raw_model = _load_raw_model(dep.model_uri, dep.source_type)
-            result = trainer.predict(raw_model, inputs)
+
+            if settings.TRAINER_SANDBOX in ("docker", "docker-pool"):
+                # Serialize model → sandbox → deserialize result
+                _pool_mode = settings.TRAINER_SANDBOX == "docker-pool"
+                if _pool_mode:
+                    from app.services.pool_sandbox_runner import run_predict_in_sandbox
+                else:
+                    from app.services.sandbox_runner import run_predict_in_sandbox
+                from pathlib import Path as _Path
+                try:
+                    import cloudpickle as _cpkl
+                except ImportError:
+                    import pickle as _cpkl  # type: ignore[no-redef]
+                import io as _io
+
+                model_bytes = _cpkl.dumps(raw_model)
+                plugin_dir = _Path(settings.TRAINER_PLUGIN_DIR)
+                trainer_py = next(
+                    (f for f in plugin_dir.glob("*.py")
+                     if f.stem == trainer_name or f.stem.lower() == trainer_name.lower()),
+                    None,
+                )
+                if trainer_py is None:
+                    raise ValueError(f"Cannot find trainer source for '{trainer_name}' in {plugin_dir}")
+                trainer_source = trainer_py.read_text(encoding="utf-8")
+                result = await run_predict_in_sandbox(
+                    trainer_source=trainer_source,
+                    model_bytes=model_bytes,
+                    inputs=inputs,
+                )
+            else:
+                with scrubbed_env():
+                    result = trainer.predict(raw_model, inputs)
         else:
             # No trainer predict — use pyfunc with prepared inputs
             model = mlflow.pyfunc.load_model(dep.model_uri)
             raw = model.predict(_prepare_inputs(inputs, dep.input_schema))
-            result = trainer.postprocess(raw) if trainer else raw
+            with scrubbed_env():
+                result = trainer.postprocess(raw) if trainer else raw
         # Publish SSE event for real-time UI
         try:
             import asyncio
@@ -449,11 +563,13 @@ async def predict_by_deployment_id(deployment_id: str, inputs: Any) -> tuple:
                 del sys.modules[_key]
         if trainer and _trainer_has_predict(trainer):
             raw_model = _load_raw_model(dep.model_uri, dep.source_type)
-            result = trainer.predict(raw_model, inputs)
+            with scrubbed_env():
+                result = trainer.predict(raw_model, inputs)
         else:
             model = mlflow.pyfunc.load_model(dep.model_uri)
             raw = model.predict(_prepare_inputs(inputs, dep.input_schema))
-            result = trainer.postprocess(raw) if trainer else raw
+            with scrubbed_env():
+                result = trainer.postprocess(raw) if trainer else raw
     except Exception as exc:
         error_msg = str(exc)
         raise

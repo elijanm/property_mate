@@ -22,6 +22,9 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    networks:
+      - default
+      - pms_sandbox_net   # sandbox containers need Redis access
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -465,8 +468,26 @@ services:
       MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING: "false"
       ULTRALYTICS_SETTINGS_DIR: /tmp/ultralytics
       ROBOFLOW_API_KEY: ${ROBOFLOW_API_KEY:-}
+      # Sandbox mode: none | docker | docker-pool
+      TRAINER_SANDBOX: ${TRAINER_SANDBOX:-none}
+      TRAINER_SANDBOX_IMAGE: ${TRAINER_SANDBOX_IMAGE:-pms-ml-sandbox:latest}
+      TRAINER_SANDBOX_MEMORY: ${TRAINER_SANDBOX_MEMORY:-2g}
+      TRAINER_SANDBOX_CPUS: ${TRAINER_SANDBOX_CPUS:-2}
+      TRAINER_SANDBOX_TIMEOUT: ${TRAINER_SANDBOX_TIMEOUT:-600}
+      # docker-pool settings
+      SANDBOX_POOL_AGENT_REDIS_URL: redis://redis:6379
+      SANDBOX_POOL_NETWORK: pms_sandbox_net
+      SANDBOX_POOL_MIN_SIZE: ${SANDBOX_POOL_MIN_SIZE:-2}
+      SANDBOX_POOL_MAX_SIZE: ${SANDBOX_POOL_MAX_SIZE:-10}
+    networks:
+      - default
+      - pms_sandbox_net   # needed to spawn containers on this network via Docker socket
     volumes:
       - ml_trainer_plugins:/app/trainers
+      # Docker socket — required when TRAINER_SANDBOX=docker or docker-pool
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Shared workspace volume — data exchange between ml-worker and sandbox containers
+      - ml_sandbox_workspace:/sandbox_workspace
     depends_on:
       mongodb:
         condition: service_healthy
@@ -542,3 +563,12 @@ volumes:
   mlflow_data:
   ml_trainer_plugins:
   ml_clamav_db:
+  ml_sandbox_workspace:
+
+networks:
+  # Internal bridge for sandbox containers — Redis access only, no internet egress.
+  # Sandbox containers and Redis both join this network.
+  # ml-worker joins it so it can spawn containers on it via Docker socket.
+  pms_sandbox_net:
+    driver: bridge
+    internal: true

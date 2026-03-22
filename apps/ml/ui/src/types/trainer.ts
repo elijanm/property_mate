@@ -25,11 +25,29 @@ export interface TrainerRegistration {
   alias?: string
   namespace?: string
   full_name?: string
+  base_name?: string
+  org_id?: string
+  owner_email?: string
+  approval_status?: 'approved' | 'pending_review' | 'pending_admin' | 'flagged' | 'rejected'
+  visibility?: 'public' | 'private'
+  version_num?: number          // legacy; prefer plugin_version
+  // Versioning
+  plugin_version?: number       // 0 = base file, 1 = _v1, 2 = _v2, …
+  latest_training_patch?: number // how many times retrained (0 = never / initial)
+  version_full?: string         // computed: "v{plugin_version}.0.0.{latest_training_patch}"
+}
+
+export interface TrainerGroup {
+  base_name: string
+  latest: TrainerRegistration
+  versions: TrainerRegistration[]   // all versions, newest first
 }
 
 export interface ModelDeployment {
   id: string
   trainer_name: string
+  base_name: string
+  plugin_version: number
   version: string
   mlflow_model_name: string
   mlflow_model_version: string
@@ -38,6 +56,7 @@ export interface ModelDeployment {
   source_type: string
   status: 'active' | 'inactive' | 'archived'
   is_default: boolean
+  training_patch: number        // 0 = first training run, 1 = second, etc.
   input_schema: Record<string, SchemaField>
   output_schema: Record<string, OutputSchemaField>
   metrics: Record<string, number>
@@ -45,6 +64,9 @@ export interface ModelDeployment {
   category: Record<string, string>  // { key: 'ocr', label: 'OCR & Vision' }
   visibility: 'viewer' | 'engineer'  // 'viewer' = all roles, 'engineer' = engineer/admin only
   data_source_info?: Record<string, unknown>
+  version_full: string           // "v{plugin_version}.0.0.{training_patch}" — stored at creation
+  is_current_default?: boolean   // only in /with-versions response
+  versions?: Array<ModelDeployment & { is_current_default: boolean; version_full: string }>
   created_at: string
 }
 

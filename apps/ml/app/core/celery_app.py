@@ -6,7 +6,7 @@ celery_app = Celery(
     "ml_studio",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["app.tasks.train_task", "app.tasks.annotate_task"],
+    include=["app.tasks.train_task", "app.tasks.annotate_task", "app.tasks.install_packages_task"],
 )
 
 celery_app.conf.update(

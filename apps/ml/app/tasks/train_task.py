@@ -32,6 +32,7 @@ async def enqueue_training(
     org_id: str = "",
     compute_type: str = "local",
     gpu_type_id: Optional[str] = None,
+    dataset_slug_override: Optional[str] = None,
 ) -> str:
     """Create a DB job record and dispatch Celery task. Returns job_id."""
     from app.services.registry_service import get_trainer_class
@@ -51,6 +52,7 @@ async def enqueue_training(
         compute_type=compute_type,
         gpu_provider=gpu_provider,
         gpu_type_id=gpu_type_id,
+        dataset_slug_override=dataset_slug_override or None,
     )
     await job.insert()
     job_id = str(job.id)

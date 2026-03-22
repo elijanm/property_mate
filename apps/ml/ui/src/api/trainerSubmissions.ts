@@ -41,7 +41,12 @@ export const trainerSubmissionsApi = {
     return res.data;
   },
 
-  getSource: async (id: string): Promise<{ trainer_name: string; source: string }> => {
+  getSource: async (id: string): Promise<{
+    trainer_name: string;
+    source: string;
+    scan_result: Record<string, any>;
+    ast_violations: { line: number; col?: number; rule: string; message: string }[];
+  }> => {
     const res = await api.get(`/trainer-submissions/${id}/source`);
     return res.data;
   },

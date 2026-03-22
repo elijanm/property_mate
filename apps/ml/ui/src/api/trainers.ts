@@ -3,6 +3,12 @@ import type { TrainerRegistration, ModelDeployment, TrainingJob, GpuOption, Loca
 
 export const trainersApi = {
   list: () => client.get<{ items: TrainerRegistration[] }>('/trainers').then(r => r.data.items ?? []),
+  listPublic: () => client.get<{ items: TrainerRegistration[] }>('/trainers/public').then(r => r.data.items ?? []),
+  listPending: () => client.get<{ items: TrainerRegistration[] }>('/trainers/pending').then(r => r.data.items ?? []),
+  approvePending: (name: string) => client.patch(`/trainers/pending/${name}/approve`).then(r => r.data),
+  rejectPending: (name: string, reason: string) => client.patch(`/trainers/pending/${name}/reject`, { reason }).then(r => r.data),
+  clone: (name: string) => client.post<TrainerRegistration>(`/trainers/${name}/clone`).then(r => r.data),
+  initWorkspace: () => client.post<{ cloned: string[]; count: number }>('/trainers/init-workspace').then(r => r.data),
   get: (name: string) => client.get<TrainerRegistration>(`/trainers/${name}`).then(r => r.data),
   scan: () => client.post('/trainers/scan').then(r => r.data),
 
@@ -30,11 +36,13 @@ export const trainersApi = {
     trainerName: string,
     configOverrides?: Record<string, unknown>,
     compute?: { compute_type: 'local' | 'cloud_gpu'; gpu_type_id?: string },
+    datasetSlugOverride?: string,
   ) =>
     client.post<{ job_id: string }>('/training/start', {
       trainer_name: trainerName,
       config_overrides: configOverrides,
       ...(compute ?? {}),
+      ...(datasetSlugOverride ? { dataset_slug_override: datasetSlugOverride } : {}),
     }).then(r => r.data),
 
   deleteDeployment: (id: string) =>

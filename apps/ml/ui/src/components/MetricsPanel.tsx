@@ -104,7 +104,12 @@ export default function MetricsPanel({ trainerName, refreshTrigger, deployment, 
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
-        {cm ? <ConfusionMatrixView data={cm} /> : <p className="text-center py-8 text-gray-600 text-sm">Loading…</p>}
+        {loading
+          ? <p className="text-center py-8 text-gray-600 text-sm">Loading…</p>
+          : cm
+            ? <ConfusionMatrixView data={cm} />
+            : <p className="text-center py-8 text-gray-600 text-sm">No feedback data yet — submit labeled predictions to build the matrix.</p>
+        }
       </div>
     </div>
   )

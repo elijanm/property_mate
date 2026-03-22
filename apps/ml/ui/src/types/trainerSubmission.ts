@@ -1,8 +1,26 @@
+export interface ScanIssue {
+  rule: string;
+  title?: string;
+  detail?: string;
+  fix?: string;
+  line?: number | null;
+  block: boolean;
+  /** "ast_hint" = LLM confirmed a static hint is real threat
+   *  "independent" = LLM found it without a hint (missed by AST)
+   *  "llm" = generic LLM finding
+   *  "parse_error" = LLM output was unparseable */
+  source: 'ast_hint' | 'independent' | 'llm' | 'parse_error';
+  severity: 'HIGH' | 'MEDIUM' | 'LOW';
+  message?: string;
+}
+
 export interface TrainerSubmission {
   id: string;
   org_id: string;
   owner_email: string;
   trainer_name: string;
+  base_trainer_name: string;  // base name without _vN suffix
+  version_num: number;        // 1 = original, 2 = _v2, etc.
   namespace: string;
   file_key: string;
   submission_hash: string;
@@ -11,8 +29,12 @@ export interface TrainerSubmission {
     passed?: boolean;
     severity?: string;
     summary?: string;
-    issues?: string[];
+    /** Structured finding objects from the LLM scan */
+    issues?: ScanIssue[];
+    /** Legacy string issues from older scan results */
     quick_hits?: string[];
+    /** Raw AST hint line numbers (always present; LLM may clear benign ones) */
+    ast_violations?: { line: number; col?: number; rule: string; message: string }[];
     model_used?: string;
   };
   llm_model_used: string;

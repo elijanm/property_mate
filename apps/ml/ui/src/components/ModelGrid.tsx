@@ -3,7 +3,7 @@ import type { ModelDeployment } from '@/types/trainer'
 import StatusBadge from './StatusBadge'
 import { useAuth } from '../context/AuthContext'
 import { trainersApi } from '../api/trainers'
-import { Brain, Tag, ChevronRight, Search, Trash2, Loader2, Globe, Lock, LayoutGrid, List, ChevronLeft } from 'lucide-react'
+import { Brain, Tag, ChevronRight, Search, Trash2, Loader2, Globe, Lock, LayoutGrid, List, ChevronLeft, ChevronDown, History } from 'lucide-react'
 import clsx from 'clsx'
 
 const PAGE_SIZE = 12
@@ -32,20 +32,34 @@ function prioritisedMetrics(metrics: Record<string, number>): [string, number][]
   return [...priority, ...rest].slice(0, 3)
 }
 
-// Deduplicate by trainer_name — keep the default, or highest version number
-function dedupe(deployments: ModelDeployment[]): ModelDeployment[] {
-  const map = new Map<string, ModelDeployment>()
+interface DeploymentGroup {
+  base_name: string
+  latest: ModelDeployment   // best: highest plugin_version then training_patch
+  older: ModelDeployment[]  // all others, sorted same way descending
+}
+
+function groupByFamily(deployments: ModelDeployment[]): DeploymentGroup[] {
+  const map = new Map<string, ModelDeployment[]>()
   for (const d of deployments) {
-    const existing = map.get(d.trainer_name)
-    if (!existing) { map.set(d.trainer_name, d); continue }
-    // Prefer is_default; break ties by highest mlflow_model_version
-    const dv = parseInt(d.mlflow_model_version || '0', 10)
-    const ev = parseInt(existing.mlflow_model_version || '0', 10)
-    if (d.is_default || (!existing.is_default && dv > ev)) {
-      map.set(d.trainer_name, d)
-    }
+    const key = d.base_name || d.trainer_name.replace(/_v\d+$/, '')
+    if (!map.has(key)) map.set(key, [])
+    map.get(key)!.push(d)
   }
-  return Array.from(map.values())
+  const groups: DeploymentGroup[] = []
+  for (const [base_name, vers] of map.entries()) {
+    const sorted = [...vers].sort((a, b) => {
+      const pvDiff = (b.plugin_version ?? 0) - (a.plugin_version ?? 0)
+      if (pvDiff !== 0) return pvDiff
+      return (b.training_patch ?? 0) - (a.training_patch ?? 0)
+    })
+    // Prefer is_default within the highest plugin_version tier
+    const topPv = sorted[0].plugin_version ?? 0
+    const topTier = sorted.filter(d => (d.plugin_version ?? 0) === topPv)
+    const latest = topTier.find(d => d.is_default) ?? sorted[0]
+    const older = sorted.filter(d => d.id !== latest.id)
+    groups.push({ base_name, latest, older })
+  }
+  return groups
 }
 
 const METRIC_LABELS: Record<string, string> = {
@@ -63,35 +77,37 @@ export default function ModelGrid({ deployments, onSelect, onDelete, onUpdated, 
   const [viewMode, setViewMode] = useState<'card' | 'table'>(() => deployments.length > 6 ? 'table' : 'card')
   const [currentPage, setCurrentPage] = useState(1)
 
-  // One card per trainer — pick the default/latest version
-  const unique = dedupe(deployments)
+  // One card per trainer family — group by base_name
+  const groups = groupByFamily(deployments)
 
   // Derive unique categories from all deployments
   const categories = Array.from(
     new Map(
-      unique
-        .filter(d => d.category?.key)
-        .map(d => [d.category.key, d.category.label || d.category.key])
+      groups
+        .filter(g => g.latest.category?.key)
+        .map(g => [g.latest.category.key, g.latest.category.label || g.latest.category.key])
     ).entries()
   )
 
-  const filtered = unique.filter(d => {
+  const filteredGroups = groups.filter(g => {
+    const d = g.latest
     const matchStatus = filter === 'all' || d.status === filter
-    const matchSearch = !search || d.trainer_name.toLowerCase().includes(search.toLowerCase()) ||
+    const matchSearch = !search || g.base_name.toLowerCase().includes(search.toLowerCase()) ||
+      d.trainer_name.toLowerCase().includes(search.toLowerCase()) ||
       d.mlflow_model_name.toLowerCase().includes(search.toLowerCase())
     const matchCategory = !category || d.category?.key === category
     return matchStatus && matchSearch && matchCategory
   })
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const totalPages = Math.max(1, Math.ceil(filteredGroups.length / PAGE_SIZE))
   const safePage = Math.min(currentPage, totalPages)
-  const paginated = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+  const paginated = filteredGroups.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
 
   const counts = {
-    all: unique.length,
-    active: unique.filter(d => d.status === 'active').length,
-    inactive: unique.filter(d => d.status === 'inactive').length,
-    archived: unique.filter(d => d.status === 'archived').length,
+    all: groups.length,
+    active: groups.filter(g => g.latest.status === 'active').length,
+    inactive: groups.filter(g => g.latest.status === 'inactive').length,
+    archived: groups.filter(g => g.latest.status === 'archived').length,
   }
 
   const FILTERS: { id: FilterType; label: string }[] = [
@@ -158,8 +174,8 @@ export default function ModelGrid({ deployments, onSelect, onDelete, onUpdated, 
 
       {/* Models count */}
       <div className="text-[11px] text-gray-600">
-        {filtered.length} model{filtered.length !== 1 ? 's' : ''}
-        {filtered.length > PAGE_SIZE && ` · page ${safePage} of ${totalPages}`}
+        {filteredGroups.length} model{filteredGroups.length !== 1 ? 's' : ''}
+        {filteredGroups.length > PAGE_SIZE && ` · page ${safePage} of ${totalPages}`}
       </div>
 
       {/* Grid / Table */}
@@ -169,16 +185,17 @@ export default function ModelGrid({ deployments, onSelect, onDelete, onUpdated, 
             <div key={i} className="bg-gray-900 rounded-2xl h-48 border border-gray-800 animate-pulse" />
           ))}
         </div>
-      ) : filtered.length === 0 ? (
+      ) : filteredGroups.length === 0 ? (
         <div className="text-center py-20 text-gray-600">
           <Brain size={32} className="mx-auto mb-3 opacity-30" />
           <p className="text-sm">No models found</p>
         </div>
       ) : viewMode === 'card' ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {paginated.map(dep => (
-            <ModelCard key={dep.id} dep={dep} onClick={() => onSelect(dep)} onDelete={onDelete}
-              isAdmin={isAdmin} onUpdated={onUpdated} />
+          {paginated.map(g => (
+            <ModelCard key={g.base_name} dep={g.latest} older={g.older}
+              onClick={() => onSelect(g.latest)} onDelete={onDelete}
+              isAdmin={isAdmin} onUpdated={onUpdated} onSelectVersion={onSelect} />
           ))}
         </div>
       ) : (
@@ -191,68 +208,16 @@ export default function ModelGrid({ deployments, onSelect, onDelete, onUpdated, 
                 <th className="text-left px-4 py-2.5 text-[10px] text-gray-600 uppercase tracking-widest font-semibold hidden sm:table-cell">Version</th>
                 <th className="text-left px-4 py-2.5 text-[10px] text-gray-600 uppercase tracking-widest font-semibold">Status</th>
                 <th className="text-left px-4 py-2.5 text-[10px] text-gray-600 uppercase tracking-widest font-semibold hidden md:table-cell">Metrics</th>
-                <th className="text-left px-4 py-2.5 text-[10px] text-gray-600 uppercase tracking-widest font-semibold hidden lg:table-cell">Source</th>
+                <th className="text-left px-4 py-2.5 text-[10px] text-gray-600 uppercase tracking-widest font-semibold hidden lg:table-cell">Older versions</th>
                 <th className="px-4 py-2.5 w-16"></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-800">
-              {paginated.map(dep => {
-                const topMetrics = prioritisedMetrics(dep.metrics).slice(0, 2)
-                return (
-                  <tr key={dep.id} onClick={() => onSelect(dep)}
-                    className="hover:bg-gray-900/60 cursor-pointer transition-colors group">
-                    <td className="px-4 py-3">
-                      <div className="font-medium text-gray-100 group-hover:text-white text-sm">{dep.mlflow_model_name}</div>
-                      <div className="text-[10px] text-gray-600 font-mono mt-0.5">{dep.trainer_name}</div>
-                    </td>
-                    <td className="px-4 py-3 hidden sm:table-cell">
-                      <span className="text-[10px] bg-brand-900/50 text-brand-400 border border-brand-800/40 px-1.5 py-0.5 rounded-full font-mono">
-                        v{dep.mlflow_model_version}
-                      </span>
-                      {dep.is_default && <span className="ml-1.5 text-[9px] text-emerald-500">default</span>}
-                    </td>
-                    <td className="px-4 py-3"><StatusBadge status={dep.status} /></td>
-                    <td className="px-4 py-3 hidden md:table-cell">
-                      {topMetrics.length > 0 ? (
-                        <div className="flex items-center gap-3">
-                          {topMetrics.map(([k, v]) => (
-                            <div key={k} className="text-xs">
-                              <span className="text-brand-400 font-semibold">
-                                {typeof v === 'number' && v <= 1 ? `${(v * 100).toFixed(1)}%` : v.toFixed(2)}
-                              </span>
-                              <span className="text-gray-600 ml-1">{metricLabel(k)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : <span className="text-gray-700 text-xs">—</span>}
-                    </td>
-                    <td className="px-4 py-3 hidden lg:table-cell">
-                      <span className="text-[10px] text-gray-600">{dep.source_type.replace(/_/g, ' ')}</span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
-                        {isAdmin && (
-                          <button onClick={async e => {
-                            e.stopPropagation()
-                            const newVis = dep.visibility === 'viewer' ? 'engineer' : 'viewer'
-                            try { const u = await trainersApi.setVisibility(dep.id, newVis); onUpdated?.(u) } catch {}
-                          }} title="Toggle visibility" className="p-1 text-gray-600 hover:text-brand-400 rounded">
-                            {dep.visibility === 'viewer' ? <Lock size={11} /> : <Globe size={11} />}
-                          </button>
-                        )}
-                        <button onClick={async e => {
-                          e.stopPropagation()
-                          if (!confirm(`Delete "${dep.mlflow_model_name}"?`)) return
-                          await onDelete(dep.id)
-                        }} className="p-1 text-gray-600 hover:text-red-400 rounded">
-                          <Trash2 size={11} />
-                        </button>
-                        <ChevronRight size={12} className="text-gray-600 group-hover:text-brand-400" />
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
+            <tbody>
+              {paginated.map(g => (
+                <TableGroupRow key={g.base_name} group={g}
+                  onSelect={onSelect} onDelete={onDelete}
+                  isAdmin={isAdmin} onUpdated={onUpdated} />
+              ))}
             </tbody>
           </table>
         </div>
@@ -291,15 +256,34 @@ export default function ModelGrid({ deployments, onSelect, onDelete, onUpdated, 
   )
 }
 
-function ModelCard({ dep, onClick, onDelete, isAdmin, onUpdated }: {
+function VersionTag({ dep, onClick }: { dep: ModelDeployment; onClick: () => void }) {
+  const tp = dep.training_patch ?? 0
+  const vfull = dep.version_full || `v${dep.plugin_version ?? 0}.${Math.floor(tp / 10)}.${tp % 10}`
+  return (
+    <button
+      onClick={e => { e.stopPropagation(); onClick() }}
+      className="flex items-center gap-1.5 w-full px-2 py-1.5 rounded-lg hover:bg-gray-800 transition-colors text-left group/ver"
+    >
+      <span className="font-mono text-[10px] bg-brand-900/40 text-brand-400 border border-brand-800/30 px-1.5 py-0.5 rounded-full">{vfull}</span>
+      <span className="text-[10px] text-gray-600 truncate flex-1">{dep.trainer_name}</span>
+      <StatusBadge status={dep.status} />
+      <ChevronRight size={10} className="text-gray-700 group-hover/ver:text-brand-400 flex-shrink-0" />
+    </button>
+  )
+}
+
+function ModelCard({ dep, older, onClick, onDelete, isAdmin, onUpdated, onSelectVersion }: {
   dep: ModelDeployment
+  older: ModelDeployment[]
   onClick: () => void
   onDelete: (id: string) => void
   isAdmin?: boolean
   onUpdated?: (dep: ModelDeployment) => void
+  onSelectVersion: (dep: ModelDeployment) => void
 }) {
   const [deleting, setDeleting] = useState(false)
   const [togglingVis, setTogglingVis] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const hasMetrics = Object.keys(dep.metrics ?? {}).length > 0
 
   const handleDelete = async (e: React.MouseEvent) => {
@@ -339,7 +323,7 @@ function ModelCard({ dep, onClick, onDelete, isAdmin, onUpdated }: {
       <div className="flex items-center gap-2 mb-3">
         <span className="text-xs text-gray-600 font-mono">{dep.trainer_name}</span>
         <span className="text-[10px] bg-brand-900/50 text-brand-400 border border-brand-800/40 px-1.5 py-0.5 rounded-full font-mono">
-          v{dep.mlflow_model_version}
+          {dep.version_full || `v${dep.plugin_version ?? 0}.${Math.floor((dep.training_patch ?? 0) / 10)}.${(dep.training_patch ?? 0) % 10}`}
         </span>
         {dep.is_default && (
           <span className="text-[9px] uppercase tracking-widest text-emerald-500">latest</span>
@@ -399,6 +383,149 @@ function ModelCard({ dep, onClick, onDelete, isAdmin, onUpdated }: {
           <ChevronRight size={14} className="text-gray-600 group-hover:text-brand-400 transition-colors" />
         </div>
       </div>
+
+      {/* Collapsible older versions */}
+      {older.length > 0 && (
+        <div className="mt-3 border-t border-gray-800 pt-2" onClick={e => e.stopPropagation()}>
+          <button
+            onClick={() => setHistoryOpen(v => !v)}
+            className="flex items-center gap-1.5 w-full text-[10px] text-gray-600 hover:text-gray-400 transition-colors py-0.5"
+          >
+            <History size={10} />
+            {older.length} older version{older.length !== 1 ? 's' : ''}
+            {historyOpen ? <ChevronDown size={9} className="ml-auto" /> : <ChevronRight size={9} className="ml-auto" />}
+          </button>
+          {historyOpen && (
+            <div className="mt-1 space-y-0.5">
+              {older.map(v => (
+                <VersionTag key={v.id} dep={v} onClick={() => onSelectVersion(v)} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
+  )
+}
+
+function TableGroupRow({ group, onSelect, onDelete, isAdmin, onUpdated }: {
+  group: DeploymentGroup
+  onSelect: (dep: ModelDeployment) => void
+  onDelete: (id: string) => void
+  isAdmin?: boolean
+  onUpdated?: (dep: ModelDeployment) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const dep = group.latest
+  const topMetrics = prioritisedMetrics(dep.metrics).slice(0, 2)
+
+  return (
+    <>
+      <tr onClick={() => onSelect(dep)}
+        className="hover:bg-gray-900/60 cursor-pointer transition-colors group border-b border-gray-800">
+        <td className="px-4 py-3">
+          <div className="font-medium text-gray-100 group-hover:text-white text-sm">{dep.mlflow_model_name}</div>
+          <div className="text-[10px] text-gray-600 font-mono mt-0.5">{dep.trainer_name}</div>
+        </td>
+        <td className="px-4 py-3 hidden sm:table-cell">
+          <span className="text-[10px] bg-brand-900/50 text-brand-400 border border-brand-800/40 px-1.5 py-0.5 rounded-full font-mono">
+            {dep.version_full || `v${dep.plugin_version ?? 0}.${Math.floor((dep.training_patch ?? 0) / 10)}.${(dep.training_patch ?? 0) % 10}`}
+          </span>
+          {dep.is_default && <span className="ml-1.5 text-[9px] text-emerald-500">default</span>}
+        </td>
+        <td className="px-4 py-3"><StatusBadge status={dep.status} /></td>
+        <td className="px-4 py-3 hidden md:table-cell">
+          {topMetrics.length > 0 ? (
+            <div className="flex items-center gap-3">
+              {topMetrics.map(([k, v]) => (
+                <div key={k} className="text-xs">
+                  <span className="text-brand-400 font-semibold">
+                    {typeof v === 'number' && v <= 1 ? `${(v * 100).toFixed(1)}%` : v.toFixed(2)}
+                  </span>
+                  <span className="text-gray-600 ml-1">{metricLabel(k)}</span>
+                </div>
+              ))}
+            </div>
+          ) : <span className="text-gray-700 text-xs">—</span>}
+        </td>
+        <td className="px-4 py-3 hidden lg:table-cell">
+          {group.older.length > 0 ? (
+            <button
+              onClick={e => { e.stopPropagation(); setExpanded(v => !v) }}
+              className="flex items-center gap-1 text-[10px] text-gray-500 hover:text-gray-300 transition-colors"
+            >
+              <History size={10} />
+              {group.older.length} older
+              {expanded ? <ChevronDown size={9} /> : <ChevronRight size={9} />}
+            </button>
+          ) : <span className="text-gray-700 text-xs">—</span>}
+        </td>
+        <td className="px-4 py-3">
+          <div className="flex items-center gap-1 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+            {isAdmin && (
+              <button onClick={async e => {
+                e.stopPropagation()
+                const newVis = dep.visibility === 'viewer' ? 'engineer' : 'viewer'
+                try { const u = await trainersApi.setVisibility(dep.id, newVis); onUpdated?.(u) } catch {}
+              }} title="Toggle visibility" className="p-1 text-gray-600 hover:text-brand-400 rounded">
+                {dep.visibility === 'viewer' ? <Lock size={11} /> : <Globe size={11} />}
+              </button>
+            )}
+            <button onClick={async e => {
+              e.stopPropagation()
+              if (!confirm(`Delete "${dep.mlflow_model_name}"?`)) return
+              await onDelete(dep.id)
+            }} className="p-1 text-gray-600 hover:text-red-400 rounded">
+              <Trash2 size={11} />
+            </button>
+            <ChevronRight size={12} className="text-gray-600 group-hover:text-brand-400" />
+          </div>
+        </td>
+      </tr>
+      {expanded && group.older.map(v => {
+        const vm = prioritisedMetrics(v.metrics).slice(0, 2)
+        return (
+          <tr key={v.id} onClick={() => onSelect(v)}
+            className="bg-gray-900/30 hover:bg-gray-900/60 cursor-pointer transition-colors border-b border-gray-800/50 group">
+            <td className="px-4 py-2 pl-8">
+              <div className="text-xs text-gray-500 font-mono">{v.trainer_name}</div>
+            </td>
+            <td className="px-4 py-2 hidden sm:table-cell">
+              <span className="text-[10px] bg-gray-800 text-gray-500 border border-gray-700 px-1.5 py-0.5 rounded-full font-mono">
+                {v.version_full || `v${v.plugin_version ?? 0}.${Math.floor((v.training_patch ?? 0) / 10)}.${(v.training_patch ?? 0) % 10}`}
+              </span>
+            </td>
+            <td className="px-4 py-2"><StatusBadge status={v.status} /></td>
+            <td className="px-4 py-2 hidden md:table-cell">
+              {vm.length > 0 ? (
+                <div className="flex items-center gap-3">
+                  {vm.map(([k, val]) => (
+                    <div key={k} className="text-xs">
+                      <span className="text-gray-400 font-semibold">
+                        {typeof val === 'number' && val <= 1 ? `${(val * 100).toFixed(1)}%` : val.toFixed(2)}
+                      </span>
+                      <span className="text-gray-600 ml-1">{metricLabel(k)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : <span className="text-gray-700 text-xs">—</span>}
+            </td>
+            <td className="px-4 py-2 hidden lg:table-cell" />
+            <td className="px-4 py-2">
+              <div className="flex items-center gap-1 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+                <button onClick={async e => {
+                  e.stopPropagation()
+                  if (!confirm(`Delete version "${v.version_full}"?`)) return
+                  await onDelete(v.id)
+                }} className="p-1 text-gray-600 hover:text-red-400 rounded">
+                  <Trash2 size={11} />
+                </button>
+                <ChevronRight size={12} className="text-gray-600 group-hover:text-brand-400" />
+              </div>
+            </td>
+          </tr>
+        )
+      })}
+    </>
   )
 }

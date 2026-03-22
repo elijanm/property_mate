@@ -17,6 +17,8 @@ class ModelDeployment(Document):
 
     org_id: str = ""              # tenant workspace
     trainer_name: str
+    base_name: str = ""           # e.g. "image_cosine_similarity" — same across all plugin versions
+    plugin_version: int = 0       # 0 = v0 file, 1 = _v1 file, etc.  mirrors TrainerRegistration
     version: str
     mlflow_model_name: str
     mlflow_model_version: Optional[str] = None
@@ -35,6 +37,13 @@ class ModelDeployment(Document):
     # "viewer"   = visible to all roles (sample/demo models)
     # "engineer" = visible only to engineer and admin (production models, default)
     visibility: str = "engineer"
+    # How many times this trainer has been (re)trained before this deployment.
+    # 0 = first training run, 1 = second, etc.
+    training_patch: int = 0
+    # Canonical two-axis version string stored at creation time.
+    # Format: v{plugin_version}.0.0.{training_patch}
+    # e.g. v0.0.0.0 = plugin v0 first training, v1.0.0.2 = plugin v1 third training
+    version_full: str = ""
     model_size_bytes: Optional[int] = None       # artifact size in bytes (set when artifact is saved)
     owner_email: Optional[str] = None
     deployed_at: datetime = Field(default_factory=utc_now)

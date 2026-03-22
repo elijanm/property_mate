@@ -31,18 +31,24 @@ if [ ! -S "$CLAMD_SOCKET" ]; then
     echo "[entrypoint] WARNING: ClamAV daemon did not start — file scanning will use code analysis only"
 fi
 
-# ── Seed built-in sample trainers into the plugin volume (if missing) ─────────
-# The volume persists across rebuilds, so new sample files added to the image
-# must be copied in explicitly on startup.
+# ── Seed built-in public trainers into global_sample/ ────────────────────────
+# global_sample/ is always scanned on startup and registered as public trainers
+# (org_id="") that users can clone into their own workspace.
+# sample_*.py files from the image are synced here on every restart so new
+# trainers added to the image automatically appear in the public library.
 TRAINER_DIR="${TRAINER_PLUGIN_DIR:-/app/trainers}"
 IMAGE_TRAINER_SRC="/app/trainers_builtin"
+GLOBAL_SAMPLE_DIR="$TRAINER_DIR/global_sample"
+mkdir -p "$GLOBAL_SAMPLE_DIR"
+
 if [ -d "$IMAGE_TRAINER_SRC" ]; then
     for f in "$IMAGE_TRAINER_SRC"/sample_*.py; do
         [ -f "$f" ] || continue
-        dest="$TRAINER_DIR/$(basename "$f")"
-        if [ ! -f "$dest" ]; then
+        dest="$GLOBAL_SAMPLE_DIR/$(basename "$f")"
+        # Only copy if the file doesn't exist yet or the image version is newer
+        if [ ! -f "$dest" ] || ! cmp -s "$f" "$dest"; then
             cp "$f" "$dest"
-            echo "[entrypoint] Seeded sample trainer: $(basename "$f")"
+            echo "[entrypoint] Synced public trainer: $(basename "$f")"
         fi
     done
 fi

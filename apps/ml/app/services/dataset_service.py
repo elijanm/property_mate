@@ -87,16 +87,28 @@ async def list_datasets(org_id: str) -> List[DatasetProfile]:
     ).to_list()
 
 
-async def list_public_datasets(exclude_org_id: str = "") -> List[DatasetProfile]:
-    """Return all public datasets, optionally excluding caller's own org."""
-    q = DatasetProfile.find(
-        DatasetProfile.visibility == "public",
+async def list_public_datasets(caller_org_id: str = "") -> List[DatasetProfile]:
+    """Return datasets visible in the Public gallery.
+
+    Includes:
+    - System datasets (org_id="") — always public regardless of visibility flag
+    - Other orgs' datasets explicitly marked visibility="public"
+
+    Excludes the caller's own org datasets (they appear in My Datasets instead).
+    """
+    from beanie.odm.operators.find.logical import Or
+    items = await DatasetProfile.find(
+        Or(
+            DatasetProfile.org_id == "",              # system datasets — always visible
+            DatasetProfile.visibility == "public",    # orgs that opted in
+        ),
         DatasetProfile.deleted_at == None,
-        DatasetProfile.reference_type == None,   # originals only, not re-references
-    )
-    items = await q.to_list()
-    if exclude_org_id:
-        items = [p for p in items if p.org_id != exclude_org_id]
+        DatasetProfile.reference_type == None,        # originals only, not re-references
+    ).to_list()
+
+    # Exclude the caller's own datasets — they already appear in My Datasets
+    if caller_org_id:
+        items = [p for p in items if p.org_id != caller_org_id]
     return items
 
 

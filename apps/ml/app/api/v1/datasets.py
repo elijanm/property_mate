@@ -97,8 +97,8 @@ async def list_datasets(user: MLUser = RequireEngineer):
 
 @router.get("/public")
 async def list_public_datasets(user: MLUser = RequireViewer):
-    """Return all public datasets (including caller's own public datasets)."""
-    items = await svc.list_public_datasets(exclude_org_id="")
+    """Return system datasets and other orgs' public datasets. Excludes caller's own."""
+    items = await svc.list_public_datasets(caller_org_id=user.org_id)
     return [_profile_dict(p) for p in items]
 
 

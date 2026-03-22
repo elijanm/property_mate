@@ -432,10 +432,22 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
   const [dsError, setDsError]             = useState<string | null>(null)
   const [showDsUpload, setShowDsUpload]   = useState(false)
 
+  // Dataset override picker
+  const [datasetOverrideSlug, setDatasetOverrideSlug] = useState<string | null>(null)
+  const [showDsPicker, setShowDsPicker]               = useState(false)
+  const [allDatasets, setAllDatasets]                 = useState<DatasetProfile[]>([])
+  const [allDsLoading, setAllDsLoading]               = useState(false)
+
   // Auto-select trainer when coming from TrainersPage
   useEffect(() => {
     if (initialTrainer) setSelected(initialTrainer)
   }, [initialTrainer])
+
+  // Reset dataset override when trainer changes
+  useEffect(() => {
+    setDatasetOverrideSlug(null)
+    setShowDsPicker(false)
+  }, [selected])
 
   useEffect(() => {
     trainersApi.list().then(setTrainers).catch(() => {})
@@ -461,19 +473,20 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
 
   useEffect(() => {
     if (!isDatasetSource) { setDsDataset(null); setDsEntryCount(null); setDsError(null); return }
-    const slug = dsInfo?.dataset_slug as string | undefined
-    const id   = dsInfo?.dataset_id   as string | undefined
-    if (!slug && !id) return
+    // Use override slug if set, otherwise fall back to trainer's default
+    const effectiveSlug = datasetOverrideSlug ?? (dsInfo?.dataset_slug as string | undefined)
+    const id            = dsInfo?.dataset_id as string | undefined
+    if (!effectiveSlug && !id) return
     setDsLoading(true); setDsDataset(null); setDsEntryCount(null); setDsError(null)
-    const fetchDataset = slug ? datasetsApi.getBySlug(slug) : datasetsApi.get(id!)
+    const fetchDataset = effectiveSlug ? datasetsApi.getBySlug(effectiveSlug) : datasetsApi.get(id!)
     fetchDataset.then(async ds => {
       setDsDataset(ds)
       const { count } = await datasetsApi.getEntryCount(ds.id)
       setDsEntryCount(count)
     }).catch(() => {
-      setDsError('Dataset not found — it may not have been created yet. Install the trainer plugin first.')
+      setDsError('Dataset not found — it may not have been created yet.')
     }).finally(() => setDsLoading(false))
-  }, [selected, isDatasetSource]) // eslint-disable-line
+  }, [selected, isDatasetSource, datasetOverrideSlug]) // eslint-disable-line
 
   // Fetch local GPU + billing info on mount (always needed for local tab)
   useEffect(() => {
@@ -509,10 +522,12 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
         if (!r.ok) throw new Error(await r.text())
         res = await r.json()
       } else {
-        res = await trainersApi.startTraining(selected, overrides, {
-          compute_type: compute,
-          gpu_type_id: compute === 'cloud_gpu' ? gpuTypeId : undefined,
-        })
+        res = await trainersApi.startTraining(
+          selected,
+          overrides,
+          { compute_type: compute, gpu_type_id: compute === 'cloud_gpu' ? gpuTypeId : undefined },
+          datasetOverrideSlug ?? undefined,
+        )
       }
       setResult(res.job_id)
       setJobsKey(k => k + 1)
@@ -588,14 +603,33 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
                 <div className="flex items-center gap-2">
                   <Database size={13} className="text-sky-400 flex-shrink-0" />
                   <span className="text-xs font-semibold text-gray-200">Training Dataset</span>
+                  {datasetOverrideSlug && (
+                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-brand-900/40 border border-brand-700/50 text-brand-400">overridden</span>
+                  )}
                 </div>
-                {dsDataset && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setShowDsPicker(v => {
+                        if (!v && allDatasets.length === 0) {
+                          setAllDsLoading(true)
+                          datasetsApi.list().then(setAllDatasets).catch(() => {}).finally(() => setAllDsLoading(false))
+                        }
+                        return !v
+                      })
+                    }}
+                    className="flex items-center gap-1 text-[11px] text-gray-500 hover:text-brand-400 transition-colors"
+                    title="Switch dataset"
+                  >
+                    <ChevronRight size={11} className={clsx('transition-transform', showDsPicker && 'rotate-90')} />
+                    Switch
+                  </button>
                   <button
                     onClick={() => {
                       setDsLoading(true)
-                      const slug = dsInfo?.dataset_slug as string | undefined
-                      const id   = dsInfo?.dataset_id   as string | undefined
-                      const req  = slug ? datasetsApi.getBySlug(slug) : datasetsApi.get(id!)
+                      const effectiveSlug = datasetOverrideSlug ?? (dsInfo?.dataset_slug as string | undefined)
+                      const id            = dsInfo?.dataset_id as string | undefined
+                      const req = effectiveSlug ? datasetsApi.getBySlug(effectiveSlug) : datasetsApi.get(id!)
                       req.then(async ds => {
                         setDsDataset(ds)
                         const { count } = await datasetsApi.getEntryCount(ds.id)
@@ -607,8 +641,64 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
                   >
                     <RefreshCw size={12} className={dsLoading ? 'animate-spin' : ''} />
                   </button>
-                )}
+                </div>
               </div>
+
+              {/* ── Dataset picker ─────────────────────────────────────────────── */}
+              {showDsPicker && (
+                <div className="border-b border-gray-800 bg-gray-950/60 px-4 py-3 space-y-2">
+                  <p className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Select a dataset</p>
+                  {allDsLoading ? (
+                    <div className="flex items-center gap-2 text-xs text-gray-500 py-2">
+                      <Loader2 size={11} className="animate-spin" /> Loading datasets…
+                    </div>
+                  ) : (
+                    <div className="space-y-1 max-h-48 overflow-y-auto">
+                      {/* "Default" option */}
+                      <button
+                        onClick={() => { setDatasetOverrideSlug(null); setShowDsPicker(false) }}
+                        className={clsx(
+                          'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-xs transition-colors',
+                          !datasetOverrideSlug
+                            ? 'bg-brand-900/30 border border-brand-700/40 text-brand-300'
+                            : 'bg-gray-800/60 border border-transparent text-gray-400 hover:bg-gray-800 hover:text-gray-200',
+                        )}
+                      >
+                        <Database size={11} className="flex-shrink-0" />
+                        <span className="flex-1 min-w-0 truncate">
+                          {dsInfo?.dataset_slug as string} <span className="text-gray-600">(default)</span>
+                        </span>
+                        {!datasetOverrideSlug && <CheckCircle2 size={11} className="text-brand-400 flex-shrink-0" />}
+                      </button>
+                      {allDatasets
+                        .filter(d => d.slug !== (dsInfo?.dataset_slug as string))
+                        .map(d => (
+                          <button
+                            key={d.id}
+                            onClick={() => { setDatasetOverrideSlug(d.slug); setShowDsPicker(false) }}
+                            className={clsx(
+                              'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-xs transition-colors',
+                              datasetOverrideSlug === d.slug
+                                ? 'bg-brand-900/30 border border-brand-700/40 text-brand-300'
+                                : 'bg-gray-800/60 border border-transparent text-gray-400 hover:bg-gray-800 hover:text-gray-200',
+                            )}
+                          >
+                            <Database size={11} className="flex-shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <span className="truncate block">{d.name}</span>
+                              {d.slug && <span className="font-mono text-[10px] text-gray-600">{d.slug}</span>}
+                            </div>
+                            {datasetOverrideSlug === d.slug && <CheckCircle2 size={11} className="text-brand-400 flex-shrink-0" />}
+                          </button>
+                        ))
+                      }
+                      {allDatasets.filter(d => d.slug !== (dsInfo?.dataset_slug as string)).length === 0 && (
+                        <p className="text-[11px] text-gray-600 px-2 py-1">No other datasets — upload data to the default dataset or create a new one.</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Body */}
               <div className="p-4 space-y-4">
@@ -624,7 +714,7 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
                       <span>{dsError}</span>
                     </div>
                     <p className="text-[11px] text-gray-600">
-                      Slug: <code className="font-mono text-gray-500">{dsInfo?.dataset_slug as string}</code>
+                      Slug: <code className="font-mono text-gray-500">{datasetOverrideSlug ?? (dsInfo?.dataset_slug as string)}</code>
                     </p>
                   </div>
 

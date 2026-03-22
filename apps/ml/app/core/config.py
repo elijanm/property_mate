@@ -68,6 +68,45 @@ class Settings(BaseSettings):
     # Preprocess timeout (seconds) — applied to trainer.preprocess() in training runs
     TRAINER_PREPROCESS_TIMEOUT: int = 300
 
+    # ── Trainer sandbox (Docker isolation) ────────────────────────────────────
+    # TRAINER_SANDBOX=none        → run trainer in-process (default, existing behaviour)
+    # TRAINER_SANDBOX=docker      → cold docker run per job (isolated, higher latency)
+    # TRAINER_SANDBOX=docker-pool → pre-warmed container pool (low latency, auto-scaling)
+    TRAINER_SANDBOX: str = "none"
+    TRAINER_SANDBOX_IMAGE: str = "pms-ml-sandbox:latest"
+    # Named Docker volume shared between ml-worker and spawned sandbox containers.
+    # Must match the volume name in docker-compose.yml.
+    TRAINER_SANDBOX_VOLUME: str = "ml_sandbox_workspace"
+    # Path where the named volume is mounted inside the ml-worker container.
+    TRAINER_SANDBOX_WORKSPACE: str = "/sandbox_workspace"
+    TRAINER_SANDBOX_MEMORY: str = "2g"
+    TRAINER_SANDBOX_CPUS: str = "2"
+    TRAINER_SANDBOX_PIDS: int = 128
+    TRAINER_SANDBOX_TIMEOUT: int = 600   # seconds before container is killed
+    TRAINER_SANDBOX_USER: str = "65534"  # nobody
+
+    # ── docker-pool mode settings ──────────────────────────────────────────────
+    # Redis URL visible inside sandbox containers (Docker network alias for Redis)
+    SANDBOX_POOL_AGENT_REDIS_URL: str = "redis://redis:6379"
+    # Docker bridge network that sandbox containers join for Redis-only access
+    # Must be an internal network (no internet egress)
+    SANDBOX_POOL_NETWORK: str = "pms_sandbox_net"
+    # Pool sizing
+    SANDBOX_POOL_MIN_SIZE: int = 2          # minimum containers always running
+    SANDBOX_POOL_MAX_SIZE: int = 10         # hard cap on pool size
+    SANDBOX_POOL_MIN_IDLE: int = 1          # minimum idle containers before scale-up
+    # Timing
+    SANDBOX_POOL_HEALTH_INTERVAL: int = 15      # seconds between health-check sweeps
+    SANDBOX_POOL_REPLENISH_INTERVAL: int = 10   # seconds between replenishment checks
+    SANDBOX_POOL_HEARTBEAT_TIMEOUT: int = 30    # seconds without heartbeat → dead
+    SANDBOX_POOL_ACQUIRE_TIMEOUT: float = 30.0  # seconds to wait for an idle container
+    SANDBOX_POOL_SCALE_UP_COOLDOWN: int = 30    # seconds between scale-up events
+    SANDBOX_POOL_SCALE_DOWN_COOLDOWN: int = 120 # seconds between scale-down events
+    SANDBOX_POOL_SCALE_DOWN_THRESHOLD: float = 0.1  # req/s below which scale-down is allowed
+    SANDBOX_POOL_SCALE_DOWN_BATCH: int = 2          # max containers drained per scale-down
+    SANDBOX_POOL_IDLE_HEADROOM_FACTOR: float = 1.5  # multiply predicted demand for idle target
+    SANDBOX_POOL_SPAWN_LEAD_TIME_SECS: float = 8.0  # estimated container boot + warm time
+
     # Admin password — required for destructive security operations (ban/unban/delete)
     ADMIN_PASSWORD: str = "changeme"
 

@@ -82,9 +82,12 @@ def list_trainer_classes() -> Dict[str, Type[BaseTrainer]]:
     return dict(_TRAINER_CLASSES)
 
 
-def _load_module_from_file(path: Path) -> list[Type[BaseTrainer]]:
+def _load_module_from_file(path: Path, org_id: str = "") -> list[Type[BaseTrainer]]:
     """Import a .py file and return all BaseTrainer subclasses found in it."""
-    module_name = f"ml_plugin_{path.stem}"
+    # Include org_id in the module name so trainers from different orgs with
+    # the same filename don't collide in sys.modules.
+    org_prefix = f"_{org_id}" if org_id else ""
+    module_name = f"ml_plugin{org_prefix}_{path.stem}"
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         return []
@@ -114,26 +117,133 @@ def _load_module_from_file(path: Path) -> list[Type[BaseTrainer]]:
     return found
 
 
-async def scan_and_register_plugins(owner_email: Optional[str] = None, org_id: Optional[str] = None) -> int:
+async def _request_package_install(trainer_name: str, packages: list, owner_email: str, org_id: str) -> None:
+    """Create an AdminTicket requesting admin approval to install missing packages."""
+    try:
+        from app.models.admin_ticket import AdminTicket
+        # Avoid duplicate open tickets for the same trainer + package set
+        existing = await AdminTicket.find_one({
+            "category": "package_install_request",
+            "related_id": trainer_name,
+            "status": {"$in": ["open", "reviewing"]},
+        })
+        if existing:
+            return
+        ticket = AdminTicket(
+            category="package_install_request",
+            title=f"Package install required: {trainer_name}",
+            body=(
+                f"Trainer **{trainer_name}** declares the following pip packages that are not "
+                f"installed in the environment:\n\n"
+                + "\n".join(f"- `{p}`" for p in packages)
+                + "\n\nApprove to install them in the background."
+            ),
+            related_id=trainer_name,
+            org_id=org_id,
+            owner_email=owner_email,
+            severity="medium",
+            status="open",
+            metadata={
+                "trainer_name": trainer_name,
+                "packages": packages,
+                "install_result": None,
+            },
+        )
+        await ticket.insert()
+        logger.info(
+            "package_install_ticket_created",
+            trainer=trainer_name,
+            packages=packages,
+        )
+    except Exception as exc:
+        logger.warning("package_install_ticket_create_failed", trainer=trainer_name, error=str(exc))
+
+
+async def scan_and_register_plugins(
+    owner_email: Optional[str] = None,
+    org_id: Optional[str] = None,
+    only_file: Optional[Path] = None,
+    first_run: bool = False,
+) -> int:
     """Scan plugin directory, load trainer classes, sync to DB. Returns count registered.
 
     owner_email: if set, new registrations are attributed to this user (user-uploaded plugins).
                  System scans (no user) leave owner_email=None (visible to all engineers).
     org_id: if set, datasets are created under this org so they appear on the user's Datasets page.
             System scans (no user) leave org_id=None → datasets created with org_id="" (shared).
+    only_file: if set, only process this single file (used when user saves a specific trainer).
+    first_run: if True, process all files in the directory (used on first startup).
+               If False and only_file is None, only process files already registered in the DB.
     """
+    from app.models.trainer_registration import TrainerRegistration
+
     plugin_dir = Path(settings.TRAINER_PLUGIN_DIR)
     if not plugin_dir.exists():
         plugin_dir.mkdir(parents=True, exist_ok=True)
         logger.info("trainer_plugin_dir_created", path=str(plugin_dir))
         return 0
 
+    # global_sample/ holds platform-provided public templates.
+    # Always scan it on every startup so new templates added to the image are picked up.
+    global_sample_dir = plugin_dir / "global_sample"
+    if global_sample_dir.exists():
+        for py_file in sorted(global_sample_dir.rglob("*.py")):
+            if py_file.name.startswith("_"):
+                continue
+            try:
+                classes = _load_module_from_file(py_file, org_id="")
+            except Exception as exc:
+                logger.error("global_sample_scan_failed", file=str(py_file), error=str(exc))
+                continue
+            try:
+                file_bytes = py_file.read_bytes()
+                file_source = file_bytes.decode("utf-8", errors="replace")
+                file_metadata = _parse_metadata_header(file_source)
+            except Exception:
+                file_bytes = None
+                file_metadata = {}
+            for cls in classes:
+                try:
+                    register_class(cls, plugin_file=str(py_file))
+                    await _upsert_db_registration(
+                        cls, str(py_file),
+                        owner_email=None,
+                        org_id=None,  # org_id="" → public
+                        metadata=file_metadata,
+                        file_bytes=file_bytes,
+                    )
+                except Exception as exc:
+                    logger.error("global_sample_register_failed", file=str(py_file), cls=cls.__name__, error=str(exc))
+
+    # Build the set of files to process for the regular scan
+    if only_file is not None:
+        # Targeted registration: only the file the user just saved/uploaded
+        candidate_files = [only_file] if only_file.exists() else []
+    elif first_run:
+        # First ever startup: register org trainers from running/ only.
+        # Public trainers are always handled by the global_sample/ scan above.
+        running_dir = plugin_dir / "running"
+        if running_dir.exists():
+            candidate_files = sorted(running_dir.rglob("*.py"))
+        else:
+            candidate_files = []
+    else:
+        # Normal startup: only re-register files already known to DB
+        registered_paths = {
+            r.plugin_file
+            async for r in TrainerRegistration.find(TrainerRegistration.plugin_file != None)  # noqa: E711
+        }
+        candidate_files = [
+            Path(p) for p in registered_paths
+            if p and Path(p).exists()
+        ]
+
     count = 0
-    for py_file in sorted(plugin_dir.glob("*.py")):
+    for py_file in candidate_files:
         if py_file.name.startswith("_"):
             continue
         try:
-            classes = _load_module_from_file(py_file)
+            classes = _load_module_from_file(py_file, org_id=org_id or "")
         except Exception as exc:
             logger.error("trainer_plugin_scan_failed", file=str(py_file), error=str(exc))
             continue
@@ -159,17 +269,18 @@ async def scan_and_register_plugins(owner_email: Optional[str] = None, org_id: O
                 logger.error("trainer_plugin_register_failed", file=str(py_file),
                              trainer=getattr(cls, "name", repr(cls)), error=str(exc))
                 continue
-            # Warn if any declared requirements aren't importable
+            # Check declared requirements; create an AdminTicket for missing packages
+            missing_pkgs = []
             for req in getattr(cls, "requirements", []):
                 pkg = req.split(">=")[0].split("==")[0].split("[")[0].strip()
                 try:
-                    importlib.util.find_spec(pkg.replace("-", "_"))
+                    found = importlib.util.find_spec(pkg.replace("-", "_"))
+                    if found is None:
+                        missing_pkgs.append(req)
                 except Exception:
-                    logger.warning(
-                        "trainer_missing_requirement",
-                        trainer=cls.trainer_name(),
-                        package=pkg,
-                    )
+                    missing_pkgs.append(req)
+            if missing_pkgs:
+                await _request_package_install(cls.trainer_name(), missing_pkgs, owner_email or "", org_id or "")
             count += 1
 
     logger.info("trainer_plugins_scanned", count=count, dir=str(plugin_dir))
@@ -203,9 +314,10 @@ async def _ensure_trainer_datasets(cls: Type[BaseTrainer], org_id: Optional[str]
         client = AsyncIOMotorClient(_s.MONGODB_URL)
         db = client[_s.MONGODB_DATABASE]
         try:
-            # Look for this org's copy first; fall back to checking system dataset (org_id="")
+            # Look for THIS org's copy only — never share the public (org_id="") dataset,
+            # because entries uploaded by the user must be scoped to their org.
             profile = await db["dataset_profiles"].find_one(
-                {"slug": ds.slug, "org_id": {"$in": [effective_org, ""]}, "deleted_at": None}
+                {"slug": ds.slug, "org_id": effective_org, "deleted_at": None}
             )
             if not profile:
                 # Create a new dataset scoped to this org (visible on their Datasets page)
@@ -268,6 +380,17 @@ async def _upsert_db_registration(
     namespace = effective_org if effective_org else "system"
     full_name = f"{namespace}/{name}"
 
+    # Public = system/global_sample trainers (org_id=""), private = org-owned
+    _visibility = "private" if effective_org else "public"
+
+    # Derive plugin version and base_name from the trainer name.
+    # Names ending in _vN (e.g. image_cosine_similarity_v2) are plugin version N.
+    # The base file (no suffix) is plugin version 0.
+    import re as _re
+    _m = _re.search(r'_v(\d+)$', name)
+    _plugin_version = int(_m.group(1)) if _m else 0
+    _base_name = name[:_m.start()] if _m else name
+
     # Compute a short human-readable alias: prefer org slug, fall back to email prefix
     if not effective_org:
         alias = name  # system trainer: /inference/iris_classifier
@@ -286,9 +409,23 @@ async def _upsert_db_registration(
     # Compute file hash for change detection
     new_hash = _compute_file_hash(effective_org, file_bytes or b"")
 
-    existing = await TrainerRegistration.find_one(TrainerRegistration.name == name)
+    existing = await TrainerRegistration.find_one(
+        TrainerRegistration.name == name,
+        TrainerRegistration.org_id == (effective_org or ""),
+    )
     now = utc_now()
     info = cls.to_dict()
+
+    if existing and file_bytes is not None and existing.submission_hash == new_hash:
+        _approved_statuses = ("approved",)
+        if existing.approval_status in _approved_statuses and existing.is_active:
+            # File unchanged and already approved — skip DB write, class already loaded in memory.
+            logger.debug(
+                "trainer_scan_skipped_no_changes",
+                trainer=name,
+                hash=new_hash[:12],
+            )
+            return
 
     # Map metadata header fields to model fields
     meta_fields: dict = {}
@@ -312,10 +449,19 @@ async def _upsert_db_registration(
         meta_fields["license"] = metadata["License"]
 
     if existing:
-        # Hash check: if file changed, mark as pending_review and deactivate
+        # System trainers (org_id="") are platform-managed — always trusted.
+        # Never lock them into pending_review on rescan; auto-repair if stuck.
+        is_system_trainer = not effective_org
+        # Clones of public trainers are trusted — never require re-review on rescan
+        is_public_clone = getattr(existing, "cloned_from_org_id", None) == ""
         approval_status = existing.approval_status
         is_active = True
-        if file_bytes is not None and existing.submission_hash and existing.submission_hash != new_hash:
+        if is_system_trainer or is_public_clone:
+            # Repair: if a previous scan accidentally flagged a trusted trainer, reset it.
+            if approval_status in ("pending_review", "pending_admin", "flagged"):
+                approval_status = "approved"
+        elif file_bytes is not None and existing.submission_hash and existing.submission_hash != new_hash:
+            # Org trainer whose file changed since last approval → require re-review
             approval_status = "pending_review"
             is_active = False
 
@@ -337,6 +483,9 @@ async def _upsert_db_registration(
             "approval_status": approval_status,
             "is_active": is_active,
             "updated_at": now,
+            "plugin_version": _plugin_version,
+            "base_name": _base_name,
+            "visibility": _visibility,
             **meta_fields,
         }
         # When a user explicitly uploads, stamp ownership so it appears in their list
@@ -374,6 +523,9 @@ async def _upsert_db_registration(
             alias=alias,
             submission_hash=new_hash,
             approval_status="approved",
+            plugin_version=_plugin_version,
+            base_name=_base_name,
+            visibility=_visibility,
             **meta_fields,
         )
         await reg.insert()

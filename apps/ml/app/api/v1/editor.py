@@ -22,6 +22,7 @@ import shutil
 import sys
 import tempfile
 import time
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -72,6 +73,65 @@ def _plugin_dir() -> Path:
     return p
 
 
+def _running_dir() -> Path:
+    p = _plugin_dir() / "running"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _trainers_dir() -> Path:
+    p = _plugin_dir() / "trainers"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _samples_dir() -> Path:
+    p = _plugin_dir() / "samples"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _base_trainer_name(name: str) -> str:
+    """Strip _vN suffix to get base name."""
+    return re.sub(r"_v\d+$", "", name)
+
+
+def _next_version_num(base_name: str) -> int:
+    """Find the next version number for a trainer in running/."""
+    trainer_running_dir = _running_dir() / base_name
+    if not trainer_running_dir.exists():
+        return 1
+    max_v = 0
+    for f in trainer_running_dir.glob(f"*.py"):
+        m = re.search(r"_v(\d+)\.py$", f.name)
+        if m:
+            max_v = max(max_v, int(m.group(1)))
+    return max(max_v + 1, 1)
+
+
+def _make_versioned_content(content: str, base_name: str, versioned_name: str) -> str:
+    """Inject version into # Name: header and class name attribute."""
+    # Update/inject # Name: header
+    if re.search(r"^#\s*Name:", content, re.MULTILINE):
+        content = re.sub(
+            r"^(#\s*Name:\s*).*$",
+            f"# Name: {versioned_name}",
+            content,
+            flags=re.MULTILINE,
+            count=1,
+        )
+    else:
+        content = f"# Name: {versioned_name}\n" + content
+    # Update indented class name attribute:  name = "base_name"
+    content = re.sub(
+        rf"^(\s+name\s*=\s*['\"]){re.escape(base_name)}(['\"])",
+        rf"\g<1>{versioned_name}\g<2>",
+        content,
+        flags=re.MULTILINE,
+    )
+    return content
+
+
 def _safe_path(rel: str) -> Path:
     """Resolve a relative path inside the plugin dir; reject traversal."""
     base = _plugin_dir().resolve()
@@ -116,16 +176,17 @@ def _file_node(p: Path, base: Path) -> Dict[str, Any]:
 
 @router.get("/files")
 async def list_files(user=Depends(get_current_user)):
-    """Return the full file tree of the trainer plugin directory."""
+    """Return file tree of the user workspace (trainers/ subdirectory only)."""
     base = _plugin_dir()
+    trainers = _trainers_dir()
     children: List[Path] = (
         sorted(
-            (c for c in base.iterdir() if not _should_hide(c.name)),
+            (c for c in trainers.iterdir() if not _should_hide(c.name)),
             key=lambda x: (x.is_file(), x.name.lower()),
         )
-        if base.exists() else []
+        if trainers.exists() else []
     )
-    return {"tree": [_file_node(c, base) for c in children], "root": str(base)}
+    return {"tree": [_file_node(c, base) for c in children], "root": str(trainers)}
 
 
 # ── Read file ─────────────────────────────────────────────────────────────────
@@ -151,7 +212,11 @@ class SaveFileRequest(BaseModel):
 
 @router.post("/files")
 async def save_file(body: SaveFileRequest, user=Depends(require_roles("engineer", "admin"))):
-    full = _safe_path(body.path)
+    # Ensure edits land in the trainers/ workspace subdirectory
+    rel_path = body.path
+    if not rel_path.startswith("trainers/") and not rel_path.startswith("running/"):
+        rel_path = f"trainers/{rel_path}"
+    full = _safe_path(rel_path)
 
     # Security scan Python files before writing
     if body.path.endswith(".py"):
@@ -170,8 +235,13 @@ async def save_file(body: SaveFileRequest, user=Depends(require_roles("engineer"
     full.parent.mkdir(parents=True, exist_ok=True)
     async with aiofiles.open(full, "w") as f:
         await f.write(body.content)
+    # Only register this specific file — don't re-scan the whole directory
     try:
-        await scan_and_register_plugins(owner_email=user.email, org_id=user.org_id or None)
+        await scan_and_register_plugins(
+            owner_email=user.email,
+            org_id=user.org_id or None,
+            only_file=full,
+        )
     except Exception:
         pass
     return {"saved": True, "path": body.path}
@@ -188,7 +258,326 @@ async def delete_file(path: str = Query(...), user=Depends(require_roles("engine
         shutil.rmtree(full)
     else:
         full.unlink()
+        # Deactivate trainer registration for this file so it doesn't linger in the DB
+        if path.endswith(".py"):
+            try:
+                from app.models.trainer_registration import TrainerRegistration
+                from app.utils.datetime import utc_now
+                reg = await TrainerRegistration.find_one(
+                    TrainerRegistration.plugin_file == str(full),
+                )
+                if reg:
+                    await reg.set({"is_active": False, "updated_at": utc_now()})
+            except Exception:
+                pass
     return {"deleted": True, "path": path}
+
+
+# ── Samples listing ────────────────────────────────────────────────────────────
+
+@router.get("/samples")
+async def list_samples(user=Depends(get_current_user)):
+    """List available sample trainers in samples/ directory."""
+    from app.services.registry_service import _parse_metadata_header
+    base = _plugin_dir()
+    samples_dir = _samples_dir()
+    running_dir = _running_dir()
+    items = []
+
+    if samples_dir.exists():
+        for entry in sorted(samples_dir.iterdir()):
+            if _should_hide(entry.name):
+                continue
+            py_files = (
+                sorted(entry.glob("*.py"))
+                if entry.is_dir()
+                else ([entry] if entry.suffix == ".py" else [])
+            )
+            for f in py_files:
+                if _should_hide(f.name):
+                    continue
+                try:
+                    content = f.read_text(errors="replace")
+                    meta = _parse_metadata_header(content)
+                except Exception:
+                    meta = {}
+                name_key = entry.name if entry.is_dir() else entry.stem
+                # Check if any version is already installed in running/
+                running_trainer_dir = running_dir / name_key
+                is_installed = running_trainer_dir.exists() and any(
+                    f2 for f2 in running_trainer_dir.iterdir() if f2.suffix == ".py"
+                )
+                items.append({
+                    "name": name_key,
+                    "trainer_name": meta.get("Name", name_key),
+                    "version": meta.get("Version", "1.0.0"),
+                    "description": meta.get("Description", ""),
+                    "tags": [t.strip() for t in meta.get("Tags", "").split(",") if t.strip()],
+                    "path": str(f.relative_to(base)),
+                    "is_installed": is_installed,
+                })
+    return {"items": items}
+
+
+# ── Running trainers listing ───────────────────────────────────────────────────
+
+@router.get("/running-trainers")
+async def list_running_trainers(user=Depends(get_current_user)):
+    """List active trainers from DB grouped by base_name (mirrors /trainers endpoint)."""
+    from app.models.trainer_registration import TrainerRegistration
+    from app.api.v1.trainers import _trainer_is_live
+
+    regs = await TrainerRegistration.find(TrainerRegistration.is_active == True).to_list()  # noqa: E712
+    # Same org filter as /trainers
+    regs = [r for r in regs if not r.org_id or r.org_id == user.org_id]
+    # Same live filter as /trainers
+    regs = [r for r in regs if _trainer_is_live(r)]
+    if user.role != "admin":
+        regs = [r for r in regs if not r.org_id or r.owner_email == user.email]
+
+    # Group by base_name
+    groups: dict[str, list] = {}
+    for r in regs:
+        base = r.base_name or _base_trainer_name(r.name)
+        groups.setdefault(base, []).append(r)
+
+    items = []
+    base_dir = _plugin_dir()
+    for base_name, group_regs in sorted(groups.items()):
+        versions = []
+        for r in group_regs:
+            rel_path = ""
+            if r.plugin_file:
+                try:
+                    rel_path = str(Path(r.plugin_file).relative_to(base_dir))
+                except ValueError:
+                    rel_path = r.plugin_file
+            pv = r.plugin_version if r.plugin_version is not None else 0
+            tp = r.latest_training_patch if r.latest_training_patch is not None else 0
+            versions.append({
+                "name": r.name,
+                "base_name": base_name,
+                "plugin_version": pv,
+                "version_num": r.version_num or 1,  # legacy
+                "version_full": f"v{pv}.0.0.{tp}",
+                "path": rel_path,
+                "is_active": r.is_active,
+                "approval_status": r.approval_status or "approved",
+                "description": r.description or "",
+                "framework": r.framework or "",
+                "registered_at": r.registered_at.isoformat() if r.registered_at else None,
+                "created_at": r.registered_at.isoformat() if r.registered_at else None,
+            })
+        # Sort by plugin_version ascending; latest = highest plugin_version
+        versions.sort(key=lambda v: v["plugin_version"])
+        # Latest = highest plugin_version that is approved and active.
+        # Fall back to highest plugin_version overall if none are fully approved.
+        approved_versions = [v for v in versions if v["approval_status"] == "approved" and v["is_active"]]
+        latest = max(approved_versions or versions, key=lambda v: v["plugin_version"])
+        items.append({
+            "base_name": base_name,
+            "versions": versions,
+            "latest": latest,
+            "total_versions": len(versions),
+        })
+    return {"items": items}
+
+
+# ── Dataset conflict check ─────────────────────────────────────────────────────
+
+async def _check_dataset_conflicts(content: str, org_id: str) -> tuple[list[dict], str]:
+    """Return (conflicts, org_alias).
+
+    conflicts: list of {slug, system_dataset_name, suggested_slug} for any
+               DatasetDataSource slugs that match a public/system dataset and the
+               org does NOT already own a private copy.
+    org_alias: short name used to derive suggested_slug (e.g. "acme" or "john").
+    """
+    import re as _re
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient
+        from app.core.config import settings as _s
+        from app.models.org_config import OrgConfig
+
+        slugs = list(dict.fromkeys(
+            _re.findall(r'DatasetDataSource\s*\(\s*slug\s*=\s*["\']([^"\']+)["\']', content)
+        ))
+        if not slugs:
+            return [], ""
+
+        # Derive org alias for suggested slug
+        org_alias = ""
+        if org_id:
+            cfg = await OrgConfig.find_one(OrgConfig.org_id == org_id)
+            org_alias = (cfg.slug if cfg and cfg.slug else None) or org_id[:8]
+
+        client = AsyncIOMotorClient(_s.MONGODB_URL)
+        db = client[_s.MONGODB_DATABASE]
+
+        conflicts = []
+        for slug in slugs:
+            system_ds = await db["dataset_profiles"].find_one(
+                {"slug": slug, "org_id": {"$in": ["", None]}, "deleted_at": None}
+            )
+            if not system_ds:
+                continue
+            # Only conflict if org doesn't already have their own copy
+            if org_id:
+                org_ds = await db["dataset_profiles"].find_one(
+                    {"slug": slug, "org_id": org_id, "deleted_at": None}
+                )
+                if org_ds:
+                    continue  # org already has private copy — no conflict
+            suggested = f"{slug}_{org_alias}" if org_alias else f"{slug}_org"
+            conflicts.append({
+                "slug": slug,
+                "system_dataset_name": system_ds.get("name", slug),
+                "suggested_slug": suggested,
+            })
+        return conflicts, org_alias
+    except Exception:
+        return [], ""
+
+
+# ── Install trainer ────────────────────────────────────────────────────────────
+
+class InstallTrainerRequest(BaseModel):
+    source_path: str          # relative path within plugin_dir (e.g. "samples/iris/iris_v1.py")
+    base_name: Optional[str] = None  # override base name; inferred from filename if omitted
+
+
+@router.post("/install")
+async def install_trainer(body: InstallTrainerRequest, user=Depends(require_roles("engineer", "admin"))):
+    """Copy a trainer from samples/ or trainers/ to running/base_name/base_name_vN.py and register."""
+    from app.services.registry_service import scan_and_register_plugins, _parse_metadata_header
+    full_source = _safe_path(body.source_path)
+    if not full_source.exists():
+        raise HTTPException(status_code=404, detail="Source file not found")
+
+    content = full_source.read_text(errors="replace")
+    meta = _parse_metadata_header(content)
+
+    # Determine base name
+    raw_name = meta.get("Name", full_source.stem)
+    base_name = body.base_name or _base_trainer_name(raw_name)
+
+    # Org-scoped path: running/{org_id}/{base_name}/ for org trainers,
+    # running/{base_name}/ for system trainers (no org_id).
+    org_id = user.org_id or ""
+    org_bucket = org_id if org_id else ""
+    running_base = _running_dir() / org_bucket if org_bucket else _running_dir()
+
+    # Compute next version within this org's bucket
+    trainer_dir = running_base / base_name
+    existing_versions = [
+        int(m.group(1))
+        for f in (trainer_dir.glob("*.py") if trainer_dir.exists() else [])
+        if (m := re.search(r"_v(\d+)\.py$", f.name))
+    ]
+    version_num = max(existing_versions, default=0) + 1
+    versioned_name = f"{base_name}_v{version_num}"
+
+    # Create versioned content (patch Name header + class name attribute)
+    versioned_content = _make_versioned_content(content, base_name, versioned_name)
+
+    # Write to running/[{org_id}/]{base_name}/{base_name}_vN.py
+    target_dir = running_base / base_name
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_file = target_dir / f"{base_name}_v{version_num}.py"
+    target_file.write_text(versioned_content)
+
+    # Register only this file
+    await scan_and_register_plugins(
+        owner_email=user.email,
+        org_id=user.org_id or None,
+        only_file=target_file,
+    )
+
+    # Check for public dataset conflicts the org should know about
+    dataset_conflicts, org_alias = await _check_dataset_conflicts(versioned_content, org_id)
+
+    return {
+        "installed": True,
+        "trainer_name": versioned_name,
+        "version_num": version_num,
+        "path": str(target_file.relative_to(_plugin_dir())),
+        "dataset_conflicts": dataset_conflicts,
+        "org_alias": org_alias,
+    }
+
+
+# ── Uninstall trainer ─────────────────────────────────────────────────────────
+
+class UninstallTrainerRequest(BaseModel):
+    trainer_name: str    # versioned name e.g. "iris_classifier_v1"
+
+
+@router.post("/uninstall")
+async def uninstall_trainer(body: UninstallTrainerRequest, user=Depends(require_roles("engineer", "admin"))):
+    """Remove a trainer version from running/ and deactivate its DB registration."""
+    from app.models.trainer_registration import TrainerRegistration
+    from app.utils.datetime import utc_now
+    base_name = _base_trainer_name(body.trainer_name)
+    running_trainer_dir = _running_dir() / base_name
+
+    # Remove the versioned file
+    target = running_trainer_dir / f"{body.trainer_name}.py"
+    if target.exists():
+        target.unlink()
+
+    # Clean up empty directory
+    if running_trainer_dir.exists() and not any(
+        f for f in running_trainer_dir.iterdir() if f.suffix == ".py"
+    ):
+        shutil.rmtree(running_trainer_dir, ignore_errors=True)
+
+    # Deactivate DB registration
+    reg = await TrainerRegistration.find_one(TrainerRegistration.name == body.trainer_name)
+    if reg:
+        await reg.set({"is_active": False, "updated_at": utc_now()})
+
+    return {"uninstalled": True, "trainer_name": body.trainer_name}
+
+
+# ── Patch dataset slug ────────────────────────────────────────────────────────
+
+class PatchDatasetSlugRequest(BaseModel):
+    source_path: str   # relative path within plugin_dir (trainers/ or running/)
+    old_slug: str
+    new_slug: str
+
+
+@router.post("/patch-dataset-slug")
+async def patch_dataset_slug(body: PatchDatasetSlugRequest, user=Depends(require_roles("engineer", "admin"))):
+    """Replace a DatasetDataSource slug in a trainer file and re-register it."""
+    full = _safe_path(body.source_path)
+    if not full.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    content = full.read_text(errors="replace")
+    # Replace slug="old" → slug="new" in DatasetDataSource call
+    updated = re.sub(
+        rf'(DatasetDataSource\s*\(\s*slug\s*=\s*["\']){re.escape(body.old_slug)}(["\'])',
+        rf'\g<1>{body.new_slug}\g<2>',
+        content,
+    )
+    if updated == content:
+        raise HTTPException(status_code=400, detail=f"Slug '{body.old_slug}' not found in file")
+
+    full.write_text(updated)
+
+    # Re-register so the updated data_source_info is persisted
+    from app.services.registry_service import scan_and_register_plugins
+    try:
+        await scan_and_register_plugins(
+            owner_email=user.email,
+            org_id=user.org_id or None,
+            only_file=full,
+        )
+    except Exception:
+        pass
+
+    return {"patched": True, "path": body.source_path, "old_slug": body.old_slug, "new_slug": body.new_slug}
 
 
 # ── New file ──────────────────────────────────────────────────────────────────
@@ -198,58 +587,212 @@ class NewFileRequest(BaseModel):
     template: str = "blank"   # blank | trainer
 
 
-def _trainer_template(class_name: str) -> str:
-    return f'''"""
-{class_name} — custom trainer plugin.
-
-The service auto-discovers and registers this file on save.
+def _trainer_template(class_name: str, snake: str = "", author: str = "", author_email: str = "", author_url: str = "") -> str:
+    if not snake:
+        # Fallback: PascalCase → snake_case
+        snake = re.sub(r"(?<!^)(?=[A-Z])", "_", class_name).lower()
+    return f'''# Name: {snake}
+# Version: 1.0.0
+# Author: {author or "Your Name"}
+# Author Email: {author_email or "you@example.com"}
+# Author URL: {author_url or "https://example.com"}
+# Description: One-line description of what this trainer does.
+# Tags: custom, sklearn
+# License: MIT
+# Commercial: public
+# Downloadable: false
+# Protect Model: false
+# Icon:
 """
-from app.abstract.base_trainer import BaseTrainer, TrainingConfig, EvaluationResult, TrainerBundle
-from app.abstract.data_source import InMemoryDataSource
+{class_name}
+===========
+Replace this docstring with details about your model:
+  - What problem it solves
+  - Data it expects (shape, columns, format)
+  - What the predict() output means
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from app.abstract.base_trainer import (
+    BaseTrainer,
+    EvaluationResult,
+    TrainerBundle,
+    TrainingConfig,
+)
+from app.abstract.data_source import (
+    DatasetDataSource,
+    InMemoryDataSource,
+    # S3DataSource, URLDataSource, MongoDBDataSource, HuggingFaceDataSource,
+    # UploadedFileDataSource,
+)
 
 
 class {class_name}(BaseTrainer):
-    name = "{class_name.lower()}"
-    version = "1.0.0"
-    description = "A custom trainer — edit me!"
-    framework = "sklearn"
+    # ── Identity ─────────────────────────────────────────────────────────────
+    name        = "{snake}"
+    version     = "1.0.0"
+    description = "One-line description of what this trainer does."
+    framework   = "sklearn"           # sklearn | pytorch | tensorflow | custom
+    category    = {{"key": "custom", "label": "Custom"}}
+    schedule    = None                # None = manual only; cron e.g. "0 3 * * 0"
 
-    # ── Data source ──────────────────────────────────────────────────────────
-    # Replace InMemoryDataSource with your preferred source. Examples:
-    #   S3DataSource(bucket="pms-ml", key="data/train.csv")
-    #   MongoDBDataSource(database="pms_ml", collection="my_data")
-    #   DatasetDataSource(dataset_id="<paste-dataset-id>")
+    # ── Pip dependencies ──────────────────────────────────────────────────────
+    # Declare packages this trainer needs. An admin will be notified to approve
+    # the install; packages are installed in the background after approval.
+    requirements = [
+        # "scikit-learn>=1.3",
+        # "pandas>=2.0",
+        # "numpy>=1.26",
+    ]
+
+    # ── Data source ───────────────────────────────────────────────────────────
+    # Use DatasetDataSource to read from an MLDock dataset (recommended):
+    #   data_source = DatasetDataSource(slug="my-dataset")
+    # Or pull from S3, a URL, MongoDB, HuggingFace Hub, or accept a per-run file upload.
     data_source = InMemoryDataSource()
 
-    def preprocess(self, raw):
-        # Transform raw data from data_source.load() into training-ready form
+    # ── Input schema (shown in the inference UI) ──────────────────────────────
+    input_schema = {{
+        # "feature_a": {{"type": "float",  "label": "Feature A", "required": True}},
+        # "feature_b": {{"type": "str",    "label": "Feature B", "required": False}},
+        # "image":     {{"type": "image",  "label": "Image (base64)", "required": True}},
+    }}
+
+    # ── Output schema (shown in the inference UI) ─────────────────────────────
+    output_schema = {{
+        # "prediction":  {{"type": "str",   "label": "Prediction"}},
+        # "confidence":  {{"type": "float", "label": "Confidence (0–1)"}},
+    }}
+
+    # ── Output display (optional) ─────────────────────────────────────────────
+    # Declare how predict() output fields should render in the UI.
+    # Leave empty to use automatic rendering based on value shape.
+    # Example:
+    #   from app.abstract.base_trainer import OutputFieldSpec
+    #   output_display = [
+    #       OutputFieldSpec("prediction", "label",      "Prediction", primary=True),
+    #       OutputFieldSpec("confidence", "confidence", "Confidence"),
+    #   ]
+    output_display = []
+
+    # ── Preprocess ────────────────────────────────────────────────────────────
+
+    def preprocess(self, raw: Any) -> Any:
+        """
+        Transform raw data from data_source.load() into training-ready form.
+        For CSV bytes from S3/upload:
+            import io, pandas as pd
+            return pd.read_csv(io.BytesIO(raw))
+        For a DatasetDataSource (returns a DataFrame directly):
+            return raw  # already a DataFrame
+        """
         return raw
 
-    def train(self, preprocessed, config: TrainingConfig):
-        # Return the trained model.
-        # For tabular DataFrames use the built-in auto-trainer:
-        #   return self.auto_train_tabular(preprocessed, "label_col", config)
+    # ── Train ─────────────────────────────────────────────────────────────────
+
+    def train(self, preprocessed: Any, config: TrainingConfig) -> Any:
+        """
+        Fit the model on preprocessed data. Must return one of:
+          - the trained model object (e.g. a fitted sklearn Pipeline), OR
+          - (model, test_data) tuple — test_data is then passed to evaluate()
+
+        Quick tabular auto-training (picks best sklearn model automatically):
+            return self.auto_train_tabular(preprocessed, label_col="target", config=config)
+
+        Full example:
+            from sklearn.ensemble import RandomForestClassifier
+            from sklearn.pipeline import Pipeline
+            from sklearn.preprocessing import StandardScaler
+
+            X = preprocessed.drop(columns=["target"])
+            y = preprocessed["target"]
+            X_tr, X_val, X_te, y_tr, y_val, y_te = self.split_data(X, y, config)
+
+            pipe = Pipeline([("scaler", StandardScaler()), ("clf", RandomForestClassifier())])
+            pipe.fit(X_tr, y_tr)
+            return pipe, (X_te, y_te)
+        """
         raise NotImplementedError("Implement train()")
 
-    def predict(self, model, inputs):
+    # ── Predict ───────────────────────────────────────────────────────────────
+
+    def predict(self, model: Any, inputs: Any) -> Any:
+        """
+        Run inference with the loaded model. Returns any JSON-serialisable value.
+
+        inputs is typically a dict sent by the caller, e.g.:
+            {{"feature_a": 1.5, "feature_b": "red"}}
+
+        Example (sklearn Pipeline):
+            import pandas as pd
+            row = pd.DataFrame([inputs])[self.get_feature_names()]
+            pred  = int(model.predict(row)[0])
+            proba = model.predict_proba(row)[0].tolist()
+            return {{"prediction": pred, "confidence": round(max(proba), 4)}}
+        """
         raise NotImplementedError("Implement predict()")
+
+    # ── Evaluate (optional) ───────────────────────────────────────────────────
+
+    def evaluate(self, model: Any, test_data: Any) -> EvaluationResult:
+        """
+        Called automatically when train() returns (model, test_data).
+        Populate only the fields relevant to your task.
+
+        Example (classification):
+            from sklearn.metrics import accuracy_score, f1_score
+            X_te, y_te = test_data
+            y_pred = model.predict(X_te)
+            return EvaluationResult(
+                accuracy=float(accuracy_score(y_te, y_pred)),
+                f1=float(f1_score(y_te, y_pred, average="weighted")),
+                y_true=list(y_te),
+                y_pred=list(y_pred),
+            )
+        """
+        raise NotImplementedError("Implement evaluate() or remove (model, test_data) from train()")
+
+    # ── Helper overrides (optional) ───────────────────────────────────────────
+
+    def get_feature_names(self) -> list[str]:
+        """Return input feature column names — used for logging and display."""
+        return []
+
+    def get_class_names(self) -> list[str]:
+        """Return class labels for confusion matrix display."""
+        return []
 '''
 
 
 @router.post("/files/new")
 async def new_file(body: NewFileRequest, user=Depends(require_roles("engineer", "admin"))):
-    full = _safe_path(body.path)
+    rel_path = body.path
+    if not rel_path.startswith("trainers/") and not rel_path.startswith("running/"):
+        rel_path = f"trainers/{rel_path}"
+    full = _safe_path(rel_path)
     if full.exists():
         raise HTTPException(status_code=409, detail="File already exists")
     full.parent.mkdir(parents=True, exist_ok=True)
 
     stem = Path(body.path).stem
     class_name = "".join(w.title() for w in stem.replace("-", "_").split("_"))
-    content = _trainer_template(class_name) if body.template == "trainer" else ""
+    if body.template == "trainer":
+        username = user.email.split("@")[0] if user.email else ""
+        content = _trainer_template(
+            class_name,
+            snake=stem,
+            author=user.full_name or username,
+            author_email=user.email,
+            author_url=f"https://{username}.mldock.io" if username else "",
+        )
+    else:
+        content = ""
 
     async with aiofiles.open(full, "w") as f:
         await f.write(content)
-    return {"created": True, "path": body.path, "content": content}
+    return {"created": True, "path": rel_path, "content": content}
 
 
 # ── Security scanner ──────────────────────────────────────────────────────────

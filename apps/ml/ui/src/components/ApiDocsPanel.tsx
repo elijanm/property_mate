@@ -130,6 +130,7 @@ export default function ApiDocsPanel({ deployment, alias, orgSlug }: Props) {
             {[
               { method: 'POST', path: `/inference/${name}`, desc: 'Run inference with JSON inputs', auth: true },
               ...(hasFileField ? [{ method: 'POST', path: `/inference/${name}/upload`, desc: 'Run inference by uploading a file', auth: true }] : []),
+              { method: 'POST', path: `/inference/${name}/all-versions`, desc: 'Run inputs against ALL deployed versions — returns array of results', auth: true },
               { method: 'GET',  path: `/inference/${name}/schema`, desc: 'Get input & output schema for this model', auth: true },
             ].map(ep => (
               <div key={ep.path} className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-start gap-3">
@@ -191,7 +192,31 @@ export default function ApiDocsPanel({ deployment, alias, orgSlug }: Props) {
                     <td className="px-4 py-2.5 font-mono text-gray-400">model_version</td>
                     <td className="px-4 py-2.5 text-gray-400">string</td>
                     <td className="px-4 py-2.5 text-gray-600">optional</td>
-                    <td className="px-4 py-2.5 text-gray-500">Target a specific version (default: latest active)</td>
+                    <td className="px-4 py-2.5 text-gray-500">Target by MLflow version string (default: latest active)</td>
+                  </tr>
+                  <tr className="bg-indigo-950/10">
+                    <td className="px-4 py-2.5 font-mono text-indigo-300">plugin_version</td>
+                    <td className="px-4 py-2.5 text-gray-400">integer</td>
+                    <td className="px-4 py-2.5 text-gray-600">optional</td>
+                    <td className="px-4 py-2.5 text-gray-500">Target a specific plugin file generation (0 = base, 1 = _v1 …)</td>
+                  </tr>
+                  <tr className="bg-indigo-950/10">
+                    <td className="px-4 py-2.5 font-mono text-indigo-300">training_patch</td>
+                    <td className="px-4 py-2.5 text-gray-400">integer</td>
+                    <td className="px-4 py-2.5 text-gray-600">optional</td>
+                    <td className="px-4 py-2.5 text-gray-500">Target a specific retraining ordinal (0 = first run, 3 = fourth run …)</td>
+                  </tr>
+                  <tr className="bg-violet-950/10">
+                    <td className="px-4 py-2.5 font-mono text-violet-300">best_metric</td>
+                    <td className="px-4 py-2.5 text-gray-400">string</td>
+                    <td className="px-4 py-2.5 text-gray-600">optional</td>
+                    <td className="px-4 py-2.5 text-gray-500">Metric key to rank by — routes to the best-scoring deployment. Overrides other selectors. E.g. <code className="text-violet-400">"accuracy"</code>, <code className="text-violet-400">"f1"</code>, <code className="text-violet-400">"loss"</code></td>
+                  </tr>
+                  <tr className="bg-violet-950/10">
+                    <td className="px-4 py-2.5 font-mono text-violet-300">best_metric_mode</td>
+                    <td className="px-4 py-2.5 text-gray-400">string</td>
+                    <td className="px-4 py-2.5 text-gray-600">optional</td>
+                    <td className="px-4 py-2.5 text-gray-500"><code className="text-violet-400">"max"</code> (higher = better, default) or <code className="text-violet-400">"min"</code> (lower = better, use for loss)</td>
                   </tr>
                   <tr>
                     <td className="px-4 py-2.5 font-mono text-gray-400">session_id</td>
@@ -311,12 +336,24 @@ export default function ApiDocsPanel({ deployment, alias, orgSlug }: Props) {
       {tab === 'examples' && (
         <div className="space-y-4">
           <div>
-            <h4 className="text-xs font-semibold text-gray-300 mb-2">cURL</h4>
+            <h4 className="text-xs font-semibold text-gray-300 mb-2">cURL — standard</h4>
             <CodeBlock code={curlExample} lang="bash" />
           </div>
           <div>
-            <h4 className="text-xs font-semibold text-gray-300 mb-2">Python</h4>
+            <h4 className="text-xs font-semibold text-gray-300 mb-2">Python — standard</h4>
             <CodeBlock code={pythonExample} lang="python" />
+          </div>
+          <div>
+            <h4 className="text-xs font-semibold text-indigo-300 mb-2">Version pinning — target plugin_version + training_patch</h4>
+            <CodeBlock lang="python" code={`import requests\n\nAPI_KEY = "<YOUR_API_KEY>"\n\n# Pin to plugin version 1, retraining run 3  (v1.0.0.3)\nr = requests.post(\n    "${base}/inference/${name}",\n    headers={"X-Api-Key": API_KEY},\n    json={\n        "inputs": ${JSON.stringify(Object.keys(exInputs).length ? exInputs : { value: 42 }, null, 8).replace(/\n/g, '\n        ')},\n        "plugin_version": 1,\n        "training_patch": 3,\n    },\n)\nprint(r.json())`} />
+          </div>
+          <div>
+            <h4 className="text-xs font-semibold text-violet-300 mb-2">Best metric — route to highest-accuracy deployment</h4>
+            <CodeBlock lang="python" code={`import requests\n\nAPI_KEY = "<YOUR_API_KEY>"\n\n# Always route to the deployment with the best accuracy score\nr = requests.post(\n    "${base}/inference/${name}",\n    headers={"X-Api-Key": API_KEY},\n    json={\n        "inputs": ${JSON.stringify(Object.keys(exInputs).length ? exInputs : { value: 42 }, null, 8).replace(/\n/g, '\n        ')},\n        "best_metric": "accuracy",   # "max" mode (default)\n        # "best_metric": "loss",\n        # "best_metric_mode": "min",  # lower loss is better\n    },\n)\nprint(r.json())`} />
+          </div>
+          <div>
+            <h4 className="text-xs font-semibold text-emerald-300 mb-2">All versions — fan-out across every deployed version</h4>
+            <CodeBlock lang="python" code={`import requests\n\nAPI_KEY = "<YOUR_API_KEY>"\n\n# Run inputs against ALL active deployments and compare\nr = requests.post(\n    "${base}/inference/${name}/all-versions",\n    headers={"X-Api-Key": API_KEY},\n    json={\n        "inputs": ${JSON.stringify(Object.keys(exInputs).length ? exInputs : { value: 42 }, null, 8).replace(/\n/g, '\n        ')},\n    },\n)\ndata = r.json()\nprint(f"Total versions: {data['total']}")\nfor v in data["results"]:\n    status = "ERROR" if v["error"] else "OK"\n    print(f"  {v['version_full'] or 'v?'}  default={v['is_default']}  [{status}]  {v['prediction']}")`} />
           </div>
           <div>
             <h4 className="text-xs font-semibold text-gray-300 mb-2">JavaScript (fetch)</h4>

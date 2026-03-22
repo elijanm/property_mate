@@ -3,7 +3,7 @@ import { trainersApi } from '@/api/trainers'
 import { datasetsApi } from '@/api/datasets'
 import { trainerSubmissionsApi } from '@/api/trainerSubmissions'
 import client from '@/api/client'
-import type { TrainerRegistration } from '@/types/trainer'
+import type { TrainerRegistration, TrainerGroup } from '@/types/trainer'
 import type { DatasetProfile } from '@/types/dataset'
 import type { TrainerSubmission } from '@/types/trainerSubmission'
 import StatusBadge from './StatusBadge'
@@ -13,7 +13,7 @@ import TrainerAnomalyModal from './TrainerAnomalyModal'
 import {
   Upload, RefreshCw, Scan, Trash2, Brain, Loader2, ChevronDown, ChevronRight,
   ChevronLeft, Play, Database, AlertTriangle, CheckCircle2, X, Plus, ExternalLink,
-  Download, ShieldCheck, ShieldAlert, Clock,
+  Download, ShieldCheck, ShieldAlert, Clock, Copy, Globe, Lock,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -25,6 +25,7 @@ interface Props {
 }
 
 type Tab = 'trainers' | 'jobs'
+type TrainerScope = 'private' | 'public'
 
 // ─── Dataset status chip (for trainer card) ────────────────────────────────
 
@@ -238,7 +239,9 @@ function DataSourceRow({
 
 export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
   const [tab, setTab] = useState<Tab>('trainers')
+  const [scope, setScope] = useState<TrainerScope>('private')
   const [trainers, setTrainers] = useState<TrainerRegistration[]>([])
+  const [publicTrainers, setPublicTrainers] = useState<TrainerRegistration[]>([])
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -248,6 +251,7 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
   const [uploadDataset, setUploadDataset] = useState<DatasetProfile | null>(null)
   const [refreshKeys, setRefreshKeys] = useState<Record<string, number>>({})
   const [expandedTab, setExpandedTab] = useState<Record<string, 'details' | 'upload'>>({})
+  const [cloningName, setCloningName] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   // LLM scan state
@@ -258,10 +262,26 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
   const load = async () => {
     setLoading(true)
     try {
-      const data = await trainersApi.list()
-      setTrainers(data)
+      const [priv, pub] = await Promise.all([trainersApi.list(), trainersApi.listPublic()])
+      setTrainers(priv)
+      setPublicTrainers(pub)
     } catch {}
     finally { setLoading(false) }
+  }
+
+  const handleClone = async (name: string) => {
+    setCloningName(name)
+    try {
+      await trainersApi.clone(name)
+      setUploadMsg(`Cloned "${name}" to your workspace`)
+      setScope('private')
+      await load()
+    } catch {
+      setUploadMsg(`Failed to clone "${name}"`)
+    } finally {
+      setCloningName(null)
+      setTimeout(() => setUploadMsg(null), 4000)
+    }
   }
 
   useEffect(() => { load() }, [])
@@ -334,13 +354,40 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
     return map[fw?.toLowerCase()] ?? 'text-gray-400'
   }
 
-  const totalPages = Math.max(1, Math.ceil(trainers.length / PAGE_SIZE))
+  const activeList = scope === 'private' ? trainers : publicTrainers
+
+  // Group trainers by base_name so versioned trainers appear as one entry
+  const groups: TrainerGroup[] = (() => {
+    const map = new Map<string, TrainerRegistration[]>()
+    for (const t of activeList) {
+      const key = t.base_name || t.name.replace(/_v\d+$/, '') || t.name
+      const arr = map.get(key) ?? []
+      arr.push(t)
+      map.set(key, arr)
+    }
+    return Array.from(map.entries()).map(([base_name, versions]) => {
+      // Sort highest plugin_version first
+      const sorted = [...versions].sort((a, b) => (b.plugin_version ?? 0) - (a.plugin_version ?? 0))
+      // Prefer the highest approved+active version as the "latest" shown on the card.
+      // If none are approved (e.g. all under review) fall back to the highest version.
+      const approved = sorted.filter(v => v.is_active && v.approval_status === 'approved')
+      const latest = approved[0] ?? sorted[0]
+      return { base_name, latest, versions: sorted }
+    })
+  })()
+
+  const totalPages = Math.max(1, Math.ceil(groups.length / PAGE_SIZE))
   const safePage = Math.min(page, totalPages)
-  const paginated = trainers.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+  const paginated = groups.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
 
   const TABS: { id: Tab; label: string; count?: number }[] = [
-    { id: 'trainers', label: 'Trainer Plugins', count: trainers.length },
+    { id: 'trainers', label: 'Trainer Plugins', count: groups.length },
     { id: 'jobs',     label: 'Training Jobs' },
+  ]
+
+  const SCOPE_TABS: { id: TrainerScope; label: string; icon: React.ReactNode; count: number }[] = [
+    { id: 'private', label: 'My Trainers',     icon: <Lock size={11} />,  count: trainers.length },
+    { id: 'public',  label: 'Public Library',  icon: <Globe size={11} />, count: publicTrainers.length },
   ]
 
   return (
@@ -424,10 +471,37 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
       {/* ── Trainers tab ── */}
       {tab === 'trainers' && (
         <>
+          {/* Scope sub-tabs */}
+          <div className="flex gap-1 p-1 bg-gray-900 rounded-xl border border-gray-800 w-fit">
+            {SCOPE_TABS.map(st => (
+              <button
+                key={st.id}
+                onClick={() => { setScope(st.id); setPage(1); setExpanded(null) }}
+                className={clsx(
+                  'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors',
+                  scope === st.id
+                    ? 'bg-gray-700 text-white'
+                    : 'text-gray-500 hover:text-gray-300'
+                )}
+              >
+                {st.icon}
+                {st.label}
+                <span className={clsx('text-[10px] px-1.5 py-0.5 rounded-full',
+                  scope === st.id ? 'bg-gray-600 text-gray-200' : 'bg-gray-800 text-gray-600')}>
+                  {st.count}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {scope === 'public' && (
+            <p className="text-[11px] text-gray-600">
+              Public trainers are read-only templates. Clone one to your workspace to train and customise it.
+            </p>
+          )}
           <p className="text-xs text-gray-600">
-            {trainers.length} registered trainer{trainers.length !== 1 ? 's' : ''}
+            {activeList.length} trainer{activeList.length !== 1 ? 's' : ''}
             {totalPages > 1 && ` · page ${safePage}/${totalPages}`}
-            {' · '}Plugin directory: <code className="text-gray-500">/app/trainers</code>
           </p>
 
           {loading ? (
@@ -436,7 +510,7 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
                 <div key={i} className="bg-gray-900 rounded-2xl h-16 border border-gray-800 animate-pulse" />
               ))}
             </div>
-          ) : trainers.length === 0 ? (
+          ) : groups.length === 0 ? (
             <div className="text-center py-16 text-gray-600">
               <Brain size={32} className="mx-auto mb-3 opacity-30" />
               <p className="text-sm">No trainers registered. Upload a .py plugin or scan the plugin directory.</p>
@@ -444,27 +518,38 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
           ) : (
             <>
               <div className="space-y-3">
-                {paginated.map(t => {
+                {paginated.map(group => {
+                  const t = group.latest
+                  const groupKey = group.base_name
                   const dsInfo = t.data_source_info ?? {}
                   const isDatasetSource = dsInfo.type === 'dataset' && Boolean(dsInfo.dataset_id || dsInfo.dataset_slug)
+                  const hasVersions = group.versions.length > 1
                   return (
-                    <div key={t.id} className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+                    <div key={groupKey} className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+                      {/* ── Header row ─────────────────────────────────── */}
                       <div className="flex items-center gap-3 px-5 py-4">
-                        <button onClick={() => setExpanded(expanded === t.id ? null : t.id)}
+                        <button onClick={() => setExpanded(expanded === groupKey ? null : groupKey)}
                           className="text-gray-500 hover:text-gray-300">
-                          {expanded === t.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                          {expanded === groupKey ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                         </button>
                         <div className="w-9 h-9 rounded-xl bg-gray-800 border border-gray-700 flex items-center justify-center flex-shrink-0">
                           <Brain size={16} className="text-brand-400" />
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-semibold text-sm text-gray-100">{t.name}</span>
-                            <span className="text-[10px] text-gray-600">v{t.version}</span>
+                            <span className="font-semibold text-sm text-gray-100">{group.base_name}</span>
+                            <span className="text-[10px] text-gray-500 bg-gray-800 px-1.5 py-0.5 rounded border border-gray-700 font-mono">
+                              {t.version_full ?? `v${t.plugin_version ?? 0}.0.0.0`}
+                            </span>
                             <span className={clsx('text-[10px] font-medium', frameworkColor(t.framework))}>{t.framework}</span>
                             {isDatasetSource && (
                               <span className="flex items-center gap-1 text-[10px] text-brand-300 bg-brand-900/30 border border-brand-800/40 px-1.5 py-0.5 rounded">
                                 <Database size={9} /> dataset
+                              </span>
+                            )}
+                            {hasVersions && (
+                              <span className="text-[10px] text-gray-600">
+                                {group.versions.length} versions
                               </span>
                             )}
                             {!t.is_active && <StatusBadge status="inactive" />}
@@ -472,19 +557,37 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
                           <p className="text-xs text-gray-500 truncate mt-0.5">{t.description || 'No description'}</p>
                         </div>
                         <div className="flex items-center gap-1 flex-shrink-0">
-                          {onStartTraining && (
-                            <button onClick={() => onStartTraining(t.name)}
-                              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-brand-900/50 hover:bg-brand-900 text-brand-400 border border-brand-800/50 rounded-lg transition-colors">
-                              <Play size={11} /> Train
+                          {scope === 'public' ? (
+                            <button
+                              onClick={() => handleClone(t.name)}
+                              disabled={cloningName === t.name}
+                              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 rounded-lg transition-colors disabled:opacity-50"
+                            >
+                              {cloningName === t.name
+                                ? <Loader2 size={11} className="animate-spin" />
+                                : <Copy size={11} />}
+                              Clone
                             </button>
+                          ) : (
+                            <>
+                              {onStartTraining && (
+                                <button onClick={() => onStartTraining(t.name)}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-brand-900/50 hover:bg-brand-900 text-brand-400 border border-brand-800/50 rounded-lg transition-colors">
+                                  <Play size={11} /> Train
+                                </button>
+                              )}
+                              <button onClick={() => handleDeactivate(t.name)}
+                                className="p-1.5 text-gray-700 hover:text-red-400 rounded-lg hover:bg-gray-800 transition-colors"
+                                title="Deactivate">
+                                <Trash2 size={13} />
+                              </button>
+                            </>
                           )}
-                          <button onClick={() => handleDeactivate(t.name)}
-                            className="p-1.5 text-gray-700 hover:text-red-400 rounded-lg hover:bg-gray-800 transition-colors">
-                            <Trash2 size={13} />
-                          </button>
                         </div>
                       </div>
-                      {expanded === t.id && (() => {
+
+                      {/* ── Expanded panel ─────────────────────────────── */}
+                      {expanded === groupKey && (() => {
                         const activeTab = expandedTab[t.id] ?? 'details'
                         const hasDataSource = typeof dsInfo.type === 'string' && dsInfo.type
                         return (
@@ -515,7 +618,7 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
                                     <Info label="Framework" value={t.framework} />
                                     <Info label="Schedule" value={t.schedule || 'Manual only'} />
                                     <Info label="Last Trained" value={t.last_trained_at ? new Date(t.last_trained_at).toLocaleDateString() : 'Never'} />
-                                    <Info label="Registered" value={new Date(t.created_at).toLocaleDateString()} />
+                                    <Info label="Registered" value={t.created_at ? new Date(t.created_at).toLocaleDateString() : '—'} />
                                   </div>
                                   {t.tags?.length > 0 && (
                                     <div className="flex flex-wrap gap-1.5">
@@ -523,6 +626,16 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
                                         <span key={tag} className="text-[10px] bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full border border-gray-700">{tag}</span>
                                       ))}
                                     </div>
+                                  )}
+
+                                  {/* ── Previous versions collapsible ──── */}
+                                  {hasVersions && (
+                                    <VersionHistory
+                                      versions={group.versions.slice(1)}
+                                      onStartTraining={scope === 'private' ? onStartTraining : undefined}
+                                      onDeactivate={handleDeactivate}
+                                      readOnly={scope === 'public'}
+                                    />
                                   )}
                                 </>
                               )}
@@ -598,6 +711,89 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
         onClose={() => setAnomalyModalOpen(false)}
         submission={scanSubmission}
       />
+    </div>
+  )
+}
+
+// ─── Version history collapsible ──────────────────────────────────────────
+
+function VersionHistory({
+  versions,
+  onStartTraining,
+  onDeactivate,
+  readOnly = false,
+}: {
+  versions: TrainerRegistration[]
+  onStartTraining?: (name: string) => void
+  onDeactivate: (name: string) => void
+  readOnly?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+
+  if (versions.length === 0) return null
+
+  return (
+    <div className="border border-gray-800 rounded-xl overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-4 py-2.5 text-[11px] font-medium text-gray-500 hover:text-gray-300 hover:bg-gray-800/40 transition-colors"
+      >
+        <span className="flex items-center gap-2">
+          <Clock size={11} />
+          Older plugin versions ({versions.length})
+        </span>
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+      </button>
+
+      {open && (
+        <div className="divide-y divide-gray-800/60">
+          {versions.map(v => {
+            const pv = v.plugin_version ?? 0
+            const tp = v.latest_training_patch ?? 0
+            const vFull = v.version_full ?? `v${pv}.0.0.${tp}`
+            return (
+            <div key={v.id} className="flex items-center gap-3 px-4 py-3">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[11px] font-mono text-gray-400">{v.name}</span>
+                  <span className="text-[10px] font-mono text-gray-600 bg-gray-800 border border-gray-700 px-1.5 py-0.5 rounded">
+                    {vFull}
+                  </span>
+                  <span className="text-[10px] text-gray-700">plugin v{pv}</span>
+                  {!v.is_active && (
+                    <span className="text-[10px] text-gray-700 bg-gray-800 px-1.5 py-0.5 rounded">inactive</span>
+                  )}
+                </div>
+                <p className="text-[10px] text-gray-600 mt-0.5">
+                  {v.created_at ? `Registered ${new Date(v.created_at).toLocaleDateString()}` : ''}
+                  {v.last_trained_at && ` · Last trained ${new Date(v.last_trained_at).toLocaleDateString()}`}
+                  {tp > 0 && ` · ${tp} retrain${tp !== 1 ? 's' : ''}`}
+                </p>
+              </div>
+              {!readOnly && (
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  {onStartTraining && v.is_active && (
+                    <button
+                      onClick={() => onStartTraining(v.name)}
+                      className="flex items-center gap-1 px-2 py-1 text-[10px] bg-gray-800 hover:bg-brand-900/50 text-gray-400 hover:text-brand-400 border border-gray-700 hover:border-brand-800/50 rounded-lg transition-colors"
+                    >
+                      <Play size={9} /> Train
+                    </button>
+                  )}
+                  <button
+                    onClick={() => onDeactivate(v.name)}
+                    className="p-1 text-gray-700 hover:text-red-400 rounded hover:bg-gray-800 transition-colors"
+                    title="Deactivate this version"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              )}
+            </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

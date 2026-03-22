@@ -69,7 +69,7 @@ export default function TrainerAnomalyModal({ open, onClose, submission }: Props
               <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-widest mb-2">Issues Found</div>
               <div className="border-l-2 border-red-800/50 pl-3 space-y-1">
                 {scan.issues.map((issue, i) => (
-                  <p key={i} className="text-xs text-red-400">• {issue}</p>
+                  <p key={i} className="text-xs text-red-400">• {typeof issue === 'string' ? issue : (issue.detail || issue.message)}</p>
                 ))}
               </div>
             </div>

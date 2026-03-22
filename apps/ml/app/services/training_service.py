@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.models.training_job import TrainingJob
 from app.models.training_config import TrainingConfig as TrainingConfigDoc
 from app.services.registry_service import get_trainer_class
+from app.services.trainer_security_service import scrubbed_env
 from app.utils.datetime import utc_now
 
 logger = structlog.get_logger(__name__)
@@ -85,33 +86,41 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
 
     trainer_cls = get_trainer_class(job.trainer_name)
     if not trainer_cls:
-        # Try to load the plugin file directly to surface the actual import error
-        error_msg = f"Trainer '{job.trainer_name}' not registered"
-        try:
-            import importlib.util
-            from pathlib import Path
-            plugin_dir = Path(settings.TRAINER_PLUGIN_DIR)
-            candidates = list(plugin_dir.glob("*.py"))
-            match = next(
-                (f for f in candidates if f.stem == job.trainer_name or f.stem.lower() == job.trainer_name.lower()),
-                None,
-            )
-            if match:
-                spec = importlib.util.spec_from_file_location("_probe", match)
-                if spec and spec.loader:
-                    module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)  # type: ignore[union-attr]
-                    error_msg += " — file loaded but no valid BaseTrainer subclass found (check name/data_source attrs)"
-            else:
-                error_msg += f" — no matching .py file in {plugin_dir}"
-        except Exception as probe_exc:
-            error_msg += f" — import error: {probe_exc}"
-        await _fail(job, error_msg)
+        # Versioned clone names (e.g. image_cosine_similarity_v1) contain a class
+        # whose trainer_name() returns the base name — fall back to base_name lookup.
+        from app.models.trainer_registration import TrainerRegistration as _TR
+        _reg_for_cls = await _TR.find_one(
+            _TR.name == job.trainer_name,
+            _TR.org_id == (getattr(job, "org_id", None) or ""),
+        )
+        if _reg_for_cls:
+            _base = getattr(_reg_for_cls, "base_name", None)
+            if _base:
+                trainer_cls = get_trainer_class(_base)
+            # Also try loading directly from the plugin file
+            if not trainer_cls and getattr(_reg_for_cls, "plugin_file", None):
+                from pathlib import Path as _Path
+                _pf = _Path(_reg_for_cls.plugin_file)
+                if _pf.exists():
+                    from app.services.registry_service import _load_module_from_file, register_class
+                    _classes = _load_module_from_file(_pf, org_id=getattr(job, "org_id", "") or "")
+                    for _c in _classes:
+                        register_class(_c, plugin_file=str(_pf))
+                    trainer_cls = get_trainer_class(job.trainer_name) or (get_trainer_class(_base) if _base else None)
+    if not trainer_cls:
+        await _fail(job, f"Trainer '{job.trainer_name}' not registered — plugin file missing or failed to load")
         return
 
     # Block resource-intensive trainers from local execution
     from app.models.trainer_registration import TrainerRegistration
-    trainer_reg = await TrainerRegistration.find_one(TrainerRegistration.name == job.trainer_name)
+    # Prefer the org's own copy; fall back to public record only if no org copy exists.
+    _job_org = getattr(job, "org_id", None) or ""
+    trainer_reg = await TrainerRegistration.find_one(
+        TrainerRegistration.name == job.trainer_name,
+        TrainerRegistration.org_id == _job_org,
+    )
+    if trainer_reg is None:
+        trainer_reg = await TrainerRegistration.find_one(TrainerRegistration.name == job.trainer_name)
     if trainer_reg and trainer_reg.resource_intensive:
         await _fail(
             job,
@@ -119,6 +128,60 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
             "and cannot run locally. Please use Cloud GPU.",
         )
         return
+
+    # Block direct training of public/system trainers — users must clone first.
+    if trainer_reg and not getattr(trainer_reg, "org_id", None):
+        await _fail(
+            job,
+            f"'{job.trainer_name}' is a public template trainer. "
+            "Clone it to your workspace first, then train your private copy.",
+        )
+        return
+
+    # Approval gate — only applies to user-uploaded org trainers.
+    # Clones of public trainers (cloned_from_org_id="") are trusted at clone time
+    # and must never be blocked here — auto-repair their approval_status if stuck.
+    if trainer_reg and getattr(trainer_reg, "org_id", ""):
+        _cloned_from_public = getattr(trainer_reg, "cloned_from_org_id", None) == ""
+        approval_status = getattr(trainer_reg, "approval_status", "approved")
+        if _cloned_from_public and approval_status not in ("approved",):
+            # Repair: clone from public source was somehow flipped — reset it
+            await trainer_reg.set({"approval_status": "approved", "is_active": True, "updated_at": utc_now()})
+            approval_status = "approved"
+        if approval_status in ("pending_admin", "pending_review", "flagged"):
+            await _fail(
+                job,
+                f"Trainer '{job.trainer_name}' is pending security review and cannot run until approved.",
+            )
+            return
+        if approval_status == "rejected":
+            reason = getattr(trainer_reg, "rejection_reason", "") or "No reason provided."
+            await _fail(
+                job,
+                f"Trainer '{job.trainer_name}' was rejected: {reason}",
+            )
+            return
+
+        # Change-detection: if file hash no longer matches approved hash, require re-review
+        if approval_status == "approved":
+            import hashlib, os
+            plugin_file = getattr(trainer_reg, "plugin_file", None)
+            approved_hash = getattr(trainer_reg, "approved_content_hash", "")
+            if plugin_file and approved_hash and os.path.exists(plugin_file):
+                with open(plugin_file, "rb") as fh:
+                    current_hash = hashlib.sha256(fh.read()).hexdigest()
+                if current_hash != approved_hash:
+                    await trainer_reg.set({
+                        "approval_status": "pending_review",
+                        "is_active": False,
+                        "updated_at": utc_now(),
+                    })
+                    await _fail(
+                        job,
+                        f"Trainer '{job.trainer_name}' source has changed since last approval. "
+                        "Re-submission required.",
+                    )
+                    return
 
     trainer: BaseTrainer = trainer_cls()
     config = await get_training_config(job.training_config.get("extra"))
@@ -172,54 +235,114 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
             from app.abstract.data_source import DatasetDataSource
             if isinstance(trainer.data_source, DatasetDataSource) and job.org_id:
                 trainer.data_source.org_id = job.org_id
+                # Apply dataset slug override if the user selected a different dataset
+                if getattr(job, "dataset_slug_override", None):
+                    await _log(job, f"Using dataset override: {job.dataset_slug_override}")
+                    trainer.data_source.slug = job.dataset_slug_override
             raw_data = await trainer.data_source.load(injected_data=injected_data)
             await _log(job, f"Data loaded ({len(raw_data) if isinstance(raw_data, (bytes, list)) else 'n/a'} bytes/items)")
 
-            # Preprocess (with timeout)
-            await _log(job, "Preprocessing...")
-            timeout_s = getattr(settings, "TRAINER_PREPROCESS_TIMEOUT", 300)
-            loop = asyncio.get_event_loop()
-            try:
-                preprocessed = await asyncio.wait_for(
-                    loop.run_in_executor(None, trainer.preprocess, raw_data),
-                    timeout=timeout_s,
+            # ── Sandbox branches ───────────────────────────────────────────────
+            if settings.TRAINER_SANDBOX in ("docker", "docker-pool"):
+                _pool_mode = settings.TRAINER_SANDBOX == "docker-pool"
+                await _log(job, f"Running trainer in {'pooled ' if _pool_mode else ''}Docker sandbox...")
+                if _pool_mode:
+                    from app.services.pool_sandbox_runner import run_train_in_sandbox
+                else:
+                    from app.services.sandbox_runner import run_train_in_sandbox
+                from pathlib import Path as _Path
+
+                # Locate the trainer source file
+                plugin_dir = _Path(settings.TRAINER_PLUGIN_DIR)
+                trainer_py = next(
+                    (f for f in plugin_dir.glob("*.py")
+                     if f.stem == job.trainer_name or f.stem.lower() == job.trainer_name.lower()),
+                    None,
                 )
-            except asyncio.TimeoutError:
-                raise RuntimeError(
-                    f"preprocess() timed out after {timeout_s}s — "
-                    "reduce dataset size or optimize your preprocess() method."
+                if trainer_py is None:
+                    raise RuntimeError(
+                        f"Cannot find trainer source for '{job.trainer_name}' in {plugin_dir}"
+                    )
+                trainer_source = trainer_py.read_text(encoding="utf-8")
+
+                t0 = time.monotonic()
+                sandbox_result = await run_train_in_sandbox(
+                    trainer_source=trainer_source,
+                    raw_data=raw_data,
+                    config=config,
+                    job_id=job_id,
                 )
+                elapsed = time.monotonic() - t0
+                mlflow.log_metric("training_duration_s", elapsed)
 
-            # Train
-            await _log(job, f"Training on {config.device}...")
-            t0 = time.monotonic()
-            result = trainer.train(preprocessed, config)
-            elapsed = time.monotonic() - t0
-            mlflow.log_metric("training_duration_s", elapsed)
-
-            # Unpack optional test_data
-            model = result
-            test_data = None
-            if isinstance(result, tuple) and len(result) == 2:
-                model, test_data = result
-
-            # Evaluate
-            eval_result: Optional[EvaluationResult] = None
-            if test_data is not None:
-                await _log(job, "Evaluating...")
+                # Deserialize model returned by sandbox
                 try:
-                    eval_result = trainer.evaluate(model, test_data)
-                    metrics = _eval_to_metrics(eval_result)
-                    mlflow.log_metrics(metrics)
-                    await job.set({"metrics": metrics, "updated_at": utc_now()})
-                    await _log(job, f"Metrics: {metrics}")
-                    # Log schemas + visualisations as MLflow artifacts
+                    import cloudpickle as _cpkl
+                except ImportError:
+                    import pickle as _cpkl  # type: ignore[no-redef]
+                import io as _io
+                model = _cpkl.load(_io.BytesIO(sandbox_result["model_bytes"]))
+
+                sandbox_metrics = sandbox_result.get("metrics", {})
+                eval_result = None
+                if sandbox_metrics:
+                    mlflow.log_metrics(sandbox_metrics)
+                    await job.set({"metrics": sandbox_metrics, "updated_at": utc_now()})
+                    await _log(job, f"Metrics: {sandbox_metrics}")
                     _log_schema_artifacts(trainer_cls)
-                    class_names = trainer.get_class_names() if hasattr(trainer, "get_class_names") else []
-                    _log_confusion_matrix_artifacts(eval_result, class_names)
-                    _log_metrics_chart(metrics)
-                except NotImplementedError:
-                    await _log(job, "evaluate() not implemented — skipping")
+
+                await _log(job, f"Sandbox training complete in {elapsed:.1f}s")
+
+            # ── In-process branch ──────────────────────────────────────────────
+            else:
+                # Preprocess (with timeout)
+                await _log(job, "Preprocessing...")
+                timeout_s = getattr(settings, "TRAINER_PREPROCESS_TIMEOUT", 300)
+                loop = asyncio.get_event_loop()
+                try:
+                    with scrubbed_env():
+                        preprocessed = await asyncio.wait_for(
+                            loop.run_in_executor(None, trainer.preprocess, raw_data),
+                            timeout=timeout_s,
+                        )
+                except asyncio.TimeoutError:
+                    raise RuntimeError(
+                        f"preprocess() timed out after {timeout_s}s — "
+                        "reduce dataset size or optimize your preprocess() method."
+                    )
+
+                # Train
+                await _log(job, f"Training on {config.device}...")
+                t0 = time.monotonic()
+                with scrubbed_env():
+                    result = trainer.train(preprocessed, config)
+                elapsed = time.monotonic() - t0
+                mlflow.log_metric("training_duration_s", elapsed)
+
+                # Unpack optional test_data
+                model = result
+                test_data = None
+                if isinstance(result, tuple) and len(result) == 2:
+                    model, test_data = result
+
+                # Evaluate
+                eval_result: Optional[EvaluationResult] = None
+                if test_data is not None:
+                    await _log(job, "Evaluating...")
+                    try:
+                        with scrubbed_env():
+                            eval_result = trainer.evaluate(model, test_data)
+                        metrics = _eval_to_metrics(eval_result)
+                        mlflow.log_metrics(metrics)
+                        await job.set({"metrics": metrics, "updated_at": utc_now()})
+                        await _log(job, f"Metrics: {metrics}")
+                        # Log schemas + visualisations as MLflow artifacts
+                        _log_schema_artifacts(trainer_cls)
+                        class_names = trainer.get_class_names() if hasattr(trainer, "get_class_names") else []
+                        _log_confusion_matrix_artifacts(eval_result, class_names)
+                        _log_metrics_chart(metrics)
+                    except NotImplementedError:
+                        await _log(job, "evaluate() not implemented — skipping")
 
             # Save model to MLflow
             await _log(job, "Saving model to MLflow...")
@@ -244,11 +367,43 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
             # sample_preinstall trigger → mark as visible to all roles (viewer-accessible)
             _visibility = "viewer" if job.trigger == "sample_preinstall" else "engineer"
             from app.models.model_deployment import ModelDeployment
+            from app.models.trainer_registration import TrainerRegistration
             from app.services.pretrained_deploy_service import _mlflow_artifact_size
+
+            # Compute next training_patch: how many times has this trainer been trained before?
+            _existing_deps = await ModelDeployment.find(
+                ModelDeployment.org_id == job.org_id,
+                ModelDeployment.trainer_name == job.trainer_name,
+            ).to_list()
+            _new_patch = (max((d.training_patch for d in _existing_deps), default=-1) + 1)
+
+            # Resolve base_name and plugin_version from TrainerRegistration
+            import re as _re
+            _reg_for_dep = await TrainerRegistration.find_one(TrainerRegistration.name == job.trainer_name)
+            _base_name = (
+                getattr(_reg_for_dep, "base_name", None)
+                or _re.sub(r"_v\d+$", "", job.trainer_name)
+            )
+            _plugin_version = getattr(_reg_for_dep, "plugin_version", None)
+            if _plugin_version is None:
+                _m = _re.search(r"_v(\d+)$", job.trainer_name)
+                _plugin_version = int(_m.group(1)) if _m else 0
+
+            # Render training_patch as a two-segment minor.patch with rollover at 10:
+            # patch 0-9   → minor=0, patch=0..9   (v1.0.0 … v1.0.9)
+            # patch 10-19 → minor=1, patch=0..9   (v1.1.0 … v1.1.9)
+            # patch 20-29 → minor=2, patch=0..9   (v1.2.0 … v1.2.9)
+            _minor = _new_patch // 10
+            _patch = _new_patch % 10
+            _version_full = f"v{_plugin_version}.{_minor}.{_patch}"
+
             dep = ModelDeployment(
                 org_id=job.org_id,
                 trainer_name=job.trainer_name,
+                base_name=_base_name,
+                plugin_version=_plugin_version,
                 version=job.trainer_version,
+                version_full=_version_full,
                 mlflow_model_name=registered_name,
                 mlflow_model_version=model_version,
                 run_id=run.info.run_id,
@@ -263,6 +418,7 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
                 visibility=_visibility,
                 owner_email=job.owner_email,
                 model_size_bytes=_mlflow_artifact_size(run.info.run_id) or None,
+                training_patch=_new_patch,
             )
             # Demote previous default(s) within same org
             prev_defaults = await ModelDeployment.find(
@@ -274,11 +430,14 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
                 await prev.set({"is_default": False})
             await dep.insert()
 
-            # Update trainer's last_trained_at
-            from app.models.trainer_registration import TrainerRegistration
+            # Update trainer's last_trained_at and latest_training_patch (denorm for display)
             reg = await TrainerRegistration.find_one(TrainerRegistration.name == job.trainer_name)
             if reg:
-                await reg.set({"last_trained_at": utc_now(), "updated_at": utc_now()})
+                await reg.set({
+                    "last_trained_at": utc_now(),
+                    "latest_training_patch": _new_patch,
+                    "updated_at": utc_now(),
+                })
 
             finished_at = utc_now()
             await job.set({

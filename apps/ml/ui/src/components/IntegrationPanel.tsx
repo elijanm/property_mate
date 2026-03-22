@@ -9,7 +9,7 @@
  */
 import { useState } from 'react'
 import type { ModelDeployment } from '@/types/trainer'
-import { Copy, Check, Globe, Package, Cpu, FileCode } from 'lucide-react'
+import { Copy, Check, Globe, Package, Cpu, FileCode, Layers } from 'lucide-react'
 
 interface Props {
   deployment: ModelDeployment
@@ -24,12 +24,13 @@ interface Props {
 
 // ── Section / tab config ──────────────────────────────────────────────────────
 
-type SectionId = 'web' | 'sdk' | 'iot' | 'schema'
+type SectionId = 'web' | 'sdk' | 'iot' | 'schema' | 'advanced'
 type ItemId =
   | 'curl' | 'python_http' | 'javascript' | 'php_http' | 'dotnet'
   | 'sdk_python' | 'sdk_npm' | 'sdk_php'
   | 'raspberry' | 'esp32'
   | 'schema_input' | 'schema_output'
+  | 'version_pinned' | 'best_metric' | 'all_versions'
 
 interface NavSection {
   id: SectionId
@@ -69,6 +70,14 @@ const NAV: NavSection[] = [
     items: [
       { id: 'schema_input' as ItemId, label: 'Input Schema' },
       { id: 'schema_output' as ItemId, label: 'Output Schema' },
+    ],
+  },
+  {
+    id: 'advanced' as SectionId, label: 'Advanced', icon: <Layers size={14} />,
+    items: [
+      { id: 'version_pinned' as ItemId, label: 'Pin Version' },
+      { id: 'best_metric' as ItemId,    label: 'Best Metric' },
+      { id: 'all_versions' as ItemId,   label: 'All Versions' },
     ],
   },
 ]
@@ -455,6 +464,82 @@ if __name__ == "__main__":
 
     schema_input: { lang: 'json', code: '' },
     schema_output: { lang: 'json', code: '' },
+
+    // ── Advanced ─────────────────────────────────────────────────────────────
+    version_pinned: {
+      lang: 'python',
+      code: `import requests
+${nsNote}
+API_KEY = "<YOUR_API_KEY>"
+BASE    = "${base}"
+TRAINER = "${name}"
+
+# Pin to a specific plugin_version + training_patch (e.g. v1.0.0.3)
+resp = requests.post(
+    f"{BASE}/inference/{TRAINER}",
+    headers={"X-Api-Key": API_KEY},
+    json={
+        "inputs": ${JSON.stringify(Object.keys(exampleInputs).length ? exampleInputs : { value: 42 }, null, 8).replace(/\n/g, '\n        ')},
+        "plugin_version": 1,   # plugin file generation
+        "training_patch": 3,   # retraining ordinal (0 = first run)
+        # "model_version": "5",  # alternatively target by MLflow version string
+    },
+)
+print(resp.json())`,
+    },
+
+    best_metric: {
+      lang: 'python',
+      code: `import requests
+${nsNote}
+API_KEY = "<YOUR_API_KEY>"
+BASE    = "${base}"
+TRAINER = "${name}"
+
+# Route to the deployment with the best accuracy
+resp = requests.post(
+    f"{BASE}/inference/{TRAINER}",
+    headers={"X-Api-Key": API_KEY},
+    json={
+        "inputs": ${JSON.stringify(Object.keys(exampleInputs).length ? exampleInputs : { value: 42 }, null, 8).replace(/\n/g, '\n        ')},
+        "best_metric": "accuracy",     # metric key to rank by
+        "best_metric_mode": "max",     # "max" (default) or "min" for loss/error metrics
+        # "best_metric": "loss",
+        # "best_metric_mode": "min",
+    },
+)
+print(resp.json())`,
+    },
+
+    all_versions: {
+      lang: 'python',
+      code: `import requests
+${nsNote}
+API_KEY = "<YOUR_API_KEY>"
+BASE    = "${base}"
+TRAINER = "${name}"
+
+# Run inputs against ALL active deployments and compare results
+resp = requests.post(
+    f"{BASE}/inference/{TRAINER}/all-versions",
+    headers={"X-Api-Key": API_KEY},
+    json={
+        "inputs": ${JSON.stringify(Object.keys(exampleInputs).length ? exampleInputs : { value: 42 }, null, 8).replace(/\n/g, '\n        ')},
+    },
+)
+data = resp.json()
+print(f"Ran against {data['total']} version(s)")
+
+for v in data["results"]:
+    tag = "DEFAULT" if v["is_default"] else "       "
+    ver = v.get("version_full") or f"patch={v['training_patch']}"
+    if v["error"]:
+        print(f"  {tag}  {ver}  ERROR: {v['error']}")
+    else:
+        metrics = v.get("metrics", {})
+        m = ", ".join(f"{k}={val:.3f}" for k, val in metrics.items()) if metrics else "—"
+        print(f"  {tag}  {ver}  metrics=[{m}]  prediction={v['prediction']}")`,
+    },
 
     esp32: {
       lang: 'cpp',

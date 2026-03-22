@@ -14,7 +14,9 @@ class TrainerSubmission(Document):
 
     org_id: str
     owner_email: str
-    trainer_name: str
+    trainer_name: str                    # versioned name, e.g. "my_trainer_v2"
+    base_trainer_name: str = ""          # base name without version suffix, e.g. "my_trainer"
+    version_num: int = 1                 # 1 = original, 2 = _v2, etc.
     namespace: str
     file_key: str                        # S3 key OR local path to uploaded .py
     submission_hash: str                 # sha256(org_id + ":" + file_bytes)

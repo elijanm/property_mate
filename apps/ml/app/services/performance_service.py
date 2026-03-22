@@ -155,13 +155,13 @@ async def get_performance_snapshots(
 async def get_rolling_summary(trainer_name: str, hours: int = 24, org_id: str = "") -> Dict[str, Any]:
     """
     Compute a rolling summary from InferenceLogs directly (no pre-aggregation).
-    Used for the live 'current window' stats card.
+    Shows all calls to the trainer regardless of caller org.
+    The org_id parameter is kept for API compatibility but ignored.
     """
     since = utc_now() - timedelta(hours=hours)
     logs = await InferenceLog.find(
         InferenceLog.trainer_name == trainer_name,
         InferenceLog.created_at >= since,
-        InferenceLog.org_id == org_id,
     ).to_list()
 
     total = len(logs)
@@ -189,7 +189,7 @@ async def get_all_models_summary(org_id: str = "") -> List[Dict[str, Any]]:
     """
     since = utc_now() - timedelta(hours=24)
     pipeline = [
-        {"$match": {"created_at": {"$gte": since}, "org_id": org_id}},
+        {"$match": {"created_at": {"$gte": since}}},
         {"$group": {
             "_id": "$trainer_name",
             "total": {"$sum": 1},

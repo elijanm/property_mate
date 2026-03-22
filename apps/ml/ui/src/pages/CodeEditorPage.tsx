@@ -7,7 +7,7 @@ import {
   Trash2, Save, AlertCircle, Loader2, PackageCheck,
   Terminal, Cpu, Wallet, Clock, Sparkles,
   ArrowLeft, Send, Paperclip, Wand2, CheckCircle2, BarChart2,
-  MessageSquare, ShieldAlert, RotateCcw,
+  MessageSquare, ShieldAlert, RotateCcw, AlertTriangle, XCircle, Copy, Globe,
 } from 'lucide-react'
 import { editorApi, type FileNode, type EditorDataset } from '@/api/editor'
 import { configApi } from '@/api/config'
@@ -248,16 +248,6 @@ function DatasetPicker({
   )
 }
 
-// ── Templates sidebar section ─────────────────────────────────────────────────
-
-const SAMPLE_META: Record<string, { label: string; description: string; icon: string }> = {
-  'sample_image_classifier':        { label: 'Image Classifier',         description: 'ResNet-18 transfer learning',             icon: '🖼️' },
-  'sample_object_detector':         { label: 'Object Detector',          description: 'YOLOv8 bounding boxes',                   icon: '🔍' },
-  'sample_image_segmentation':      { label: 'Segmentation',             description: 'YOLOv8-seg pixel masks',                  icon: '✂️' },
-  'sample_image_similarity':        { label: 'Image Similarity',         description: 'CLIP embeddings & text search',           icon: '🔗' },
-  'sample_kenyan_plate_detector':   { label: 'Kenyan Plate Detector',    description: 'YOLOv8 detection + EasyOCR — KAA 000A',   icon: '🚗' },
-}
-
 function _flattenTree(nodes: FileNode[]): FileNode[] {
   const out: FileNode[] = []
   for (const n of nodes) {
@@ -267,18 +257,31 @@ function _flattenTree(nodes: FileNode[]): FileNode[] {
   return out
 }
 
-function TemplatesSection({
-  tree,
-  activePath,
-  onFork,
+// ── Library Section (public trainers) ────────────────────────────────────────
+
+function LibrarySection({
+  trainers,
+  cloningTrainer,
+  onClone,
 }: {
-  tree: FileNode[]
-  activePath: string | null
-  onFork: (node: FileNode) => void
+  trainers: import('@/types/trainer').TrainerRegistration[]
+  cloningTrainer: string | null
+  onClone: (trainer: import('@/types/trainer').TrainerRegistration) => void
 }) {
   const [collapsed, setCollapsed] = useState(true)
-  const samples = _flattenTree(tree).filter(n => n.name.startsWith('sample_') && n.name.endsWith('.py'))
-  if (samples.length === 0) return null
+  if (trainers.length === 0) return null
+
+  // Group by base_name; pick latest by plugin_version
+  const groups: Map<string, import('@/types/trainer').TrainerRegistration[]> = new Map()
+  for (const t of trainers) {
+    const key = t.base_name ?? t.name
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(t)
+  }
+  const entries = [...groups.entries()].map(([base, vers]) => {
+    const sorted = [...vers].sort((a, b) => (b.plugin_version ?? 0) - (a.plugin_version ?? 0))
+    return { base, latest: sorted[0] }
+  })
 
   return (
     <div className="border-t border-gray-800 flex-shrink-0">
@@ -287,36 +290,37 @@ function TemplatesSection({
         className="w-full flex items-center gap-1.5 px-3 py-2 text-[10px] text-gray-500 uppercase tracking-wider font-medium hover:text-gray-300 transition-colors"
       >
         {collapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
-        Templates
+        <Globe size={10} />
+        Public Library
+        <span className="ml-auto text-[9px] text-gray-700">{entries.length}</span>
       </button>
       {!collapsed && (
         <div className="pb-2 space-y-0.5 px-1">
-          {samples.map(node => {
-            const stem    = node.name.replace(/\.py$/, '')
-            const meta    = SAMPLE_META[stem]
-            const label   = meta?.label ?? stem.replace(/^sample_/, '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-            const desc    = meta?.description ?? ''
-            const icon    = meta?.icon ?? '📄'
-            const copyName = node.name.replace(/^sample_/, '')
-            const isActive = activePath === copyName
+          {entries.map(({ latest }) => {
+            const isCloning = cloningTrainer === latest.name
+            const label = (latest.base_name ?? latest.name).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
             return (
-              <button
-                key={node.path}
-                onClick={() => onFork(node)}
-                title={`Open a copy as ${copyName}`}
-                className={clsx(
-                  'w-full flex items-center gap-2 px-2 py-1.5 rounded text-left transition-colors',
-                  isActive
-                    ? 'bg-brand-900/60 text-brand-300 border border-brand-700/40'
-                    : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200',
-                )}
+              <div
+                key={latest.name}
+                className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-800/60 transition-colors"
               >
-                <span className="text-sm flex-shrink-0 leading-none">{icon}</span>
-                <div className="min-w-0">
-                  <div className="text-[11px] font-medium truncate leading-tight">{label}</div>
-                  <div className="text-[10px] text-gray-600 truncate mt-0.5">{desc || 'Opens a personal copy'}</div>
+                <Globe size={11} className="text-sky-500 flex-shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[11px] font-medium text-gray-300 truncate leading-tight">{label}</div>
+                  {latest.description && (
+                    <div className="text-[10px] text-gray-600 truncate mt-0.5">{latest.description}</div>
+                  )}
                 </div>
-              </button>
+                <button
+                  onClick={() => onClone(latest)}
+                  disabled={!!cloningTrainer}
+                  title="Clone to your workspace"
+                  className="flex-shrink-0 flex items-center gap-1 px-2 py-0.5 text-[9px] font-semibold bg-gray-700 hover:bg-gray-600 text-gray-200 rounded transition-colors disabled:opacity-50"
+                >
+                  {isCloning ? <Loader2 size={8} className="animate-spin" /> : <Copy size={8} />}
+                  {isCloning ? '…' : 'Clone'}
+                </button>
+              </div>
             )
           })}
         </div>
@@ -2248,15 +2252,27 @@ export default function CodeEditorPage() {
 
   // Install / security-scan status
   const [installing, setInstalling] = useState(false)
-  const [installStatus, setInstallStatus] = useState<'idle' | 'scanning' | 'pending_admin' | 'ok' | 'error'>('idle')
+  const [installStatus, setInstallStatus] = useState<'idle' | 'scanning' | 'pending_admin' | 'rejected' | 'ok' | 'error'>('idle')
   const [scanSubmission, setScanSubmission] = useState<TrainerSubmission | null>(null)
   const [anomalyModalOpen, setAnomalyModalOpen] = useState(false)
+  const [rejectionModalSub, setRejectionModalSub] = useState<TrainerSubmission | null>(null)
 
-  // Sidebar: files vs pending review
-  const [sidebarView, setSidebarView] = useState<'files' | 'pending'>('files')
+  // Sidebar: files | pending | library
+  const [sidebarView, setSidebarView] = useState<'files' | 'pending' | 'library'>('files')
   const [pendingSubmissions, setPendingSubmissions] = useState<TrainerSubmission[]>([])
+  const [pendingRegistrations, setPendingRegistrations] = useState<import('@/types/trainer').TrainerRegistration[]>([])
   const [pendingLoading, setPendingLoading] = useState(false)
   const [resubmitting, setResubmitting] = useState<string | null>(null)
+
+  // Active/running trainers (approved + is_active) — hidden from file tree
+  const [activeTrainers, setActiveTrainers] = useState<import('@/types/trainer').TrainerRegistration[]>([])
+  const [activeTrainerNames, setActiveTrainerNames] = useState<Set<string>>(new Set())
+  const [upgradeConfirm, setUpgradeConfirm] = useState<{ baseName: string; nextVersion: string } | null>(null)
+
+  // Public library trainers
+  const [publicTrainers, setPublicTrainers] = useState<import('@/types/trainer').TrainerRegistration[]>([])
+  const [publicTrainersLoading, setPublicTrainersLoading] = useState(false)
+  const [cloningTrainer, setCloningTrainer] = useState<string | null>(null)
 
   const activeTabData = tabs.find(t => t.path === activeTab) ?? null
 
@@ -2268,17 +2284,28 @@ export default function CodeEditorPage() {
     }
     const trainerName = activeTabData.name.replace(/\.py$/, '')
     // Check pending list first (fast, local)
-    const isPending = pendingSubmissions.some(
-      s => s.trainer_name === trainerName && (s.status === 'pending_admin' || s.status === 'flagged')
-    )
-    if (isPending) {
+    const latestSub = pendingSubmissions
+      .filter(s => s.trainer_name === trainerName)
+      .sort((a, b) => new Date(b.submitted_at).getTime() - new Date(a.submitted_at).getTime())[0]
+    if (latestSub?.status === 'pending_admin' || latestSub?.status === 'flagged') {
       setInstallStatus('pending_admin')
+      return
+    }
+    if (latestSub?.status === 'rejected') {
+      setInstallStatus('rejected')
       return
     }
     trainersApi.get(trainerName)
       .then(reg => setInstallStatus((reg as any)?.status === 'active' ? 'ok' : 'idle'))
       .catch(() => setInstallStatus('idle'))
   }, [activeTab, pendingSubmissions]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // When an approved or under-review trainer file gets edited, reset to idle so user can resubmit
+  useEffect(() => {
+    if (activeTabData?.dirty && (installStatus === 'ok' || installStatus === 'pending_admin')) {
+      setInstallStatus('idle')
+    }
+  }, [activeTabData?.dirty, installStatus])
 
   // ── Load ───────────────────────────────────────────────────────────────────
 
@@ -2304,10 +2331,31 @@ export default function CodeEditorPage() {
   const loadPendingSubmissions = useCallback(async () => {
     setPendingLoading(true)
     try {
-      const { items } = await trainerSubmissionsApi.list()
-      setPendingSubmissions(items.filter(s => s.status === 'pending_admin' || s.status === 'flagged'))
+      const [{ items }, regs] = await Promise.all([
+        trainerSubmissionsApi.list(),
+        trainersApi.listPending(),
+      ])
+      // Keep all non-terminal submissions (scanning / pending_admin / flagged)
+      setPendingSubmissions(items.filter(s => s.status !== 'approved' && s.status !== 'rejected'))
+      // All registration-level pending trainers (may or may not have a submission)
+      setPendingRegistrations(regs)
     } catch {}
     finally { setPendingLoading(false) }
+  }, [])
+
+  const loadActiveTrainers = useCallback(async () => {
+    try {
+      const items = await trainersApi.list()
+      const active = items.filter(t => t.is_active)
+      setActiveTrainers(active)
+      setActiveTrainerNames(new Set(active.map(t => t.name)))
+    } catch {}
+  }, [])
+
+  const loadPublicTrainers = useCallback(async () => {
+    setPublicTrainersLoading(true)
+    try { setPublicTrainers(await trainersApi.listPublic()) } catch {}
+    finally { setPublicTrainersLoading(false) }
   }, [])
 
   useEffect(() => {
@@ -2315,8 +2363,10 @@ export default function CodeEditorPage() {
     loadDatasets()
     loadWallet()
     loadPendingSubmissions()
+    loadActiveTrainers()
+    loadPublicTrainers()
     configApi.getUiConfig().then(c => setShowCostDebug(c.show_cost_debug)).catch(() => {})
-  }, [loadTree, loadDatasets, loadWallet, loadPendingSubmissions])
+  }, [loadTree, loadDatasets, loadWallet, loadPendingSubmissions, loadPublicTrainers])
 
   // Persist AI sessions to localStorage whenever they change
   useEffect(() => {
@@ -2489,6 +2539,9 @@ export default function CodeEditorPage() {
   const handleRun = async () => {
     if (!activeTabData) return
 
+    // Capture path now so the SSE closure always has the right file
+    const runFilePath = activeTabData.path
+
     // Save first
     if (activeTabData.dirty) await handleSave()
 
@@ -2538,14 +2591,70 @@ export default function CodeEditorPage() {
       const sse = new EventSource(url)
       sseRef.current = sse
 
+      // Pre-extract dataset slug from trainer code so we can use it on "not accessible" error
+      const codeSlugMatch = activeTabData.content.match(/DatasetDataSource\(\s*["']([^"']+)["']/)
+      const codeDatasetSlug = codeSlugMatch?.[1] ?? null
+
+      // Stateful traceback buffer: collect all lines of a Python traceback, then decide
+      // whether to suppress (dataset error → show upload modal) or flush (real error → show in log).
+      let tracebackBuf: string[] = []
+      let inTraceback = false
+
+      const _isDatasetTraceback = (lines: string[]) =>
+        lines.some(l =>
+          l.includes('Dataset not accessible') ||
+          l.includes('data_source.py') ||
+          (l.includes('ValueError') && l.includes('Dataset')) ||
+          l.includes('Dataset') && l.includes('is empty')
+        )
+
+      const _flushTraceback = () => {
+        if (tracebackBuf.length > 0) {
+          tracebackBuf.forEach(l => addLog(l, 'error'))
+          tracebackBuf = []
+        }
+        inTraceback = false
+      }
+
       sse.addEventListener('log', e => {
         const data = JSON.parse((e as MessageEvent).data)
-        addLog(data.line, 'info')
-        // Detect empty-dataset error in log output
-        const emptyMatch = (data.line as string).match(/Dataset '(.+?)' is empty/)
+        const line = data.line as string
+
+        // Detect start of a Python traceback
+        if (line.trim() === 'Traceback (most recent call last):') {
+          inTraceback = true
+          tracebackBuf = [line]
+          return
+        }
+
+        if (inTraceback) {
+          tracebackBuf.push(line)
+          // Traceback ends when a non-indented, non-blank error line appears (e.g. "ValueError: ...")
+          const isErrorLine = /^\w.*Error.*:/.test(line) || /^\w.*Exception.*:/.test(line)
+          if (isErrorLine || (!line.startsWith(' ') && !line.startsWith('\t') && line.trim() !== '')) {
+            // End of traceback — decide suppress or flush
+            if (_isDatasetTraceback(tracebackBuf)) {
+              emptyDatasetSlugRef.current = emptyDatasetSlugRef.current ?? codeDatasetSlug
+              // Extract slug from "Dataset 'slug' is empty" if present
+              const slugLine = tracebackBuf.find(l => l.includes('is empty'))
+              const slugMatch = slugLine?.match(/Dataset '(.+?)' is empty/)
+              if (slugMatch) emptyDatasetSlugRef.current = slugMatch[1]
+            } else {
+              _flushTraceback()
+            }
+            tracebackBuf = []
+            inTraceback = false
+          }
+          return
+        }
+
+        // Normal log line — detect empty-dataset slug inline
+        const emptyMatch = line.match(/Dataset '(.+?)' is empty/)
         if (emptyMatch) {
           emptyDatasetSlugRef.current = emptyMatch[1]
+          return   // suppress the raw error line; upload modal will handle it
         }
+        addLog(line, 'info')
       })
       sse.addEventListener('billing', e => {
         const data = JSON.parse((e as MessageEvent).data)
@@ -2560,9 +2669,18 @@ export default function CodeEditorPage() {
         const data = JSON.parse((e as MessageEvent).data)
         if (data.status === 'completed') {
           addLog(`✓ Training completed. Metrics: ${JSON.stringify(data.metrics)}`, 'done')
+          loadActiveTrainers()
         } else {
-          addLog(`✗ ${data.status}${data.error ? ': ' + data.error : ''}`, 'error')
-          // If we detected an empty dataset slug, fetch and show upload modal
+          // If dataset is missing/not accessible, skip the raw error and show upload modal
+          const isDatasetError = data.error && (
+            data.error.includes('Dataset not accessible') ||
+            data.error.includes('is empty') ||
+            data.error.includes('dataset')
+          )
+          if (!isDatasetError || !emptyDatasetSlugRef.current) {
+            addLog(`✗ ${data.status}${data.error ? ': ' + data.error : ''}`, 'error')
+          }
+          // If we detected an empty/inaccessible dataset slug, fetch and show upload modal
           if (emptyDatasetSlugRef.current) {
             const slug = emptyDatasetSlugRef.current
             datasetsApi.getBySlug(slug).then(ds => {
@@ -2636,18 +2754,78 @@ export default function CodeEditorPage() {
   // Uploads the current file as a trainer plugin (same as TrainersPage "Upload Plugin")
   // then checks if the trainer's dataset is empty and prompts to fill it.
 
-  const handleInstall = async () => {
+  /** Strip _vN suffix → base name */
+  const _baseName = (name: string) => name.replace(/_v\d+$/, '')
+
+  /** Compute next versioned trainer name. v1 = original (no suffix), v2+ = _vN.
+   *  Sources: pendingSubmissions (all statuses) + activeTrainers (running). */
+  const _nextVersionedName = (baseName: string): string => {
+    const clean = _baseName(baseName)
+
+    // Collect version numbers from pending submissions
+    let max = 0
+    for (const s of pendingSubmissions) {
+      if (_baseName(s.trainer_name) !== clean) continue
+      const m = s.trainer_name.match(/_v(\d+)$/)
+      max = Math.max(max, m ? parseInt(m[1]) : 1)
+    }
+    // Also from active/running trainers (covers pruned-submission cases)
+    for (const t of activeTrainers) {
+      if (_baseName(t.name) !== clean) continue
+      const m = t.name.match(/_v(\d+)$/)
+      max = Math.max(max, m ? parseInt(m[1]) : 1)
+    }
+
+    if (max === 0) return clean          // truly first submission — no suffix
+    return `${clean}_v${max + 1}`
+  }
+
+  /** Inject or update `# Name:` header so the backend registers the versioned name */
+  const _injectName = (content: string, versionedName: string): string => {
+    const lines = content.split('\n')
+    const idx = lines.findIndex(l => /^#\s*[Nn]ame\s*:/.test(l))
+    if (idx !== -1) {
+      lines[idx] = `# Name: ${versionedName}`
+      return lines.join('\n')
+    }
+    return `# Name: ${versionedName}\n${content}`
+  }
+
+  /** Called by the upgrade-confirm modal "Confirm" button — skips the prompt */
+  const handleInstallConfirmed = async () => {
+    setUpgradeConfirm(null)
+    await handleInstall(true)
+  }
+
+  const handleInstall = async (skipConfirm = false) => {
     if (!activeTabData) return
 
-    // Block if this trainer already has a pending review
-    const trainerName = activeTabData.name.replace(/\.py$/, '')
-    const alreadyPending = pendingSubmissions.find(
-      s => s.trainer_name === trainerName && (s.status === 'pending_admin' || s.status === 'flagged')
+    const baseName = activeTabData.name.replace(/\.py$/, '')
+    const versionedName = _nextVersionedName(baseName)
+    const isVersioned = versionedName !== baseName
+
+    // Block if any version of this base name is already pending (submission or registration)
+    const inFlightSub = pendingSubmissions.find(
+      s => _baseName(s.trainer_name) === _baseName(baseName) &&
+           (s.status === 'scanning' || s.status === 'pending_admin' || s.status === 'flagged')
     )
-    if (alreadyPending) {
+    const inFlightReg = pendingRegistrations.find(
+      r => (r.base_name || r.name.replace(/_v\d+$/, '')) === _baseName(baseName)
+    )
+    const inFlight = inFlightSub || inFlightReg
+    if (inFlight) {
+      const blockerName = inFlightSub ? inFlightSub.trainer_name : (inFlightReg?.name ?? '')
+      addLog(
+        `⚠ "${blockerName}" is already pending review — resolve it before submitting a new version.`,
+        'error'
+      )
       setLogOpen(true)
-      addLog(`⚠ "${trainerName}" is already under admin review — wait for approval before resubmitting.`, 'error')
-      setSidebarView('pending')
+      return
+    }
+
+    // If submitting a change to a currently-running trainer, prompt first
+    if (!skipConfirm && activeTrainerNames.has(_baseName(baseName))) {
+      setUpgradeConfirm({ baseName: _baseName(baseName), nextVersion: versionedName })
       return
     }
 
@@ -2655,19 +2833,23 @@ export default function CodeEditorPage() {
     setInstallStatus('idle')
     setScanSubmission(null)
     setLogOpen(true)
-    addLog('● Submitting trainer for security scan…', 'connected')
+    addLog(
+      isVersioned
+        ? `● Submitting as ${versionedName} (new version)…`
+        : '● Submitting trainer for security scan…',
+      'connected'
+    )
 
     try {
       // Save first so the server has the latest content
       if (activeTabData.dirty) await handleSave()
 
+      // Inject versioned name into content so backend registers it correctly
+      const submissionContent = _injectName(activeTabData.content, versionedName)
+
       // Wrap content as a File for multipart upload
-      const blob = new Blob([activeTabData.content], { type: 'text/x-python' })
-      const file = new File(
-        [blob],
-        activeTabData.name.endsWith('.py') ? activeTabData.name : `${activeTabData.name}.py`,
-        { type: 'text/x-python' }
-      )
+      const blob = new Blob([submissionContent], { type: 'text/x-python' })
+      const file = new File([blob], `${versionedName}.py`, { type: 'text/x-python' })
 
       // Submit through the security-scan pipeline (not direct install)
       let submission = await trainerSubmissionsApi.upload(file)
@@ -2687,8 +2869,9 @@ export default function CodeEditorPage() {
       const scan = submission.llm_scan_result ?? {}
 
       if (submission.status === 'approved') {
-        addLog(`✓ Security scan passed — trainer is active.`, 'done')
+        addLog(`✓ Security scan passed — ${versionedName} is active.`, 'done')
         setInstallStatus('ok')
+        loadActiveTrainers()
 
         // Check if trainer's dataset is empty
         const registeredTrainer = submission.parsed_metadata as Record<string, unknown> | null | undefined
@@ -2723,11 +2906,17 @@ export default function CodeEditorPage() {
         setAnomalyModalOpen(true)
         // Refresh pending list and switch sidebar to Pending tab
         loadPendingSubmissions().then(() => setSidebarView('pending'))
-      } else if (submission.status === 'flagged' || submission.status === 'rejected') {
-        addLog(`✗ Trainer rejected: ${scan.summary ?? 'Security policy violation'}`, 'error')
+      } else if (submission.status === 'flagged') {
+        addLog(`✗ Trainer flagged: ${scan.summary ?? 'Security policy violation'}`, 'error')
         setInstallStatus('error')
         setAnomalyModalOpen(true)
+        loadPendingSubmissions().then(() => setSidebarView('pending'))
         setTimeout(() => setInstallStatus('idle'), 5000)
+      } else if (submission.status === 'rejected') {
+        addLog(`✗ Trainer rejected by admin. See the Pending tab for details.`, 'error')
+        setInstallStatus('rejected')
+        setRejectionModalSub(submission)
+        loadPendingSubmissions().then(() => setSidebarView('pending'))
       } else {
         // Still scanning after timeout
         addLog(`⚠ Scan timed out — check Trainers page for status.`, 'error')
@@ -2742,19 +2931,56 @@ export default function CodeEditorPage() {
     }
   }
 
-  // ── Open file from Pending panel ──────────────────────────────────────────
-  // Opens the flagged file in the editor so the user can view/edit it.
-  // Does NOT re-trigger the scan — the submission is still under review.
-  const handleResubmit = async (sub: TrainerSubmission) => {
-    setResubmitting(sub.id)
-    const allFiles = _flattenTree(tree)
-    const match = allFiles.find(f => f.name === `${sub.trainer_name}.py`)
-    if (match) {
-      await openFile(match)
+  // ── Pending panel actions ─────────────────────────────────────────────────
+  const handlePendingCardAction = async (sub: TrainerSubmission) => {
+    if (sub.status === 'approved') {
+      // Open the trainer source and run it; on success it gets auto-installed to running/
+      setResubmitting(sub.id)
+      try {
+        const allFiles = _flattenTree(tree)
+        const match = allFiles.find(f => f.name === `${sub.trainer_name}.py`)
+
+        if (match) {
+          await openFile(match as any)
+        } else {
+          // File not in workspace — fetch source from the submission record
+          let content = ''
+          try {
+            const { source } = await trainerSubmissionsApi.getSource(sub.id)
+            content = source
+          } catch { /* ignore */ }
+          if (!content) content = `# ${sub.trainer_name}.py\n# Edit and run to deploy\n`
+          const tabPath = `trainers/${sub.trainer_name}.py`
+          setTabs(prev => {
+            const exists = prev.find(t => t.path === tabPath)
+            return exists
+              ? prev.map(t => t.path === tabPath ? { ...t, content, dirty: false } : t)
+              : [...prev, { path: tabPath, name: `${sub.trainer_name}.py`, content, dirty: false }]
+          })
+          setActiveTab(tabPath)
+        }
+        setSidebarView('files')
+        setTimeout(() => handleRun(), 100)
+      } finally {
+        setResubmitting(null)
+      }
+    } else if (sub.status === 'rejected') {
+      setRejectionModalSub(sub)
+    } else {
+      // pending_admin / flagged — just open the file so user can see it
+      setResubmitting(sub.id)
+      const allFiles = _flattenTree(tree)
+      const match = allFiles.find(f => f.name === `${sub.trainer_name}.py`)
+      if (match) {
+        await openFile(match)
+        setSidebarView('files')
+      }
+      setResubmitting(null)
     }
-    setSidebarView('files')
-    setResubmitting(null)
   }
+
+  // Legacy alias kept for any existing call sites
+  const handleResubmit = handlePendingCardAction
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -2864,16 +3090,22 @@ export default function CodeEditorPage() {
           </button>
         )}
 
-        {/* Install */}
+        {/* Install / Resubmit */}
         {!isViewer && (
           <button
-            onClick={installStatus === 'error' && scanSubmission ? () => setAnomalyModalOpen(true) : handleInstall}
+            onClick={
+              installStatus === 'error' && scanSubmission
+                ? () => setAnomalyModalOpen(true)
+                : () => handleInstall()
+            }
             disabled={installing || !activeTabData || installStatus === 'pending_admin' || installStatus === 'ok' || installStatus === 'scanning'}
             title={
               installStatus === 'pending_admin'
                 ? 'Under admin review — wait for approval. See the Pending tab on the left.'
                 : installStatus === 'ok'
                 ? 'Scan already passed'
+                : installStatus === 'rejected'
+                ? 'Trainer was rejected — fix the issues and resubmit'
                 : 'Submit trainer for security scan — admin approval required before activation'
             }
             className={clsx(
@@ -2884,6 +3116,8 @@ export default function CodeEditorPage() {
                 ? 'bg-blue-900/40 border-blue-700/60 text-blue-300 cursor-default'
                 : installStatus === 'pending_admin'
                 ? 'bg-amber-900/40 border-amber-700/60 text-amber-300 cursor-not-allowed'
+                : installStatus === 'rejected'
+                ? 'bg-orange-900/40 border-orange-700/60 text-orange-300 hover:bg-orange-800/50'
                 : installStatus === 'error'
                 ? 'bg-red-900/40 border-red-700/60 text-red-400'
                 : 'bg-indigo-900/50 border-indigo-700/60 text-indigo-300 hover:bg-indigo-800/60 hover:text-white',
@@ -2893,11 +3127,14 @@ export default function CodeEditorPage() {
               ? <Loader2 size={12} className="animate-spin" />
               : installStatus === 'pending_admin'
               ? <ShieldAlert size={12} />
+              : installStatus === 'rejected'
+              ? <RotateCcw size={12} />
               : <PackageCheck size={12} />}
             {installing ? 'Submitting…'
               : installStatus === 'scanning' ? 'Scanning…'
               : installStatus === 'ok' ? 'Scan Passed!'
               : installStatus === 'pending_admin' ? 'Under Review'
+              : installStatus === 'rejected' ? 'Resubmit'
               : installStatus === 'error' ? 'Scan Failed'
               : 'Submit & Scan'}
           </button>
@@ -2906,13 +3143,37 @@ export default function CodeEditorPage() {
         {/* Run — only available after scan is approved */}
         {!isViewer && (
           <button
-            onClick={handleRun}
-            disabled={running || !activeTabData || installStatus !== 'ok'}
-            title={installStatus !== 'ok' ? 'Submit & scan trainer first — run is blocked until scan passes' : 'Run trainer'}
-            className="flex items-center gap-1.5 px-4 py-1.5 text-xs bg-green-700 hover:bg-green-600 text-white border border-green-600 rounded-lg transition-colors disabled:opacity-40 font-medium"
+            onClick={installStatus === 'rejected'
+              ? () => {
+                  const name = activeTabData?.name.replace(/\.py$/, '')
+                  const sub = pendingSubmissions.find(s => s.trainer_name === name && s.status === 'rejected')
+                  if (sub) setRejectionModalSub(sub)
+                }
+              : handleRun}
+            disabled={running || !activeTabData || (installStatus !== 'ok' && installStatus !== 'rejected')}
+            title={
+              installStatus === 'rejected'
+                ? 'Trainer rejected — view rejection reason'
+                : installStatus !== 'ok'
+                ? 'Submit & scan trainer first — run is blocked until scan passes'
+                : 'Run trainer'
+            }
+            className={clsx(
+              'flex items-center gap-1.5 px-4 py-1.5 text-xs border rounded-lg transition-colors disabled:opacity-40 font-medium',
+              installStatus === 'rejected'
+                ? 'bg-red-900/40 border-red-700/60 text-red-300 hover:bg-red-800/50'
+                : 'bg-green-700 hover:bg-green-600 text-white border-green-600',
+            )}
           >
-            {running ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-            {running ? 'Running…' : installStatus !== 'ok' ? 'Run (scan first)' : 'Run'}
+            {running
+              ? <Loader2 size={12} className="animate-spin" />
+              : installStatus === 'rejected'
+              ? <XCircle size={12} />
+              : <Play size={12} />}
+            {running ? 'Running…'
+              : installStatus === 'rejected' ? 'Rejected'
+              : installStatus !== 'ok' ? 'Run (scan first)'
+              : 'Run'}
           </button>
         )}
 
@@ -2998,27 +3259,43 @@ export default function CodeEditorPage() {
             <button
               onClick={() => setSidebarView('files')}
               className={clsx(
-                'flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-medium transition-colors',
+                'flex-1 flex items-center justify-center gap-1 py-2 text-[10px] font-medium transition-colors',
                 sidebarView === 'files'
                   ? 'text-white border-b-2 border-brand-500 -mb-px'
                   : 'text-gray-500 hover:text-gray-300'
               )}
             >
-              <FileCode size={11} /> Files
+              <FileCode size={10} /> Files
             </button>
             <button
               onClick={() => { setSidebarView('pending'); loadPendingSubmissions() }}
               className={clsx(
-                'flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-medium transition-colors relative',
+                'flex-1 flex items-center justify-center gap-1 py-2 text-[10px] font-medium transition-colors relative',
                 sidebarView === 'pending'
                   ? 'text-amber-400 border-b-2 border-amber-500 -mb-px'
                   : 'text-gray-500 hover:text-gray-300'
               )}
             >
-              <ShieldAlert size={11} /> Pending
-              {pendingSubmissions.length > 0 && (
-                <span className="absolute top-1 right-2 w-3.5 h-3.5 rounded-full bg-amber-500 text-[8px] text-black font-bold flex items-center justify-center">
-                  {pendingSubmissions.length}
+              <ShieldAlert size={10} /> Pending
+              {(pendingSubmissions.length + pendingRegistrations.filter(r => !pendingSubmissions.some(s => s.trainer_name === r.name)).length) > 0 && (
+                <span className="absolute top-1 right-1.5 w-3 h-3 rounded-full bg-amber-500 text-[7px] text-black font-bold flex items-center justify-center">
+                  {pendingSubmissions.length + pendingRegistrations.filter(r => !pendingSubmissions.some(s => s.trainer_name === r.name)).length}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => { setSidebarView('library'); loadPublicTrainers() }}
+              className={clsx(
+                'flex-1 flex items-center justify-center gap-1 py-2 text-[10px] font-medium transition-colors relative',
+                sidebarView === 'library'
+                  ? 'text-sky-400 border-b-2 border-sky-500 -mb-px'
+                  : 'text-gray-500 hover:text-gray-300'
+              )}
+            >
+              <Globe size={10} /> Library
+              {publicTrainers.length > 0 && (
+                <span className="absolute top-1 right-1.5 w-3 h-3 rounded-full bg-sky-600 text-[7px] text-white font-bold flex items-center justify-center">
+                  {publicTrainers.length}
                 </span>
               )}
             </button>
@@ -3026,18 +3303,19 @@ export default function CodeEditorPage() {
 
           {sidebarView === 'files' ? (
             <>
+
               <div className="flex-1 overflow-y-auto p-1 min-h-0">
                 {treeLoading ? (
                   <div className="flex items-center justify-center py-8">
                     <Loader2 size={16} className="animate-spin text-gray-600" />
                   </div>
-                ) : _flattenTree(tree).filter(n => !n.name.startsWith('sample_')).length === 0 && tree.filter(n => n.type === 'dir' || !n.name.startsWith('sample_')).length === 0 ? (
+                ) : tree.length === 0 ? (
                   <p className="px-3 py-6 text-xs text-gray-600 text-center">
                     No files yet.<br />Click <strong>+ New File</strong> to start.
                   </p>
                 ) : (
                   <FileTree
-                    nodes={tree.filter(n => n.type === 'dir' || !n.name.startsWith('sample_'))}
+                    nodes={tree}
                     openPaths={openDirs}
                     activePath={activeTab}
                     onToggleDir={toggleDir}
@@ -3046,92 +3324,263 @@ export default function CodeEditorPage() {
                   />
                 )}
               </div>
-              <TemplatesSection
-                tree={tree}
-                activePath={activeTab}
-                onFork={forkSampleFile}
+              {/* Public library — clone trainers into workspace */}
+              <LibrarySection
+                trainers={publicTrainers}
+                cloningTrainer={cloningTrainer}
+                onClone={async (trainer) => {
+                  setCloningTrainer(trainer.name)
+                  try {
+                    await trainersApi.clone(trainer.name)
+                    loadActiveTrainers()
+                    loadPendingSubmissions()
+                  } catch { /* ignore */ }
+                  finally { setCloningTrainer(null) }
+                }}
               />
             </>
-          ) : (
+          ) : sidebarView === 'pending' ? (
             <div className="flex-1 overflow-y-auto min-h-0">
               {pendingLoading ? (
                 <div className="flex items-center justify-center py-8">
                   <Loader2 size={16} className="animate-spin text-gray-600" />
                 </div>
-              ) : pendingSubmissions.length === 0 ? (
+              ) : pendingSubmissions.length === 0 && pendingRegistrations.length === 0 ? (
                 <div className="px-3 py-8 text-center">
                   <CheckCircle2 size={20} className="text-emerald-600 mx-auto mb-2" />
-                  <p className="text-xs text-gray-600">No pending reviews</p>
+                  <p className="text-xs text-gray-600">No pending trainers</p>
                 </div>
               ) : (
                 <div className="p-2 space-y-2">
-                  {pendingSubmissions.map(sub => {
-                    const severity = sub.llm_scan_result?.severity ?? 'low'
-                    const isPending = sub.status === 'pending_admin'
+                  {/* Registration-level pending trainers — each version shown separately */}
+                  {pendingRegistrations.map(reg => {
+                    const statusLabel =
+                      reg.approval_status === 'pending_admin' ? 'Under Review' :
+                      reg.approval_status === 'flagged' ? 'Flagged' :
+                      reg.approval_status === 'rejected' ? 'Rejected' : 'Pending Review'
+                    const statusColor =
+                      reg.approval_status === 'rejected' ? 'bg-red-900/60 text-red-400' :
+                      reg.approval_status === 'flagged'  ? 'bg-orange-900/60 text-orange-400' :
+                      'bg-amber-900/60 text-amber-400'
+                    // Skip if there's a matching submission already shown
+                    const hasSub = pendingSubmissions.some(s => s.trainer_name === reg.name)
+                    if (hasSub) return null
                     return (
-                      <div key={sub.id} className="bg-gray-900 border border-gray-800 rounded-lg p-2.5 text-xs">
-                        <div className="flex items-start gap-1.5 mb-1.5">
-                          <ShieldAlert size={11} className={clsx('flex-shrink-0 mt-0.5', isPending ? 'text-amber-400' : 'text-red-400')} />
-                          <span className="font-mono text-gray-200 truncate flex-1 leading-tight">{sub.trainer_name}.py</span>
-                        </div>
+                      <div key={reg.id} className="border border-amber-800/40 bg-amber-950/10 rounded-lg p-2.5 text-xs">
                         <div className="flex items-center gap-1.5 mb-1.5">
-                          <span className={clsx(
-                            'px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wide',
-                            isPending ? 'bg-amber-900/60 text-amber-400' : 'bg-red-900/60 text-red-400'
-                          )}>
-                            {isPending ? 'Pending Review' : 'Flagged'}
-                          </span>
-                          <span className={clsx(
-                            'px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wide',
-                            severity === 'critical' || severity === 'malicious' ? 'bg-red-900/40 text-red-400' :
-                            severity === 'high' ? 'bg-orange-900/40 text-orange-400' :
-                            'bg-yellow-900/40 text-yellow-500'
-                          )}>
-                            {severity}
+                          <ShieldAlert size={11} className="text-amber-400 flex-shrink-0" />
+                          <span className="font-mono text-gray-200 truncate flex-1 text-[11px]">
+                            {reg.name}.py
                           </span>
                         </div>
-                        {sub.llm_scan_result?.summary && (
-                          <p className="text-[10px] text-gray-500 mb-2 leading-snug line-clamp-2">
+                        <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                          <span className={clsx('px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide', statusColor)}>
+                            {statusLabel}
+                          </span>
+                          <span className="text-[9px] text-gray-700 font-mono">
+                            {reg.version_full ?? `v${reg.plugin_version ?? 0}`}
+                          </span>
+                          {reg.org_id && (
+                            <span className="text-[9px] text-gray-700 truncate max-w-[80px]" title={reg.org_id}>
+                              {reg.org_id.slice(0, 8)}…
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[9px] text-gray-700 mb-2">
+                          {reg.created_at ? new Date(reg.created_at).toLocaleDateString() : ''}
+                        </p>
+                        <div className="flex gap-1.5 flex-wrap">
+                          <button
+                            onClick={async () => {
+                              try { await trainersApi.approvePending(reg.name); loadPendingSubmissions() }
+                              catch { /* non-fatal */ }
+                            }}
+                            className="flex items-center gap-1 px-2 py-0.5 text-[10px] bg-emerald-900/40 border border-emerald-700/50 text-emerald-400 rounded hover:bg-emerald-900/60 transition-colors"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            onClick={async () => {
+                              const reason = prompt('Rejection reason (optional):') ?? ''
+                              try { await trainersApi.rejectPending(reg.name, reason); loadPendingSubmissions() }
+                              catch { /* non-fatal */ }
+                            }}
+                            className="flex items-center gap-1 px-2 py-0.5 text-[10px] bg-red-900/30 border border-red-700/40 text-red-400 rounded hover:bg-red-900/50 transition-colors"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+
+                  {/* Submission-based pending trainers */}
+                  {pendingSubmissions.map(sub => {
+                    const isApproved = sub.status === 'approved'
+                    const isRejected = sub.status === 'rejected'
+                    const isPending  = sub.status === 'pending_admin' || sub.status === 'flagged'
+
+                    return (
+                      <div
+                        key={sub.id}
+                        className={clsx(
+                          'border rounded-lg p-2.5 text-xs',
+                          isApproved ? 'bg-green-900/10 border-green-800/40' :
+                          isRejected ? 'bg-red-900/10 border-red-800/40' :
+                          'bg-gray-900 border-gray-800'
+                        )}
+                      >
+                        {/* Header row */}
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          {isApproved
+                            ? <CheckCircle2 size={11} className="text-emerald-400 flex-shrink-0" />
+                            : isRejected
+                            ? <XCircle size={11} className="text-red-400 flex-shrink-0" />
+                            : <ShieldAlert size={11} className="text-amber-400 flex-shrink-0" />
+                          }
+                          <span className="font-mono text-gray-200 truncate flex-1 text-[11px] leading-tight">
+                            {sub.trainer_name}.py
+                          </span>
+                        </div>
+
+                        {/* Status badge */}
+                        <div className="mb-1.5">
+                          <span className={clsx(
+                            'px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide',
+                            isApproved ? 'bg-emerald-900/60 text-emerald-400' :
+                            isRejected ? 'bg-red-900/60 text-red-400' :
+                            sub.status === 'flagged' ? 'bg-orange-900/60 text-orange-400' :
+                            'bg-amber-900/60 text-amber-400'
+                          )}>
+                            {isApproved ? 'Approved' : isRejected ? 'Rejected' : sub.status === 'flagged' ? 'Flagged' : 'Under Review'}
+                          </span>
+                        </div>
+
+                        {/* Rejection reason for rejected */}
+                        {isRejected && sub.rejection_reason && (
+                          <p className="text-[10px] text-red-300/80 mb-1.5 leading-snug line-clamp-2">
+                            {sub.rejection_reason}
+                          </p>
+                        )}
+
+                        {/* Summary for pending/flagged */}
+                        {isPending && sub.llm_scan_result?.summary && (
+                          <p className="text-[10px] text-gray-500 mb-1.5 leading-snug line-clamp-2">
                             {sub.llm_scan_result.summary}
                           </p>
                         )}
-                        {(sub.llm_scan_result?.issues ?? []).length > 0 && (
-                          <ul className="mb-2 space-y-0.5">
-                            {(sub.llm_scan_result.issues ?? []).slice(0, 3).map((issue, i) => (
-                              <li key={i} className="text-[10px] text-gray-600 flex gap-1">
-                                <span className="text-amber-600 flex-shrink-0">·</span>
-                                <span className="line-clamp-1">{issue}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
+
                         <p className="text-[9px] text-gray-700 mb-2">
                           {new Date(sub.submitted_at).toLocaleDateString()}
                         </p>
-                        {isPending ? (
-                          <p className="text-[10px] text-amber-600/80 mb-2">
-                            Waiting for admin approval. Once approved, re-open the file and submit again.
-                          </p>
-                        ) : null}
-                        <button
-                          onClick={() => handleResubmit(sub)}
-                          disabled={resubmitting === sub.id}
-                          className="w-full flex items-center justify-center gap-1.5 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-[11px] text-gray-300 hover:text-white transition-colors disabled:opacity-40"
-                          title="Open the file in the editor"
-                        >
-                          {resubmitting === sub.id
-                            ? <Loader2 size={10} className="animate-spin" />
-                            : <FileCode size={10} />
-                          }
-                          Open File
-                        </button>
+
+                        {/* Action button */}
+                        {isApproved ? (
+                          <button
+                            onClick={() => handlePendingCardAction(sub)}
+                            disabled={resubmitting === sub.id}
+                            className="w-full flex items-center justify-center gap-1.5 py-1.5 bg-green-700 hover:bg-green-600 border border-green-600 rounded text-[11px] font-semibold text-white transition-colors disabled:opacity-40"
+                          >
+                            {resubmitting === sub.id
+                              ? <Loader2 size={10} className="animate-spin" />
+                              : <Play size={10} />}
+                            {resubmitting === sub.id ? 'Opening…' : 'Run'}
+                          </button>
+                        ) : isRejected ? (
+                          <button
+                            onClick={() => setRejectionModalSub(sub)}
+                            className="w-full flex items-center justify-center gap-1.5 py-1.5 bg-red-900/40 hover:bg-red-900/60 border border-red-700/50 rounded text-[11px] text-red-300 hover:text-white transition-colors"
+                          >
+                            <AlertTriangle size={10} /> View Rejection & Resubmit
+                          </button>
+                        ) : (
+                          <div className="flex items-center gap-1.5 px-2 py-1.5 bg-amber-900/20 border border-amber-800/30 rounded text-[10px] text-amber-400/70">
+                            <Loader2 size={9} className="animate-spin flex-shrink-0" />
+                            Awaiting admin review…
+                          </div>
+                        )}
                       </div>
                     )
                   })}
                 </div>
               )}
             </div>
-          )}
+          ) : sidebarView === 'library' ? (
+            <div className="flex-1 overflow-y-auto min-h-0">
+              {/* Header */}
+              <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800 flex-shrink-0">
+                <span className="text-[10px] text-gray-500 uppercase tracking-widest font-semibold">Public Library</span>
+                <button
+                  onClick={loadPublicTrainers}
+                  className="p-0.5 text-gray-600 hover:text-gray-300 transition-colors"
+                  title="Refresh"
+                >
+                  <RefreshCw size={11} />
+                </button>
+              </div>
+
+              {publicTrainersLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 size={16} className="animate-spin text-gray-600" />
+                </div>
+              ) : publicTrainers.length === 0 ? (
+                <div className="px-3 py-10 text-center space-y-2">
+                  <Globe size={20} className="text-gray-700 mx-auto" />
+                  <p className="text-xs text-gray-600">No public trainers</p>
+                  <p className="text-[10px] text-gray-700">Public trainers from global_sample/ appear here.</p>
+                </div>
+              ) : (
+                <div className="p-2 space-y-2">
+                  {(() => {
+                    // Group by base_name
+                    const groups: Map<string, import('@/types/trainer').TrainerRegistration[]> = new Map()
+                    for (const t of publicTrainers) {
+                      const key = t.base_name ?? t.name
+                      if (!groups.has(key)) groups.set(key, [])
+                      groups.get(key)!.push(t)
+                    }
+                    return [...groups.entries()].map(([base, vers]) => {
+                      const sorted = [...vers].sort((a, b) => (b.plugin_version ?? 0) - (a.plugin_version ?? 0))
+                      const latest = sorted[0]
+                      const isCloning = cloningTrainer === latest.name
+                      return (
+                        <div key={base} className="bg-sky-900/10 border border-sky-800/30 rounded-lg p-2.5">
+                          <div className="flex items-center gap-1.5 mb-1.5">
+                            <Globe size={11} className="text-sky-400 flex-shrink-0" />
+                            <span className="font-mono text-[11px] text-sky-200 truncate flex-1 font-semibold">
+                              {base}
+                            </span>
+                            <span className="text-[9px] text-gray-600 flex-shrink-0 font-mono">
+                              {latest.version_full ?? `v${latest.plugin_version ?? 0}`}
+                            </span>
+                          </div>
+                          {latest.description && (
+                            <p className="text-[10px] text-gray-600 mb-2 line-clamp-2">{latest.description}</p>
+                          )}
+                          <button
+                            onClick={async () => {
+                              setCloningTrainer(latest.name)
+                              try {
+                                await trainersApi.clone(latest.name)
+                                loadActiveTrainers()
+                                loadPendingSubmissions()
+                              } catch { /* ignore */ }
+                              finally { setCloningTrainer(null) }
+                            }}
+                            disabled={!!cloningTrainer}
+                            className="w-full flex items-center justify-center gap-1 py-1.5 bg-sky-900/40 border border-sky-700/60 text-sky-300 hover:bg-sky-800/50 rounded text-[10px] font-semibold transition-colors disabled:opacity-40"
+                          >
+                            {isCloning ? <Loader2 size={9} className="animate-spin" /> : <Copy size={9} />}
+                            {isCloning ? 'Cloning…' : 'Clone to My Trainers'}
+                          </button>
+                        </div>
+                      )
+                    })
+                  })()}
+                </div>
+              )}
+            </div>
+          ) : null}
         </aside>
 
         {/* Editor + logs column */}
@@ -3402,7 +3851,7 @@ export default function CodeEditorPage() {
                         : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600',
                     )}
                   >
-                    {t === 'blank' ? 'Empty' : 'BaseTrainer template'}
+                    {t === 'blank' ? 'Empty file' : 'Default Template'}
                   </button>
                 ))}
               </div>
@@ -3446,7 +3895,129 @@ export default function CodeEditorPage() {
         submission={scanSubmission}
       />
 
-      {/* Delete confirm dialog */}
+      {/* Upgrade confirmation modal */}
+      {upgradeConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-gray-950 border border-gray-800 rounded-2xl shadow-2xl w-full max-w-sm mx-4">
+            <div className="flex items-center gap-2.5 px-5 py-4 border-b border-gray-800">
+              <RotateCcw size={16} className="text-blue-400" />
+              <div>
+                <div className="text-sm font-bold text-white">Upgrade Running Trainer?</div>
+                <div className="text-[11px] text-gray-500 font-mono">{upgradeConfirm.baseName}</div>
+              </div>
+            </div>
+            <div className="p-5 space-y-3">
+              <p className="text-sm text-gray-300 leading-relaxed">
+                <span className="font-semibold text-white">{upgradeConfirm.baseName}</span> is currently running.
+                Your changes will be submitted as{' '}
+                <span className="font-semibold text-blue-300">{upgradeConfirm.nextVersion}</span> and go through security review.
+              </p>
+              <div className="bg-blue-900/20 border border-blue-800/40 rounded-xl px-4 py-3 text-xs text-blue-300">
+                The current version keeps running uninterrupted until <strong>{upgradeConfirm.nextVersion}</strong> is approved and activated.
+              </div>
+            </div>
+            <div className="px-5 pb-5 flex gap-2">
+              <button
+                onClick={() => setUpgradeConfirm(null)}
+                className="flex-1 py-2 text-xs text-gray-400 bg-gray-800 border border-gray-700 rounded-xl hover:text-gray-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleInstallConfirmed}
+                className="flex-1 py-2 text-xs text-white bg-blue-700 hover:bg-blue-600 border border-blue-600 rounded-xl transition-colors font-medium flex items-center justify-center gap-1.5"
+              >
+                <RotateCcw size={12} /> Submit as {upgradeConfirm.nextVersion}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rejection detail modal */}
+      {rejectionModalSub && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-gray-950 border border-gray-800 rounded-2xl shadow-2xl w-full max-w-md mx-4">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+              <div className="flex items-center gap-2.5">
+                <XCircle size={18} className="text-red-400" />
+                <div>
+                  <div className="text-sm font-bold text-white">Trainer Rejected</div>
+                  <div className="text-[11px] text-gray-500 font-mono">{rejectionModalSub.trainer_name}.py</div>
+                </div>
+              </div>
+              <button
+                onClick={() => setRejectionModalSub(null)}
+                className="p-1.5 rounded-lg text-gray-600 hover:text-gray-300 hover:bg-gray-800 transition-colors"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {/* Rejection reason */}
+              {rejectionModalSub.rejection_reason && (
+                <div className="bg-red-900/20 border border-red-800/40 rounded-xl px-4 py-3">
+                  <p className="text-[11px] text-red-400 uppercase tracking-widest font-semibold mb-1.5">Rejection Reason</p>
+                  <p className="text-sm text-red-200 leading-relaxed">{rejectionModalSub.rejection_reason}</p>
+                </div>
+              )}
+
+              {/* LLM scan summary */}
+              {rejectionModalSub.llm_scan_result?.summary && (
+                <div className="bg-gray-900 border border-gray-800 rounded-xl px-4 py-3">
+                  <p className="text-[11px] text-gray-500 uppercase tracking-widest font-semibold mb-1.5">Scan Summary</p>
+                  <p className="text-xs text-gray-400 leading-relaxed">{rejectionModalSub.llm_scan_result.summary}</p>
+                </div>
+              )}
+
+              {/* Issues */}
+              {(rejectionModalSub.llm_scan_result?.issues ?? []).length > 0 && (
+                <div>
+                  <p className="text-[11px] text-gray-500 uppercase tracking-widest font-semibold mb-2">Issues Found</p>
+                  <div className="space-y-2">
+                    {(rejectionModalSub.llm_scan_result?.issues ?? []).map((issue, i) => (
+                      <div key={i} className="flex items-start gap-2 bg-gray-900/60 border border-gray-800 rounded-lg px-3 py-2">
+                        <AlertTriangle size={12} className={clsx('flex-shrink-0 mt-0.5', issue.block ? 'text-red-400' : 'text-amber-500')} />
+                        <div className="min-w-0">
+                          {issue.block && <span className="text-[10px] font-bold text-red-400 mr-1.5">[BLOCK]</span>}
+                          {issue.line && <span className="text-[10px] text-gray-600 mr-1.5">line {issue.line}</span>}
+                          <span className="text-xs text-gray-300">{issue.detail || issue.message || issue.rule}</span>
+                          {issue.fix && <p className="text-[11px] text-emerald-400 mt-1">Fix: {issue.fix}</p>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="bg-gray-900/60 border border-gray-800 rounded-xl px-4 py-3 text-xs text-gray-400">
+                Fix the issues above, update the code in the editor, then click <span className="text-orange-300 font-semibold">Resubmit</span> to go through security review again.
+              </div>
+            </div>
+
+            <div className="px-5 pb-5 flex gap-2">
+              <button
+                onClick={() => setRejectionModalSub(null)}
+                className="flex-1 py-2 text-xs text-gray-400 bg-gray-800 border border-gray-700 rounded-xl hover:text-gray-200 transition-colors"
+              >
+                Close
+              </button>
+              <button
+                onClick={() => {
+                  setRejectionModalSub(null)
+                  handleInstall()
+                }}
+                className="flex-1 py-2 text-xs text-white bg-orange-700 hover:bg-orange-600 border border-orange-600 rounded-xl transition-colors font-medium flex items-center justify-center gap-1.5"
+              >
+                <RotateCcw size={12} /> Edit & Resubmit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {deleteTarget && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.6)' }}>
           <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4">

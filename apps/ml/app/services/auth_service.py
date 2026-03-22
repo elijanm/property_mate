@@ -11,9 +11,27 @@ import structlog
 from jose import jwt, JWTError
 from fastapi import HTTPException
 
+from pathlib import Path
 from app.core.config import settings
 from app.models.ml_user import MLUser
 from app.utils.datetime import utc_now
+
+
+def _resolve_plugin_file(source, base_name: str, plugin_dir: str) -> "Path | None":
+    """Resolve the actual trainer .py file, falling back to global_sample/ when
+    source.plugin_file is a stale path from old entrypoint seeding."""
+    if source.plugin_file:
+        p = Path(source.plugin_file)
+        if p.exists():
+            return p
+    global_sample = Path(plugin_dir) / "global_sample"
+    for candidate in [
+        global_sample / f"{base_name}.py",
+        global_sample / f"sample_{base_name}.py",
+    ]:
+        if candidate.exists():
+            return candidate
+    return None
 
 logger = structlog.get_logger(__name__)
 
@@ -72,6 +90,80 @@ def _gen_otp() -> str:
 
 
 _SAMPLE_TRAINERS = ["iris_classifier", "wine_classifier", "digits_classifier"]
+
+
+async def _init_trainer_workspace(owner_email: str, org_id: str) -> None:
+    """Auto-clone all public trainers (global_sample/) into a new org's workspace."""
+    if not org_id or org_id == "system":
+        return
+    try:
+        import re as _re
+        from app.models.trainer_registration import TrainerRegistration
+        from app.utils.datetime import utc_now as _utc_now
+
+        public = await TrainerRegistration.find(
+            TrainerRegistration.org_id == "",
+            TrainerRegistration.is_active == True,  # noqa: E712
+        ).to_list()
+
+        from pathlib import Path as _Path
+        import shutil as _shutil
+        from app.core.config import settings as _settings
+
+        for source in public:
+            base = source.base_name or _re.sub(r"_v\d+$", "", source.name)
+            existing_copy = await TrainerRegistration.find_one({
+                "org_id": org_id,
+                "base_name": base,
+            })
+            if existing_copy:
+                continue
+
+            # Copy source file into org's running/ dir for isolation.
+            # Resolve actual file — source.plugin_file may be a stale path from
+            # the old entrypoint seeding; fall back to global_sample/ lookup.
+            clone_plugin_file = source.plugin_file
+            src_path = _resolve_plugin_file(source, base, _settings.TRAINER_PLUGIN_DIR)
+            if src_path and src_path.exists():
+                dest_dir = _Path(_settings.TRAINER_PLUGIN_DIR) / "running" / org_id
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest_path = dest_dir / f"{base}.py"
+                _shutil.copy2(src_path, dest_path)
+                clone_plugin_file = str(dest_path)
+
+            clone = TrainerRegistration(
+                org_id=org_id,
+                name=base,
+                base_name=base,
+                plugin_version=0,
+                version_num=1,
+                namespace=org_id,
+                full_name=f"{org_id}/{base}",
+                description=source.description,
+                framework=source.framework,
+                data_source_info=source.data_source_info,
+                class_path=source.class_path,
+                plugin_file=clone_plugin_file,
+                tags=source.tags,
+                author=source.author,
+                author_email=source.author_email,
+                author_url=source.author_url,
+                icon_url=source.icon_url,
+                license=source.license,
+                parent_trainer_id=str(source.id),
+                clone_depth=1,
+                cloned_from_org_id="",
+                is_active=True,
+                approval_status="approved",
+                visibility="private",
+                owner_email=owner_email,
+                registered_at=_utc_now(),
+                updated_at=_utc_now(),
+            )
+            await clone.insert()
+            logger.info("trainer_workspace_cloned", base=base, org_id=org_id)
+    except Exception as exc:
+        logger.warning("trainer_workspace_init_failed", org_id=org_id, error=str(exc))
 
 
 async def _enqueue_sample_models(email: str, org_id: str) -> None:
@@ -171,6 +263,8 @@ async def register(
     # Kick off sample model training in the background — non-blocking, non-fatal
     import asyncio
     asyncio.create_task(_enqueue_sample_models(email, org_id))
+    # Auto-clone all public trainers (global_sample/) into this org's workspace
+    asyncio.create_task(_init_trainer_workspace(email, org_id))
     return user
 
 

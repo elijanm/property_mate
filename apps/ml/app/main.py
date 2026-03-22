@@ -27,16 +27,29 @@ async def lifespan(app: FastAPI):
         await asyncio.get_event_loop().run_in_executor(None, ensure_bucket_exists)
     except Exception as exc:
         logger.warning("bucket_init_failed", error=str(exc))
-    await scan_and_register_plugins()
+    # First-run detection: if no trainers are registered yet, do a full directory scan.
+    # On subsequent startups, only refresh files already in the DB (don't silently add new ones).
+    from app.models.trainer_registration import TrainerRegistration
+    is_first_run = await TrainerRegistration.find_one() is None
+    await scan_and_register_plugins(first_run=is_first_run)
     await start_scheduler()
     await ensure_admin_exists()
     await ensure_sample_model_deployed()
     await resume_interrupted_gpu_jobs()
     from app.services.consent_service import seed_global_templates
     await seed_global_templates()
+    # Start sandbox container pool if configured
+    if settings.TRAINER_SANDBOX == "docker-pool":
+        from app.services.pool_manager import get_pool_manager
+        pool = get_pool_manager()
+        await pool.start()
+        logger.info("sandbox_pool_mode_active")
     yield
     # Shutdown
     await stop_scheduler()
+    if settings.TRAINER_SANDBOX == "docker-pool":
+        from app.services.pool_manager import get_pool_manager
+        await get_pool_manager().stop()
     logger.info("ml_service_stopped")
 
 

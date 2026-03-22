@@ -97,8 +97,8 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: 'datasets',    label: 'Datasets',     icon: <Database size={14} /> },
       { id: 'annotate',    label: 'Annotate',     icon: <Pencil size={14} /> },
-      { id: 'editor',      label: 'Code Editor',  icon: <Code2 size={14} />, roles: ['engineer', 'admin'] },
-      { id: 'trainers',    label: 'Trainers',     icon: <Brain size={14} />, roles: ['engineer', 'admin'] },
+      { id: 'editor',          label: 'Code Editor',      icon: <Code2 size={14} />, roles: ['engineer', 'admin'] },
+      { id: 'trainers',        label: 'Trainers',         icon: <Brain size={14} />, roles: ['engineer', 'admin'] },
       { id: 'experiments', label: 'Experiments',  icon: <GitCompare size={14} />, roles: ['engineer', 'admin'] },
     ],
   },
@@ -196,7 +196,7 @@ const PAGE_TITLE: Record<Page, string> = {
   profile:     'My Profile',
   accounts:         'All Accounts',
   watermark:        'Watermark Settings',
-  'trainer-reviews': 'Trainer Security Reviews',
+  'trainer-reviews':  'Trainer Security Reviews',
 }
 
 export default function App() {

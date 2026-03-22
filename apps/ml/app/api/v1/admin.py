@@ -11,6 +11,7 @@ from app.models.wallet import WalletTransaction
 from app.models.inference_log import InferenceLog
 from app.core.email import send_email
 from app.core.config import settings
+from app.utils.datetime import utc_now
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -1137,3 +1138,79 @@ async def backfill_model_sizes():
             await dep.set({"model_size_bytes": size})
             updated += 1
     return {"checked": len(deps), "updated": updated}
+
+
+# ═══════════════════════════════════════════════════════════════
+# PACKAGE INSTALL REQUESTS
+# ═══════════════════════════════════════════════════════════════
+
+def _ticket_dict(t) -> dict:
+    return {
+        "id": str(t.id),
+        "trainer_name": t.metadata.get("trainer_name", t.related_id),
+        "packages": t.metadata.get("packages", []),
+        "install_result": t.metadata.get("install_result"),
+        "status": t.status,
+        "severity": t.severity,
+        "org_id": t.org_id,
+        "owner_email": t.owner_email,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+    }
+
+
+@router.get("/packages/pending", dependencies=[RequireAdmin])
+async def list_pending_package_installs():
+    """List all open package install approval requests."""
+    from app.models.admin_ticket import AdminTicket
+    tickets = await AdminTicket.find({
+        "category": "package_install_request",
+        "status": {"$in": ["open", "reviewing"]},
+    }).to_list()
+    return {"items": [_ticket_dict(t) for t in tickets], "total": len(tickets)}
+
+
+@router.post("/packages/{ticket_id}/approve", dependencies=[RequireAdmin])
+async def approve_package_install(ticket_id: str, user=Depends(get_current_user)):
+    """Approve a package install request and dispatch background pip install."""
+    from app.models.admin_ticket import AdminTicket
+    from app.tasks.install_packages_task import install_packages
+
+    ticket = await AdminTicket.get(ticket_id)
+    if not ticket or ticket.category != "package_install_request":
+        raise HTTPException(status_code=404, detail="Package install request not found")
+    if ticket.status not in ("open", "reviewing"):
+        raise HTTPException(status_code=409, detail=f"Request is already {ticket.status}")
+
+    packages = ticket.metadata.get("packages", [])
+    trainer_name = ticket.metadata.get("trainer_name", "")
+
+    await ticket.set({
+        "status": "reviewing",
+        "assigned_to": user.email,
+        "metadata": {**ticket.metadata, "install_result": "queued"},
+        "updated_at": utc_now(),
+    })
+
+    install_packages.delay(ticket_id, packages, trainer_name)
+    return {"queued": True, "packages": packages, "trainer_name": trainer_name}
+
+
+@router.post("/packages/{ticket_id}/reject", dependencies=[RequireAdmin])
+async def reject_package_install(ticket_id: str, user=Depends(get_current_user)):
+    """Reject a package install request."""
+    from app.models.admin_ticket import AdminTicket
+
+    ticket = await AdminTicket.get(ticket_id)
+    if not ticket or ticket.category != "package_install_request":
+        raise HTTPException(status_code=404, detail="Package install request not found")
+    if ticket.status not in ("open", "reviewing"):
+        raise HTTPException(status_code=409, detail=f"Request is already {ticket.status}")
+
+    await ticket.set({
+        "status": "dismissed",
+        "resolved_by": user.email,
+        "resolved_at": utc_now(),
+        "updated_at": utc_now(),
+    })
+    return {"rejected": True}

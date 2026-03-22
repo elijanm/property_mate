@@ -18,6 +18,35 @@ export interface EditorDataset {
   fields: { id: string; label: string; type: string; required: boolean }[]
 }
 
+export interface SampleTrainer {
+  name: string
+  trainer_name: string
+  version: string
+  description: string
+  tags: string[]
+  path: string
+  is_installed: boolean
+}
+
+export interface RunningTrainerVersion {
+  name: string          // versioned: e.g. "iris_classifier_v1"
+  base_name: string
+  version_num: number
+  path: string
+  is_active: boolean
+  approval_status: string
+  description: string
+  framework: string
+  registered_at: string | null
+}
+
+export interface RunningTrainerGroup {
+  base_name: string
+  versions: RunningTrainerVersion[]
+  latest: RunningTrainerVersion
+  total_versions: number
+}
+
 export const editorApi = {
   listFiles: () =>
     client.get<{ tree: FileNode[]; root: string }>('/editor/files').then(r => r.data),
@@ -97,6 +126,34 @@ export const editorApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     }).then(r => r.data)
   },
+
+  // ── Virtual folder structure ─────────────────────────────────────────────────
+
+  listSamples: () =>
+    client.get<{ items: SampleTrainer[] }>('/editor/samples').then(r => r.data.items),
+
+  listRunningTrainers: () =>
+    client.get<{ items: RunningTrainerGroup[] }>('/editor/running-trainers').then(r => r.data.items),
+
+  installTrainer: (source_path: string, base_name?: string) =>
+    client.post<{
+      installed: boolean
+      trainer_name: string
+      version_num: number
+      path: string
+      dataset_conflicts: { slug: string; system_dataset_name: string; suggested_slug: string }[]
+      org_alias: string
+    }>('/editor/install', { source_path, base_name }).then(r => r.data),
+
+  patchDatasetSlug: (source_path: string, old_slug: string, new_slug: string) =>
+    client.post<{ patched: boolean; path: string; old_slug: string; new_slug: string }>(
+      '/editor/patch-dataset-slug', { source_path, old_slug, new_slug }
+    ).then(r => r.data),
+
+  uninstallTrainer: (trainer_name: string) =>
+    client.post<{ uninstalled: boolean; trainer_name: string }>(
+      '/editor/uninstall', { trainer_name }
+    ).then(r => r.data),
 
   generateTrainer: (payload: {
     description: string
