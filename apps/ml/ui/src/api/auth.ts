@@ -18,8 +18,8 @@ export const authApi = {
   login: (email: string, password: string) =>
     client.post<LoginResponse>('/auth/login', { email, password }).then(r => r.data),
 
-  register: (email: string, password: string, full_name = '') =>
-    client.post<RegisterResponse>('/auth/register', { email, password, full_name }).then(r => r.data),
+  register: (email: string, password: string, full_name = '', coupon_code = '') =>
+    client.post<RegisterResponse>('/auth/register', { email, password, full_name, coupon_code: coupon_code || undefined }).then(r => r.data),
 
   verifyOtp: (email: string, otp: string) =>
     client.post<{ verified: boolean; email: string }>('/auth/verify', { email, otp }).then(r => r.data),
@@ -52,6 +52,9 @@ export const authApi = {
 
   updateProfile: (data: { full_name?: string; role?: string; is_onboarded?: boolean }) =>
     client.patch('/auth/profile', data).then(r => r.data),
+
+  validateCoupon: (code: string) =>
+    client.get<{ valid: boolean; credit_usd?: number; code?: string; error?: string }>(`/auth/validate-coupon`, { params: { code } }).then(r => r.data),
 
   checkEmail: (email: string) =>
     client.post<{ is_disposable: boolean; risk_score: number; confidence: string }>('/auth/check-email', { email }).then(r => r.data),

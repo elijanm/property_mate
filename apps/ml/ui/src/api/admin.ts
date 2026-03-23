@@ -160,4 +160,42 @@ export const adminApi = {
   // Falls back to GET /admin/users if /admin/accounts returns 404
   listAccounts: () =>
     client.get('/admin/accounts').then(r => r.data),
+
+  // ── Coupons ───────────────────────────────────────────────────────────────
+  listCoupons: () =>
+    client.get<Coupon[]>('/admin/coupons').then(r => r.data),
+
+  createCoupon: (data: { code: string; description?: string; credit_usd: number; max_uses?: number; expires_at?: string | null }) =>
+    client.post<Coupon>('/admin/coupons', data).then(r => r.data),
+
+  updateCoupon: (code: string, data: Partial<{ description: string; credit_usd: number; max_uses: number; is_active: boolean; expires_at: string | null }>) =>
+    client.patch<Coupon>(`/admin/coupons/${code}`, data).then(r => r.data),
+
+  deleteCoupon: (code: string) =>
+    client.delete<{ deleted: boolean }>(`/admin/coupons/${code}`).then(r => r.data),
+
+  getCouponRedemptions: (code: string) =>
+    client.get<{ coupon: Coupon; redemptions: CouponRedemption[] }>(`/admin/coupons/${code}/redemptions`).then(r => r.data),
+}
+
+export interface Coupon {
+  id: string
+  code: string
+  description: string
+  credit_usd: number
+  max_uses: number
+  uses_count: number
+  is_active: boolean
+  expires_at: string | null
+  created_by: string
+  created_at: string
+  updated_at: string
+  recent_redemptions?: CouponRedemption[]
+}
+
+export interface CouponRedemption {
+  user_email: string
+  org_id?: string
+  credit_usd: number
+  redeemed_at: string
 }

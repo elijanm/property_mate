@@ -45,6 +45,7 @@ async def init_db():
     from app.models.org_config import OrgConfig
     from app.models.revenue_ledger import RevenueLedger
     from app.models.url_dataset import UrlDataset
+    from app.models.coupon import Coupon, CouponRedemption
 
     client = AsyncIOMotorClient(settings.MONGODB_URL)
     await init_beanie(
@@ -92,6 +93,8 @@ async def init_db():
             OrgConfig,
             RevenueLedger,
             UrlDataset,
+            Coupon,
+            CouponRedemption,
         ],
     )
     logger.info("ml_db_initialized", database=settings.MONGODB_DATABASE)

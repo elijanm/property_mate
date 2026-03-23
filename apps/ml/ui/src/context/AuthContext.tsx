@@ -15,7 +15,7 @@ interface AuthCtx {
   pendingEmail: string | null   // set after register — triggers verification screen
   login: (email: string, password: string) => Promise<void>
   loginWithToken: (accessToken: string, refreshToken: string, user: User) => void
-  register: (email: string, password: string, full_name: string) => Promise<void>
+  register: (email: string, password: string, full_name: string, coupon_code?: string) => Promise<void>
   logout: () => void
   clearPending: () => void
   setOnboarded: () => void     // flip is_onboarded = true in state + localStorage
@@ -58,8 +58,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setPendingEmail(null)
   }
 
-  const register = async (email: string, password: string, full_name: string) => {
-    const res = await authApi.register(email, password, full_name)
+  const register = async (email: string, password: string, full_name: string, coupon_code = '') => {
+    const res = await authApi.register(email, password, full_name, coupon_code)
     if (res.pending_verification) {
       setPendingEmail(email)
     } else {

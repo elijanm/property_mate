@@ -60,13 +60,14 @@ import DataScientistsPage from './pages/discover/DataScientistsPage'
 import ModelsMarketplacePage from './pages/discover/ModelsMarketplacePage'
 import PublicDatasetsPage from './pages/discover/PublicDatasetsPage'
 import CookieConsent from './components/CookieConsent'
+import CouponsPage from './components/CouponsPage'
 import {
   Brain, RefreshCw, Cpu, LayoutGrid, BookOpen,
   Upload, Play, Settings, List, Activity, Shield,
   FlaskConical, Bell, Key, Layers, ClipboardList, GitCompare,
   LogOut, User, Loader2, Users, Wallet, BarChart2, Database, Code2,
   ChevronRight, ChevronDown, DollarSign, Pencil, UserCheck, Image as ImageIcon,
-  ShieldAlert,
+  ShieldAlert, Tag,
 } from 'lucide-react'
 import Logo from './components/Logo'
 import clsx from 'clsx'
@@ -81,7 +82,7 @@ if (_INVITE_TOKEN_FROM_URL) {
   sessionStorage.setItem('pending_invite_token', _INVITE_TOKEN_FROM_URL)
 }
 
-type Page = 'models' | 'trainers' | 'editor' | 'annotate' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'trainer-reviews' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing' | 'usage' | 'staff' | 'clients' | 'marketplace' | 'profile' | 'accounts' | 'watermark'
+type Page = 'models' | 'trainers' | 'editor' | 'annotate' | 'deploy' | 'training' | 'jobs' | 'logs' | 'config' | 'monitoring' | 'security' | 'trainer-reviews' | 'ab-tests' | 'alerts' | 'api-keys' | 'batch' | 'experiments' | 'audit' | 'users' | 'wallet' | 'analytics' | 'datasets' | 'billing' | 'usage' | 'staff' | 'clients' | 'marketplace' | 'profile' | 'accounts' | 'watermark' | 'coupons'
 
 type NavGroup = {
   id: string
@@ -147,6 +148,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'trainer-reviews', label: 'Neural Reviews',  icon: <ShieldAlert size={14} /> },
       { id: 'audit',           label: 'Audit Log',       icon: <ClipboardList size={14} /> },
       { id: 'analytics',       label: 'Analytics',       icon: <BarChart2 size={14} /> },
+      { id: 'coupons',         label: 'Coupons',         icon: <Tag size={14} /> },
     ],
   },
   {
@@ -198,6 +200,7 @@ const PAGE_TITLE: Record<Page, string> = {
   accounts:         'All Accounts',
   watermark:        'Watermark Settings',
   'trainer-reviews':  'Neural Security Reviews',
+  coupons:           'Coupon Codes',
 }
 
 export default function App() {
@@ -859,6 +862,7 @@ export default function App() {
               {page === 'clients' && <ClientsPage />}
               {page === 'marketplace' && <MarketplacePage />}
               {page === 'watermark' && <WatermarkSettingsPage />}
+              {page === 'coupons' && <CouponsPage />}
               {page === 'profile' && <ProfilePage />}
               {page === 'accounts' && <AccountsPage />}
               {page === 'trainer-reviews' && <TrainerReviewPage />}

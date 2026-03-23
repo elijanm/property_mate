@@ -64,6 +64,9 @@ export default function RegisterPage({ onGoLogin, onGoHome, initialRole }: Props
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [annotatorSuccess, setAnnotatorSuccess] = useState(false)
+  const [couponCode, setCouponCode] = useState('')
+  const [couponStatus, setCouponStatus] = useState<{ valid: boolean; credit_usd?: number } | null>(null)
+  const [couponChecking, setCouponChecking] = useState(false)
   const [showDisposableModal, setShowDisposableModal] = useState(false)
   const [disposableAttempts, setDisposableAttempts] = useState(0)
   const [pendingSubmit, setPendingSubmit] = useState(false)
@@ -74,14 +77,25 @@ export default function RegisterPage({ onGoLogin, onGoHome, initialRole }: Props
     }).catch(() => {})
   }, [])
 
-  async function doRegister() {
+  async function checkCoupon(code: string) {
+    if (!code.trim()) { setCouponStatus(null); return }
+    setCouponChecking(true)
+    try {
+      const result = await authApi.validateCoupon(code.trim())
+      setCouponStatus(result)
+    } catch { setCouponStatus({ valid: false }) }
+    finally { setCouponChecking(false) }
+  }
+
+  async function doRegister(emailOverride?: string) {
     setLoading(true)
+    const useEmail = emailOverride ?? email
     try {
       if (isAnnotatorMode) {
-        await annotatorApi.register(email, password, fullName, _URL_REF ?? undefined)
+        await annotatorApi.register(useEmail, password, fullName, _URL_REF ?? undefined)
         setAnnotatorSuccess(true)
       } else {
-        await register(email, password, fullName)
+        await register(useEmail, password, fullName, couponCode.trim().toUpperCase() || undefined)
       }
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
@@ -576,6 +590,36 @@ export default function RegisterPage({ onGoLogin, onGoHome, initialRole }: Props
                 </button>
               </div>
             </div>
+
+            {/* Coupon code — engineers only */}
+            {!isAnnotatorMode && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-gray-400">Coupon code <span className="text-gray-600">(optional)</span></label>
+                <div className="flex gap-2">
+                  <input
+                    type="text" value={couponCode}
+                    onChange={e => { setCouponCode(e.target.value.toUpperCase()); setCouponStatus(null) }}
+                    onBlur={() => checkCoupon(couponCode)}
+                    placeholder="LAUNCH50"
+                    className={`flex-1 bg-white/5 border rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none transition-colors ${
+                      couponStatus?.valid === true ? 'border-emerald-500 focus:border-emerald-400' :
+                      couponStatus?.valid === false ? 'border-red-700 focus:border-red-600' :
+                      'border-white/10 hover:border-white/20 focus:border-sky-500'
+                    }`}
+                  />
+                  <button type="button" onClick={() => checkCoupon(couponCode)} disabled={couponChecking || !couponCode.trim()}
+                    className="px-3 py-2 text-xs bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-gray-400 hover:text-white disabled:opacity-40 transition-colors">
+                    {couponChecking ? '…' : 'Apply'}
+                  </button>
+                </div>
+                {couponStatus?.valid === true && (
+                  <p className="text-xs text-emerald-400">✓ ${couponStatus.credit_usd} credit will be added to your wallet after email verification</p>
+                )}
+                {couponStatus?.valid === false && (
+                  <p className="text-xs text-red-400">✗ Invalid or expired coupon code</p>
+                )}
+              </div>
+            )}
 
             <button type="submit" disabled={loading}
               className={`w-full flex items-center justify-center gap-2 ${accentClasses.btn} disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl py-3 transition-colors shadow-lg mt-1`}>

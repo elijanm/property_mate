@@ -269,7 +269,7 @@ async def register(
 
 
 def _bootstrap_user_plan(email: str, org_id: str) -> None:
-    """Fire-and-forget: assign default plan + give welcome credit for a newly verified user."""
+    """Fire-and-forget: assign default plan + give welcome credit + redeem pending coupon."""
     import asyncio
     async def _run():
         try:
@@ -278,6 +278,19 @@ def _bootstrap_user_plan(email: str, org_id: str) -> None:
             logger.info("ml_user_plan_bootstrapped", email=email, org_id=org_id)
         except Exception as exc:
             logger.warning("ml_user_plan_bootstrap_failed", email=email, error=str(exc))
+        # Redeem pending coupon code if present
+        try:
+            from app.models.ml_user import MLUser
+            from app.services.coupon_service import get_coupon, redeem as redeem_coupon
+            user = await MLUser.find_one({"email": email})
+            if user and user.pending_coupon_code:
+                coupon = await get_coupon(user.pending_coupon_code)
+                if coupon:
+                    credited = await redeem_coupon(coupon, email, org_id)
+                    logger.info("coupon_redeemed", email=email, code=coupon.code, credit_usd=credited)
+                await user.set({"pending_coupon_code": None})
+        except Exception as exc:
+            logger.warning("coupon_redeem_failed", email=email, error=str(exc))
     asyncio.create_task(_run())
 
 

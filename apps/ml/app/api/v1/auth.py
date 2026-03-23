@@ -13,6 +13,7 @@ class RegisterRequest(BaseModel):
     password: str
     full_name: str = ""
     invite_code: str = ""
+    coupon_code: str = ""
 
 
 class LoginRequest(BaseModel):
@@ -50,9 +51,28 @@ class RequestSecurityOtpRequest(BaseModel):
     action: str = "change your password"
 
 
+@router.get("/validate-coupon")
+async def validate_coupon(code: str) -> dict:
+    """Public endpoint — check if a coupon code is valid before signup."""
+    from app.services.coupon_service import validate_coupon as _validate
+    try:
+        coupon = await _validate(code)
+        return {"valid": True, "credit_usd": coupon.credit_usd, "code": coupon.code}
+    except Exception as exc:
+        return {"valid": False, "error": str(exc)}
+
+
 @router.post("/register")
 async def register(body: RegisterRequest):
     user = await auth_service.register(body.email, body.password, body.full_name)
+    # Store coupon code on user for post-verification redemption
+    if body.coupon_code.strip():
+        try:
+            from app.services.coupon_service import validate_coupon as _validate
+            await _validate(body.coupon_code)  # validate only — redeem after email verification
+            await user.set({"pending_coupon_code": body.coupon_code.upper().strip()})
+        except Exception:
+            pass  # invalid coupon — ignore silently
     return {
         "email": user.email,
         "full_name": user.full_name,

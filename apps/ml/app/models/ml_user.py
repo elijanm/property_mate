@@ -32,6 +32,8 @@ class MLUser(Document):
     disposable_email_used: bool = False
     disposable_email_ignored: bool = False
     disposable_email_attempts: int = 0
+    # Coupon
+    pending_coupon_code: Optional[str] = None  # set at registration, cleared after redemption
 
     class Settings:
         name = "ml_users"

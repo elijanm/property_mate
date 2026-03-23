@@ -1214,3 +1214,123 @@ async def reject_package_install(ticket_id: str, user=Depends(get_current_user))
         "updated_at": utc_now(),
     })
     return {"rejected": True}
+
+
+# ── Coupon management ─────────────────────────────────────────────────────────
+
+class CouponCreateRequest(BaseModel):
+    code: str
+    description: str = ""
+    credit_usd: float
+    max_uses: int = 0
+    expires_at: Optional[datetime] = None
+
+
+class CouponUpdateRequest(BaseModel):
+    description: Optional[str] = None
+    credit_usd: Optional[float] = None
+    max_uses: Optional[int] = None
+    is_active: Optional[bool] = None
+    expires_at: Optional[datetime] = None
+
+
+def _coupon_dict(c) -> dict:
+    return {
+        "id": str(c.id),
+        "code": c.code,
+        "description": c.description,
+        "credit_usd": c.credit_usd,
+        "max_uses": c.max_uses,
+        "uses_count": c.uses_count,
+        "is_active": c.is_active,
+        "expires_at": c.expires_at.isoformat() if c.expires_at else None,
+        "created_by": c.created_by,
+        "created_at": c.created_at.isoformat(),
+        "updated_at": c.updated_at.isoformat(),
+    }
+
+
+@router.get("/coupons", dependencies=[RequireAdmin])
+async def list_coupons(user=Depends(get_current_user)):
+    from app.models.coupon import Coupon, CouponRedemption
+    coupons = await Coupon.find_all().to_list()
+    result = []
+    for c in coupons:
+        d = _coupon_dict(c)
+        d["recent_redemptions"] = await CouponRedemption.find(
+            {"coupon_code": c.code}
+        ).sort("-redeemed_at").limit(5).to_list()
+        d["recent_redemptions"] = [
+            {"user_email": r.user_email, "redeemed_at": r.redeemed_at.isoformat(), "credit_usd": r.credit_usd}
+            for r in d["recent_redemptions"]
+        ]
+        result.append(d)
+    return result
+
+
+@router.post("/coupons", dependencies=[RequireAdmin])
+async def create_coupon(body: CouponCreateRequest, user=Depends(get_current_user)):
+    from app.models.coupon import Coupon
+    code = body.code.upper().strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="Code cannot be empty")
+    existing = await Coupon.find_one({"code": code})
+    if existing:
+        raise HTTPException(status_code=409, detail="A coupon with this code already exists")
+    coupon = Coupon(
+        code=code,
+        description=body.description,
+        credit_usd=body.credit_usd,
+        max_uses=body.max_uses,
+        expires_at=body.expires_at,
+        created_by=user.email,
+    )
+    await coupon.insert()
+    return _coupon_dict(coupon)
+
+
+@router.patch("/coupons/{code}", dependencies=[RequireAdmin])
+async def update_coupon(code: str, body: CouponUpdateRequest, _=Depends(get_current_user)):
+    from app.models.coupon import Coupon
+    coupon = await Coupon.find_one({"code": code.upper()})
+    if not coupon:
+        raise HTTPException(status_code=404, detail="Coupon not found")
+    updates: dict = {"updated_at": utc_now()}
+    if body.description is not None:
+        updates["description"] = body.description
+    if body.credit_usd is not None:
+        updates["credit_usd"] = body.credit_usd
+    if body.max_uses is not None:
+        updates["max_uses"] = body.max_uses
+    if body.is_active is not None:
+        updates["is_active"] = body.is_active
+    if body.expires_at is not None:
+        updates["expires_at"] = body.expires_at
+    await coupon.set(updates)
+    return _coupon_dict(coupon)
+
+
+@router.delete("/coupons/{code}", dependencies=[RequireAdmin])
+async def delete_coupon(code: str, _=Depends(get_current_user)):
+    from app.models.coupon import Coupon
+    coupon = await Coupon.find_one({"code": code.upper()})
+    if not coupon:
+        raise HTTPException(status_code=404, detail="Coupon not found")
+    await coupon.delete()
+    return {"deleted": True}
+
+
+@router.get("/coupons/{code}/redemptions", dependencies=[RequireAdmin])
+async def list_coupon_redemptions(code: str, _=Depends(get_current_user)):
+    from app.models.coupon import Coupon, CouponRedemption
+    coupon = await Coupon.find_one({"code": code.upper()})
+    if not coupon:
+        raise HTTPException(status_code=404, detail="Coupon not found")
+    redemptions = await CouponRedemption.find({"coupon_code": code.upper()}).sort("-redeemed_at").to_list()
+    return {
+        "coupon": _coupon_dict(coupon),
+        "redemptions": [
+            {"user_email": r.user_email, "org_id": r.org_id, "credit_usd": r.credit_usd, "redeemed_at": r.redeemed_at.isoformat()}
+            for r in redemptions
+        ],
+    }
