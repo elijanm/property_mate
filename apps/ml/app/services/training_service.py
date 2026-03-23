@@ -191,6 +191,8 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
     experiment = mlflow.set_experiment(settings.MLFLOW_DEFAULT_EXPERIMENT)
 
+    elapsed: float = 0.0   # initialised here so except block can always reference it
+
     with mlflow.start_run(
         experiment_id=experiment.experiment_id,
         run_name=f"{job.trainer_name}_job_{job_id[:8]}",
@@ -474,7 +476,7 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
 
                     # Charge wallet if funds were reserved for this job
                     if job.wallet_reserved > 0 and job.gpu_price_per_hour:
-                        actual_cost = round(job.gpu_price_per_hour * (elapsed / 3600), 4)
+                        actual_cost = job.gpu_price_per_hour * (elapsed / 3600)
                         wallet = await wallet_service.get_or_create(job.owner_email, job.org_id)
                         charged = await wallet_service.release_and_charge(
                             wallet, str(job.id), actual_cost
@@ -507,6 +509,27 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
             logger.error("training_failed", job_id=job_id, error=str(exc), exc_info=exc)
             mlflow.set_tag("error", str(exc))
             await _fail(job, str(exc))
+
+            # Release wallet reservation so funds are never permanently held after failure.
+            # Charge for actual elapsed time if training started; otherwise release in full.
+            if job.owner_email and job.wallet_reserved > 0:
+                try:
+                    from app.services import wallet_service as _ws
+                    _wallet = await _ws.get_or_create(job.owner_email, job.org_id)
+                    _actual = (
+                        job.gpu_price_per_hour * (elapsed / 3600)
+                        if elapsed > 0 and job.gpu_price_per_hour
+                        else 0.0
+                    )
+                    await _ws.release_and_charge(_wallet, str(job.id), _actual)
+                    logger.info(
+                        "wallet_released_on_failure",
+                        job_id=job_id,
+                        elapsed_s=round(elapsed, 1),
+                        actual_cost=_actual,
+                    )
+                except Exception as _we:
+                    logger.error("wallet_release_on_failure_failed", job_id=job_id, error=str(_we))
 
 
 def _log_model_to_mlflow(trainer: BaseTrainer, model: Any) -> str:

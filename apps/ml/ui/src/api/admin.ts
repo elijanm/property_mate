@@ -176,6 +176,22 @@ export const adminApi = {
 
   getCouponRedemptions: (code: string) =>
     client.get<{ coupon: Coupon; redemptions: CouponRedemption[] }>(`/admin/coupons/${code}/redemptions`).then(r => r.data),
+
+  // ── Wallet admin ───────────────────────────────────────────────────────────
+  getWalletState: () =>
+    client.get<{
+      count: number
+      total_reserved_usd: number
+      wallets: { user_email: string; org_id: string; balance: number; standard_balance: number; reserved: number }[]
+    }>('/admin/wallet/state').then(r => r.data),
+
+  reconcileWallets: (force = false) =>
+    client.post<{
+      released: number
+      skipped: number
+      errors: number
+      items: { job_id: string; user_email: string; reserved_amount: number; previous_status: string }[]
+    }>(`/admin/wallet/reconcile?force=${force}`).then(r => r.data),
 }
 
 export interface Coupon {

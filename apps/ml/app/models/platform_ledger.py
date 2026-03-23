@@ -1,6 +1,5 @@
 """Platform expense ledger — tracks admin-initiated wallet recharges."""
 from datetime import datetime, timezone
-from typing import Optional
 from beanie import Document
 from pydantic import Field
 

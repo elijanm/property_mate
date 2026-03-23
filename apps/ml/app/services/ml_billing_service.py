@@ -225,6 +225,7 @@ async def _assign_plan(user_email: str, org_id: str, plan: MLPlan) -> MLUserPlan
     if plan.new_customer_credit_usd > 0 and not user_plan.new_customer_credit_given:
         try:
             from app.services import wallet_service
+            from app.models.revenue_ledger import RevenueLedger, REV_SIGNUP_BONUS
             wallet = await wallet_service.get_or_create(user_email, org_id)
             await wallet_service.credit(
                 wallet,
@@ -244,6 +245,20 @@ async def _assign_plan(user_email: str, org_id: str, plan: MLPlan) -> MLUserPlan
                 plan=plan.name,
                 amount_usd=plan.new_customer_credit_usd,
             )
+            # Platform expense: signup bonus given — record as cost
+            try:
+                await RevenueLedger(
+                    org_id=org_id,
+                    user_email=user_email,
+                    type=REV_SIGNUP_BONUS,
+                    amount_usd=-plan.new_customer_credit_usd,   # negative = cost to platform
+                    plan_id=plan_id_str,
+                    plan_name=plan.name,
+                    description=f"Signup bonus — {plan.name} plan",
+                    reference=f"plan:new_customer:{plan_id_str}:{user_email}",
+                ).insert()
+            except Exception:
+                pass
         except Exception as exc:
             logger.warning("new_customer_credit_failed", user=user_email, error=str(exc))
 

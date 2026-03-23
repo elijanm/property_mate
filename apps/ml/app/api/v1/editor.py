@@ -2608,7 +2608,7 @@ async def _execute_trainer(
                 wallet = await wallet_service.get_or_create(
                     billing_info["user_email"], billing_info["org_id"]
                 )
-                actual_cost = round(billing_info["price_per_hour"] * (elapsed / 3600), 10)
+                actual_cost = billing_info["price_per_hour"] * (elapsed / 3600)
                 charged = await wallet_service.release_and_charge(wallet, job_id, actual_cost)
             except Exception as _bill_exc:
                 # Billing failure must not break the run result

@@ -18,6 +18,9 @@ REV_INFERENCE_OPENAI  = "inference_openai"       # Inference calls routed to Ope
 REV_INFERENCE_LOCAL   = "inference_local"        # Inference calls served locally
 REV_FREE_CREDIT       = "free_credit_grant"      # Negative — free credit given (cost)
 REV_PRORATION_CREDIT  = "proration_credit"       # Negative — credit issued on plan downgrade/upgrade
+REV_COUPON_CREDIT     = "coupon_credit"          # Negative — coupon code redeemed (cost)
+REV_ADMIN_CREDIT      = "admin_credit"           # Negative — admin manually recharged a user (cost)
+REV_SIGNUP_BONUS      = "signup_bonus"           # Negative — new-customer plan credit (cost)
 
 
 class RevenueLedger(Document):
@@ -36,6 +39,7 @@ class RevenueLedger(Document):
     plan_id: Optional[str] = None               # for plan_subscription events
     plan_name: Optional[str] = None
     description: str = ""
-    reference: Optional[str] = None             # Paystack reference or internal job_id
+    reference: Optional[str] = None             # Paystack reference or internal key
+    job_id: Optional[str] = None               # training/inference job that generated the charge
     metadata: dict = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)

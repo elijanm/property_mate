@@ -2,14 +2,14 @@ import React, { useState, useEffect } from 'react'
 import {
   DollarSign, Cpu, Zap, Users, Plus, Pencil, Trash2,
   CheckCircle2, Loader2, Search, Star, ToggleLeft, ToggleRight,
-  ChevronDown, Sparkles, Monitor,
+  ChevronDown, Sparkles, Monitor, RefreshCw, AlertTriangle, ShieldCheck,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { adminApi } from '../api/admin'
 import type { MLPricingConfig, MLPlan, MLUserPlan, PlanPeriod } from '../types/plan'
 import { PERIOD_LABELS } from '../types/plan'
 
-type Tab = 'pricing' | 'plans' | 'user'
+type Tab = 'pricing' | 'plans' | 'user' | 'reserves'
 
 const PERIOD_OPTIONS: { value: PlanPeriod; label: string }[] = [
   { value: 'day',   label: 'Per Day' },
@@ -1008,6 +1008,155 @@ function UserPlanTab() {
   )
 }
 
+// ── Wallet Reserves Tab ───────────────────────────────────────────────────────
+
+type WalletEntry = { user_email: string; org_id: string; balance: number; standard_balance: number; reserved: number }
+type ReconcileResult = { released: number; skipped: number; errors: number; items: { job_id: string; user_email: string; reserved_amount: number; previous_status: string }[] }
+
+function WalletReservesTab() {
+  const [state, setState] = useState<{ count: number; total_reserved_usd: number; wallets: WalletEntry[] } | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<ReconcileResult | null>(null)
+  const [error, setError] = useState('')
+
+  const load = async () => {
+    setLoading(true); setError('')
+    try { setState(await adminApi.getWalletState()) }
+    catch { setError('Failed to load wallet state') }
+    finally { setLoading(false) }
+  }
+
+  const reconcile = async (force: boolean) => {
+    setRunning(true); setError(''); setResult(null)
+    try {
+      const res = await adminApi.reconcileWallets(force)
+      setResult(res)
+      await load()   // refresh state after reconciliation
+    } catch (e: unknown) {
+      setError((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Reconciliation failed')
+    } finally { setRunning(false) }
+  }
+
+  React.useEffect(() => { load() }, [])
+
+  return (
+    <div className="space-y-5 max-w-3xl">
+      {/* Summary card */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-sm font-semibold text-white">Wallet Reserves</h3>
+            <p className="text-xs text-gray-500 mt-0.5">Funds currently held pending job completion</p>
+          </div>
+          <button onClick={load} disabled={loading}
+            className="p-2 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-white/5 transition-colors disabled:opacity-40">
+            <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
+          </button>
+        </div>
+
+        {error && <div className="text-xs text-red-400 bg-red-900/20 border border-red-800/30 rounded-lg px-3 py-2 mb-4">{error}</div>}
+
+        {state && (
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <div className="bg-gray-800/60 rounded-xl p-4">
+              <div className={`text-2xl font-bold ${state.total_reserved_usd > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                ${state.total_reserved_usd.toFixed(6)}
+              </div>
+              <div className="text-xs text-gray-500 mt-0.5">Total held (USD)</div>
+            </div>
+            <div className="bg-gray-800/60 rounded-xl p-4">
+              <div className={`text-2xl font-bold ${state.count > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>{state.count}</div>
+              <div className="text-xs text-gray-500 mt-0.5">Wallets with held funds</div>
+            </div>
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex gap-2">
+          <button onClick={() => reconcile(false)} disabled={running}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white rounded-lg transition-colors">
+            {running ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
+            Reconcile (&gt;2h old)
+          </button>
+          <button onClick={() => reconcile(true)} disabled={running}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white rounded-lg transition-colors">
+            {running ? <Loader2 size={13} className="animate-spin" /> : <AlertTriangle size={13} />}
+            Force-clear ALL
+          </button>
+        </div>
+        <p className="text-xs text-gray-600 mt-2">
+          "Reconcile" releases orphaned reserves older than 2 h. "Force-clear" releases every open reserve immediately.
+        </p>
+      </div>
+
+      {/* Reconciliation result */}
+      {result && (
+        <div className={`border rounded-xl p-4 text-sm ${result.errors > 0 ? 'border-amber-800/40 bg-amber-900/10' : 'border-emerald-800/40 bg-emerald-900/10'}`}>
+          <div className="flex items-center gap-2 mb-2">
+            <CheckCircle2 size={14} className="text-emerald-400" />
+            <span className="font-semibold text-white">Reconciliation complete</span>
+          </div>
+          <div className="flex gap-6 text-xs text-gray-400">
+            <span className="text-emerald-400 font-semibold">{result.released} released</span>
+            <span>{result.skipped} skipped</span>
+            {result.errors > 0 && <span className="text-red-400">{result.errors} errors</span>}
+          </div>
+          {result.items.length > 0 && (
+            <div className="mt-3 space-y-1">
+              {result.items.map((item, i) => (
+                <div key={i} className="flex items-center justify-between text-xs text-gray-400 bg-gray-800/40 rounded-lg px-3 py-1.5">
+                  <span className="font-mono text-gray-300">{item.user_email}</span>
+                  <span className="text-emerald-400 font-mono">+${item.reserved_amount.toFixed(8)}</span>
+                  <span className="text-gray-600 font-mono">{item.job_id.slice(0, 8)}</span>
+                  <span className="text-gray-600">{item.previous_status}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Current held wallets */}
+      {state && state.wallets.length > 0 && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-800 flex items-center gap-2">
+            <AlertTriangle size={13} className="text-amber-400" />
+            <span className="text-sm font-medium text-white">Wallets with held funds</span>
+          </div>
+          <table className="w-full">
+            <thead>
+              <tr className="text-xs text-gray-600 border-b border-gray-800">
+                <th className="text-left px-4 py-2 font-semibold">User</th>
+                <th className="text-right px-4 py-2 font-semibold">Balance</th>
+                <th className="text-right px-4 py-2 font-semibold">Standard</th>
+                <th className="text-right px-4 py-2 font-semibold text-amber-400">Reserved</th>
+              </tr>
+            </thead>
+            <tbody>
+              {state.wallets.map((w, i) => (
+                <tr key={i} className="border-b border-gray-800/50 hover:bg-gray-800/20 text-xs">
+                  <td className="px-4 py-2.5 text-gray-300">{w.user_email}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-gray-400">${w.balance.toFixed(6)}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-sky-400">${w.standard_balance.toFixed(6)}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-amber-400 font-semibold">${w.reserved.toFixed(6)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {state && state.wallets.length === 0 && !loading && (
+        <div className="text-center py-10 text-gray-600">
+          <ShieldCheck size={28} className="mx-auto mb-2 text-emerald-700" />
+          <p className="text-sm">No held funds — all wallets are clean.</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 function Layers({ size }: { size: number }) {
@@ -1021,9 +1170,10 @@ function Layers({ size }: { size: number }) {
 }
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
-  { id: 'pricing', label: 'Pricing',   icon: <DollarSign size={13} /> },
-  { id: 'plans',   label: 'Plans',     icon: <Layers size={13} /> },
-  { id: 'user',    label: 'User Plan', icon: <Users size={13} /> },
+  { id: 'pricing',  label: 'Pricing',        icon: <DollarSign size={13} /> },
+  { id: 'plans',    label: 'Plans',          icon: <Layers size={13} /> },
+  { id: 'user',     label: 'User Plan',      icon: <Users size={13} /> },
+  { id: 'reserves', label: 'Wallet Reserves', icon: <AlertTriangle size={13} /> },
 ]
 
 export default function BillingSettingsPage() {
@@ -1049,9 +1199,10 @@ export default function BillingSettingsPage() {
         ))}
       </div>
 
-      {tab === 'pricing' && <PricingTab />}
-      {tab === 'plans'   && <PlansTab />}
-      {tab === 'user'    && <UserPlanTab />}
+      {tab === 'pricing'  && <PricingTab />}
+      {tab === 'plans'    && <PlansTab />}
+      {tab === 'user'     && <UserPlanTab />}
+      {tab === 'reserves' && <WalletReservesTab />}
     </div>
   )
 }

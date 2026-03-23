@@ -33,6 +33,9 @@ def available_for_cloud(wallet: Wallet) -> float:
     return round(wallet.balance - wallet.standard_balance, 2)
 
 
+_P = 18   # internal arithmetic precision (decimal places); float ~16 sig figs max
+
+
 async def reserve(
     wallet: Wallet,
     amount: float,
@@ -51,23 +54,23 @@ async def reserve(
         Can draw from the full balance. standard_balance is reduced proportionally —
         standard portion used = min(standard_balance, amount).
     """
-    amount = round(amount, 10)
+    amount = round(amount, _P)
 
     if compute_type == "cloud_gpu":
-        general_available = round(wallet.balance - wallet.standard_balance, 10)
+        general_available = round(wallet.balance - wallet.standard_balance, _P)
         if general_available < amount:
             raise ValueError("INSUFFICIENT_BALANCE")
         # standard_balance stays the same — cloud draws from general bucket only
         std_used = 0.0
     else:
-        if round(wallet.balance, 10) < amount:
+        if round(wallet.balance, _P) < amount:
             raise ValueError("INSUFFICIENT_BALANCE")
         # Standard compute drains standard_balance first, then spills into general
-        std_used = round(min(wallet.standard_balance, amount), 10)
-        wallet.standard_balance = round(wallet.standard_balance - std_used, 10)
+        std_used = round(min(wallet.standard_balance, amount), _P)
+        wallet.standard_balance = round(wallet.standard_balance - std_used, _P)
 
-    wallet.balance = round(wallet.balance - amount, 10)
-    wallet.reserved = round(wallet.reserved + amount, 10)
+    wallet.balance = round(wallet.balance - amount, _P)
+    wallet.reserved = round(wallet.reserved + amount, _P)
     wallet.updated_at = utc_now()
     await wallet.save()
 
@@ -86,15 +89,23 @@ async def reserve(
     await tx.insert()
 
 
-async def release_and_charge(wallet: Wallet, job_id: str, actual_cost: float) -> float:
+async def release_and_charge(
+    wallet: Wallet,
+    job_id: str,
+    actual_cost: float,
+    compute_type: str = "local",
+) -> float:
     """
     Release the reserved amount for `job_id` and charge actual cost.
     Returns the actual amount charged.
 
-    Precision guarantee:
-    - All arithmetic is done at 10-decimal precision internally.
-    - standard_balance is restored proportionally: if X% of the reservation came from
-      standard_balance, then X% of the refund goes back to standard_balance.
+    Precision: all arithmetic at _P (18) decimal places — full float precision.
+    standard_balance is restored proportionally: if X% of the reservation came from
+    standard_balance, then X% of the refund goes back to standard_balance.
+
+    compute_type is used to classify the revenue ledger entry:
+      "local"     → REV_GPU_STANDARD
+      "cloud_gpu" → REV_GPU_ACCELERATED
     """
     # Find the reserve transaction for this job
     reserve_tx = await WalletTransaction.find_one(
@@ -102,8 +113,8 @@ async def release_and_charge(wallet: Wallet, job_id: str, actual_cost: float) ->
         WalletTransaction.type == "reserve",
         WalletTransaction.user_email == wallet.user_email,
     )
-    reserved_amount = round(reserve_tx.amount, 10) if reserve_tx else 0.0
-    std_reserved = round(reserve_tx.standard_amount, 10) if reserve_tx else 0.0
+    reserved_amount = round(reserve_tx.amount, _P) if reserve_tx else 0.0
+    std_reserved = round(reserve_tx.standard_amount, _P) if reserve_tx else 0.0
 
     # Guard: if a release tx already exists for this job, do nothing (idempotent)
     already_released = await WalletTransaction.find_one(
@@ -116,25 +127,23 @@ async def release_and_charge(wallet: Wallet, job_id: str, actual_cost: float) ->
         return 0.0
 
     # Cap actual at what was reserved (never charge more than was held)
-    actual = round(min(actual_cost, reserved_amount), 10)
+    actual = round(min(actual_cost, reserved_amount), _P)
 
     # Debit from reserved bucket — cap deduction to what's physically there (race-condition safety)
-    deductible = round(min(reserved_amount, wallet.reserved), 10)
-    wallet.reserved = max(0.0, round(wallet.reserved - deductible, 10))
+    deductible = round(min(reserved_amount, wallet.reserved), _P)
+    wallet.reserved = max(0.0, round(wallet.reserved - deductible, _P))
 
     # Refund unused portion back to spendable balance
-    actual_overage = max(0.0, round(deductible - actual, 10))
-    wallet.balance = round(wallet.balance + actual_overage, 10)
+    actual_overage = max(0.0, round(deductible - actual, _P))
+    wallet.balance = round(wallet.balance + actual_overage, _P)
 
     # Restore standard_balance proportionally.
-    # If the reservation consumed std_reserved of standard_balance, the refund returns
-    # that same proportion of the overage back to standard_balance.
     if reserved_amount > 0 and std_reserved > 0:
-        std_proportion = round(std_reserved / reserved_amount, 10)
-        std_refund = round(actual_overage * std_proportion, 10)
+        std_proportion = round(std_reserved / reserved_amount, _P)
+        std_refund = round(actual_overage * std_proportion, _P)
         # Never let standard_balance exceed balance (invariant)
         wallet.standard_balance = min(
-            round(wallet.standard_balance + std_refund, 10),
+            round(wallet.standard_balance + std_refund, _P),
             wallet.balance,
         )
 
@@ -142,7 +151,7 @@ async def release_and_charge(wallet: Wallet, job_id: str, actual_cost: float) ->
     await wallet.save()
 
     short_id = job_id[:8]
-    overage_for_log = actual_overage   # local alias for transaction records
+    overage_for_log = actual_overage
 
     # Record debit transaction (actual cost charged)
     if actual > 0:
@@ -151,13 +160,13 @@ async def release_and_charge(wallet: Wallet, job_id: str, actual_cost: float) ->
             user_email=wallet.user_email,
             type="debit",
             amount=actual,
-            standard_amount=round(std_reserved - std_reserved * actual_overage / deductible, 10)
+            standard_amount=round(std_reserved - std_reserved * actual_overage / deductible, _P)
                 if deductible > 0 else 0.0,
             balance_after=wallet.balance,
             standard_balance_after=wallet.standard_balance,
             reserved_after=wallet.reserved,
             description=(
-                f"Compute charge — ${actual:.6f} used of ${reserved_amount:.6f} reserved · job {short_id}"
+                f"Compute charge — ${actual:.10f} used of ${reserved_amount:.10f} reserved · job {short_id}"
             ),
             job_id=job_id,
         )
@@ -165,22 +174,21 @@ async def release_and_charge(wallet: Wallet, job_id: str, actual_cost: float) ->
 
     # Record release transaction (unused reservation refunded)
     if reserved_amount > 0:
-        std_refund_val = round(wallet.standard_balance, 10) if actual_overage > 0 else 0.0
         if overage_for_log > 0:
             refund_desc = (
-                f"Unused compute time refunded — reserved ${reserved_amount:.6f}, "
-                f"used ${actual:.6f}, refund ${overage_for_log:.6f} · job {short_id}"
+                f"Unused compute time refunded — reserved ${reserved_amount:.10f}, "
+                f"used ${actual:.10f}, refund ${overage_for_log:.10f} · job {short_id}"
             )
         else:
             refund_desc = (
-                f"Compute job completed — fully consumed reservation ${reserved_amount:.6f} · job {short_id}"
+                f"Compute job completed — fully consumed reservation ${reserved_amount:.10f} · job {short_id}"
             )
         release_tx = WalletTransaction(
             org_id=wallet.org_id,
             user_email=wallet.user_email,
             type="release",
             amount=overage_for_log,
-            standard_amount=round(actual_overage * (std_reserved / reserved_amount), 10)
+            standard_amount=round(actual_overage * (std_reserved / reserved_amount), _P)
                 if reserved_amount > 0 and actual_overage > 0 else 0.0,
             balance_after=wallet.balance,
             standard_balance_after=wallet.standard_balance,
@@ -189,6 +197,23 @@ async def release_and_charge(wallet: Wallet, job_id: str, actual_cost: float) ->
             job_id=job_id,
         )
         await release_tx.insert()
+
+    # Record compute revenue in RevenueLedger
+    if actual > 0:
+        try:
+            from app.models.revenue_ledger import RevenueLedger, REV_GPU_STANDARD, REV_GPU_ACCELERATED
+            rev_type = REV_GPU_ACCELERATED if compute_type == "cloud_gpu" else REV_GPU_STANDARD
+            await RevenueLedger(
+                org_id=wallet.org_id,
+                user_email=wallet.user_email,
+                type=rev_type,
+                amount_usd=actual,
+                description=f"Compute charge · job {short_id}",
+                reference=job_id,
+                job_id=job_id,
+            ).insert()
+        except Exception as _ledger_exc:
+            logger.warning("revenue_ledger_write_failed", job_id=job_id, error=str(_ledger_exc))
 
     return actual
 
@@ -208,10 +233,10 @@ async def credit(
     is_standard=False → general credit (user self-top-up via Paystack).
                         Only balance increases; standard_balance unchanged.
     """
-    amount = round(amount, 10)
-    wallet.balance = round(wallet.balance + amount, 10)
+    amount = round(amount, _P)
+    wallet.balance = round(wallet.balance + amount, _P)
     if is_standard:
-        wallet.standard_balance = round(wallet.standard_balance + amount, 10)
+        wallet.standard_balance = round(wallet.standard_balance + amount, _P)
     wallet.updated_at = utc_now()
     await wallet.save()
 
@@ -276,10 +301,14 @@ async def admin_credit(
     """
     Admin recharges a user's wallet with `amount_usd`.
     Always earmarked as standard compute credit (is_standard=True).
-    Records a WalletTransaction (credit) and a PlatformLedger entry.
+    Records:
+      - WalletTransaction (credit)
+      - PlatformLedger  (admin expense audit trail)
+      - RevenueLedger   (REV_ADMIN_CREDIT, negative — platform cost)
     Returns (wallet, ledger_entry).
     """
     from app.models.platform_ledger import PlatformLedger
+    from app.models.revenue_ledger import RevenueLedger, REV_ADMIN_CREDIT
 
     wallet = await get_or_create(user_email, org_id)
     await credit(
@@ -299,13 +328,26 @@ async def admin_credit(
     )
 
     ledger = PlatformLedger(
-        amount_usd=round(amount_usd, 4),
+        amount_usd=amount_usd,
         recipient_email=user_email,
         performed_by=performed_by,
         note=note,
         wallet_tx_id=str(tx.id) if tx else "",
     )
     await ledger.insert()
+
+    # Platform expense: admin credited the user — record as cost in revenue ledger
+    try:
+        await RevenueLedger(
+            org_id=org_id,
+            user_email=user_email,
+            type=REV_ADMIN_CREDIT,
+            amount_usd=-round(amount_usd, _P),   # negative = cost to platform
+            description=f"Admin credit by {performed_by}" + (f" — {note}" if note else ""),
+            reference=f"admin:{performed_by}:{user_email}",
+        ).insert()
+    except Exception as _rl_exc:
+        logger.warning("revenue_ledger_admin_credit_failed", user=user_email, error=str(_rl_exc))
 
     logger.info(
         "admin_wallet_recharged",

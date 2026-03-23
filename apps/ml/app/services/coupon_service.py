@@ -65,4 +65,18 @@ async def redeem(coupon: Coupon, user_email: str, org_id: str) -> float:
     # Increment usage count atomically
     await Coupon.find_one({"code": coupon.code}).update({"$inc": {"uses_count": 1}, "$set": {"updated_at": utc_now()}})
 
+    # Platform expense: coupon was redeemed — record as cost in revenue ledger
+    try:
+        from app.models.revenue_ledger import RevenueLedger, REV_COUPON_CREDIT
+        await RevenueLedger(
+            org_id=org_id,
+            user_email=user_email,
+            type=REV_COUPON_CREDIT,
+            amount_usd=-coupon.credit_usd,   # negative = cost to platform
+            description=f"Coupon redeemed — {coupon.code} ({type_label})",
+            reference=f"coupon:{coupon.code}",
+        ).insert()
+    except Exception:
+        pass  # never block redemption on ledger write failure
+
     return coupon.credit_usd

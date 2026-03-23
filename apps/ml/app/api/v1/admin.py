@@ -1344,3 +1344,43 @@ async def list_coupon_redemptions(code: str, _=Depends(get_current_user)):
             for r in redemptions
         ],
     }
+
+
+# ── Wallet admin ───────────────────────────────────────────────────────────────
+
+@router.get("/wallet/state", dependencies=[RequireAdmin])
+async def get_wallet_state(_=Depends(get_current_user)):
+    """
+    Return all wallets that have a non-zero reserved amount so the admin can
+    audit held funds before / after a reconciliation run.
+    """
+    from app.models.wallet import Wallet
+    wallets = await Wallet.find({"reserved": {"$gt": 0}}).to_list()
+    return {
+        "count": len(wallets),
+        "total_reserved_usd": round(sum(w.reserved for w in wallets), 18),
+        "wallets": [
+            {
+                "user_email": w.user_email,
+                "org_id": w.org_id,
+                "balance": w.balance,
+                "standard_balance": w.standard_balance,
+                "reserved": w.reserved,
+            }
+            for w in wallets
+        ],
+    }
+
+
+@router.post("/wallet/reconcile", dependencies=[RequireAdmin])
+async def reconcile_wallets(force: bool = False, _=Depends(get_current_user)):
+    """
+    Immediately run wallet reconciliation.
+
+    force=false (default) — only release reservations older than 2 hours.
+    force=true            — release ALL orphaned reservations regardless of age
+                           (use to clear stuck amounts right now).
+    """
+    from app.services.scheduler_service import run_wallet_reconciliation
+    result = await run_wallet_reconciliation(cutoff_hours=0 if force else 2)
+    return result

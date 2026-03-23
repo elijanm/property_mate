@@ -111,62 +111,101 @@ async def _run_alert_evaluation() -> None:
         logger.error("alert_evaluation_failed", error=str(e))
 
 
-async def _run_wallet_reconciliation() -> None:
+async def run_wallet_reconciliation(cutoff_hours: int = 2) -> dict:
     """
-    Release wallet reservations for jobs that are stuck or abandoned:
-      - status queued/running AND created/started more than 2 hours ago
-    This is a safety net — normal completion/failure paths release inline.
+    Release wallet reservations for any job that has an open reserve transaction
+    but no corresponding release transaction.  Returns a result dict so it can
+    be called directly from an admin endpoint as well as from the scheduler.
+
+    Covers two cases:
+    1. Stale queued/running jobs (server crash, timeout) — mark them failed.
+    2. Already-failed/completed jobs whose failure path skipped the release.
+
+    cutoff_hours=0 bypasses the age filter (admin force-clear).
     """
-    try:
-        from datetime import datetime, timezone, timedelta
-        from app.models.training_job import TrainingJob
-        from app.models.wallet import WalletTransaction
-        from app.services import wallet_service
+    from datetime import datetime, timezone, timedelta
+    from app.models.training_job import TrainingJob
+    from app.models.wallet import WalletTransaction
+    from app.services import wallet_service
 
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=cutoff_hours) if cutoff_hours > 0 else now + timedelta(seconds=1)
 
-        # Find jobs that are still active but stale
-        stale_jobs = await TrainingJob.find(
-            {"status": {"$in": ["queued", "running"]}, "created_at": {"$lt": cutoff}},
-        ).to_list()
+    # Case 1: stale active jobs
+    stale_filter: dict = {"status": {"$in": ["queued", "running"]}}
+    if cutoff_hours > 0:
+        stale_filter["created_at"] = {"$lt": cutoff}
+    stale_jobs = await TrainingJob.find(stale_filter).to_list()
 
-        released = 0
-        for job in stale_jobs:
-            if not job.owner_email:
-                continue
-            # Check there is an open reservation for this job
-            reserve_tx = await WalletTransaction.find_one(
-                WalletTransaction.job_id == str(job.id),
-                WalletTransaction.type == "reserve",
-                WalletTransaction.user_email == job.owner_email,
-            )
-            if not reserve_tx:
-                continue
-            # Check it hasn't already been released
-            already_released = await WalletTransaction.find_one(
-                WalletTransaction.job_id == str(job.id),
-                WalletTransaction.type == "release",
-                WalletTransaction.user_email == job.owner_email,
-            )
-            if already_released:
-                continue
+    # Case 2: already-terminal jobs with wallet_reserved > 0 and no release tx
+    orphaned_filter: dict = {"status": {"$in": ["failed", "completed"]}, "wallet_reserved": {"$gt": 0}}
+    if cutoff_hours > 0:
+        orphaned_filter["created_at"] = {"$lt": cutoff}
+    orphaned_jobs = await TrainingJob.find(orphaned_filter).to_list()
 
-            try:
-                w = await wallet_service.get_or_create(job.owner_email, job.org_id)
-                await wallet_service.release_and_charge(w, str(job.id), actual_cost=0.0)
+    released = 0
+    skipped = 0
+    errors = 0
+    items: list[dict] = []
+
+    for job in stale_jobs + orphaned_jobs:
+        if not job.owner_email:
+            skipped += 1
+            continue
+        reserve_tx = await WalletTransaction.find_one(
+            WalletTransaction.job_id == str(job.id),
+            WalletTransaction.type == "reserve",
+            WalletTransaction.user_email == job.owner_email,
+        )
+        if not reserve_tx:
+            skipped += 1
+            continue
+        already_released = await WalletTransaction.find_one(
+            WalletTransaction.job_id == str(job.id),
+            WalletTransaction.type == "release",
+            WalletTransaction.user_email == job.owner_email,
+        )
+        if already_released:
+            skipped += 1
+            continue
+
+        try:
+            w = await wallet_service.get_or_create(job.owner_email, job.org_id)
+            await wallet_service.release_and_charge(w, str(job.id), actual_cost=0.0)
+            if job.status in ("queued", "running"):
                 await job.set({
                     "status": "failed",
-                    "error": "Job timed out — reservation auto-released after 2 hours",
-                    "finished_at": datetime.now(timezone.utc),
-                    "updated_at": datetime.now(timezone.utc),
+                    "error": "Job timed out — reservation auto-released",
+                    "finished_at": now,
+                    "updated_at": now,
                 })
-                released += 1
-                logger.info("wallet_reconciliation_released", job_id=str(job.id), owner=job.owner_email)
-            except Exception as exc:
-                logger.warning("wallet_reconciliation_release_failed", job_id=str(job.id), error=str(exc))
+            released += 1
+            items.append({
+                "job_id": str(job.id),
+                "user_email": job.owner_email,
+                "reserved_amount": reserve_tx.amount,
+                "previous_status": job.status,
+            })
+            logger.info(
+                "wallet_reconciliation_released",
+                job_id=str(job.id),
+                owner=job.owner_email,
+                reserved=reserve_tx.amount,
+            )
+        except Exception as exc:
+            errors += 1
+            logger.warning("wallet_reconciliation_release_failed", job_id=str(job.id), error=str(exc))
 
-        if released:
-            logger.info("wallet_reconciliation_complete", released=released)
+    if released:
+        logger.info("wallet_reconciliation_complete", released=released, errors=errors)
+
+    return {"released": released, "skipped": skipped, "errors": errors, "items": items}
+
+
+async def _run_wallet_reconciliation() -> None:
+    """Scheduled wrapper — calls the public function and discards the result."""
+    try:
+        await run_wallet_reconciliation(cutoff_hours=2)
     except Exception as exc:
         logger.error("wallet_reconciliation_failed", error=str(exc))
 
