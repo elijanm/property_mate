@@ -661,27 +661,43 @@ export default function App() {
         <div className="px-4 py-3 border-t border-gray-800 space-y-2 flex-shrink-0">
           {/* Wallet balance */}
           {wallet && (
-            <button onClick={() => navigate('wallet')}
-              className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-gray-900 hover:bg-gray-800 border border-gray-800 hover:border-brand-700 transition-colors group mb-1">
-              <div className="flex items-center gap-1.5">
-                <Wallet size={11} className="text-gray-500 group-hover:text-brand-400 transition-colors" />
-                <span className="text-[11px] text-gray-400 group-hover:text-gray-200 transition-colors">Wallet</span>
-              </div>
-              <div className="text-right">
-                <div className="text-[11px] font-semibold text-white">${wallet.balance.toFixed(2)} USD</div>
-                <div className="text-[9px] text-gray-500 flex gap-1.5">
-                  {wallet.standard_balance > 0 && (
-                    <span className="text-sky-500">${wallet.standard_balance.toFixed(2)} std</span>
-                  )}
-                  {wallet.general_balance > 0 && (
-                    <span className="text-violet-400">${wallet.general_balance.toFixed(2)} accel</span>
-                  )}
+            <div className="relative group/wb mb-1">
+              <button onClick={() => navigate('wallet')}
+                className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-gray-900 hover:bg-gray-800 border border-gray-800 hover:border-brand-700 transition-colors group">
+                <div className="flex items-center gap-1.5">
+                  <Wallet size={11} className="text-gray-500 group-hover:text-brand-400 transition-colors" />
+                  <span className="text-[11px] text-gray-400 group-hover:text-gray-200 transition-colors">Wallet</span>
                 </div>
-                {wallet.reserved > 0 && (
-                  <div className="text-[9px] text-amber-500">${wallet.reserved.toFixed(2)} held</div>
-                )}
+                <div className="text-[11px] font-semibold text-white">${wallet.balance.toFixed(2)} USD</div>
+              </button>
+              {/* Hover breakdown popover — appears above the button */}
+              <div className="absolute bottom-full left-0 right-0 mb-2 z-50
+                              opacity-0 pointer-events-none translate-y-1
+                              group-hover/wb:opacity-100 group-hover/wb:pointer-events-auto group-hover/wb:translate-y-0
+                              transition-all duration-150">
+                <div className="bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl shadow-black/60 space-y-2">
+                  <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Balance breakdown</p>
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-[11px] text-gray-400">Standard compute</span>
+                    <span className="text-[11px] font-semibold text-sky-400">${wallet.standard_balance.toFixed(4)}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-[11px] text-gray-400">Accelerated compute</span>
+                    <span className="text-[11px] font-semibold text-violet-400">${wallet.general_balance.toFixed(4)}</span>
+                  </div>
+                  {wallet.reserved > 0 && (
+                    <div className="flex items-center justify-between gap-4 pt-1 border-t border-gray-800">
+                      <span className="text-[11px] text-gray-500">Reserved (active jobs)</span>
+                      <span className="text-[11px] font-semibold text-amber-400">${wallet.reserved.toFixed(4)}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-4 pt-1 border-t border-gray-800">
+                    <span className="text-[11px] text-gray-300 font-medium">Total available</span>
+                    <span className="text-[11px] font-bold text-white">${wallet.balance.toFixed(4)}</span>
+                  </div>
+                </div>
               </div>
-            </button>
+            </div>
           )}
           {/* User info */}
           <div className="flex items-center gap-2 mb-2">
@@ -778,22 +794,48 @@ export default function App() {
           <div className="flex items-center gap-2">
             {/* Wallet chip */}
             {wallet && (
-              <button onClick={() => navigate('wallet')}
-                className={clsx(
-                  'flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors',
-                  page === 'wallet'
-                    ? 'bg-brand-900/40 border-brand-700 text-brand-300'
-                    : 'bg-gray-900 border-gray-700 text-gray-300 hover:border-brand-700 hover:text-brand-300'
-                )}>
-                <Wallet size={12} />
-                ${wallet.balance.toFixed(2)} USD
-                {wallet.standard_balance > 0 && (
-                  <span className="text-[10px] text-sky-400 font-normal">{wallet.standard_balance.toFixed(2)} std</span>
-                )}
-                {wallet.reserved > 0 && (
-                  <span className="text-[10px] text-amber-500 font-normal">·${wallet.reserved.toFixed(2)} held</span>
-                )}
-              </button>
+              <div className="relative group/wh">
+                <button onClick={() => navigate('wallet')}
+                  className={clsx(
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors',
+                    page === 'wallet'
+                      ? 'bg-brand-900/40 border-brand-700 text-brand-300'
+                      : 'bg-gray-900 border-gray-700 text-gray-300 hover:border-brand-700 hover:text-brand-300'
+                  )}>
+                  <Wallet size={12} />
+                  ${wallet.balance.toFixed(2)} USD
+                  {wallet.reserved > 0 && (
+                    <span className="text-[10px] text-amber-500 font-normal">· ${wallet.reserved.toFixed(2)} held</span>
+                  )}
+                </button>
+                {/* Hover breakdown popover — appears below the chip */}
+                <div className="absolute top-full right-0 mt-2 z-50 w-56
+                                opacity-0 pointer-events-none -translate-y-1
+                                group-hover/wh:opacity-100 group-hover/wh:pointer-events-auto group-hover/wh:translate-y-0
+                                transition-all duration-150">
+                  <div className="bg-gray-900 border border-gray-700 rounded-xl p-3 shadow-xl shadow-black/60 space-y-2">
+                    <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Balance breakdown</p>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-[11px] text-gray-400">Standard compute</span>
+                      <span className="text-[11px] font-semibold text-sky-400">${wallet.standard_balance.toFixed(4)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-[11px] text-gray-400">Accelerated compute</span>
+                      <span className="text-[11px] font-semibold text-violet-400">${wallet.general_balance.toFixed(4)}</span>
+                    </div>
+                    {wallet.reserved > 0 && (
+                      <div className="flex items-center justify-between gap-4 pt-1 border-t border-gray-800">
+                        <span className="text-[11px] text-gray-500">Reserved (active jobs)</span>
+                        <span className="text-[11px] font-semibold text-amber-400">${wallet.reserved.toFixed(4)}</span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between gap-4 pt-1 border-t border-gray-800">
+                      <span className="text-[11px] text-gray-300 font-medium">Total available</span>
+                      <span className="text-[11px] font-bold text-white">${wallet.balance.toFixed(4)}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
             )}
             {page === 'models' && !selected && (
               <button onClick={load} disabled={refreshing}

@@ -73,6 +73,27 @@ async def register(body: RegisterRequest):
             await user.set({"pending_coupon_code": body.coupon_code.upper().strip()})
         except Exception:
             pass  # invalid coupon — ignore silently
+
+    # Disposable email check — non-blocking; log to audit trail if flagged
+    try:
+        check = await _run_disposable_check(body.email)
+        if check.is_disposable and check.confidence != "unavailable":
+            await user.set({"disposable_email_used": True, "disposable_email_attempts": 1})
+            from app.services.audit_service import log_action as _audit
+            await _audit(
+                actor_email=body.email,
+                action="disposable_email_registration",
+                resource_type="user",
+                resource_id=str(user.id),
+                details={
+                    "email": body.email,
+                    "risk_score": check.risk_score,
+                    "confidence": check.confidence,
+                },
+            )
+    except Exception:
+        pass  # never block registration on disposable check failure
+
     return {
         "email": user.email,
         "full_name": user.full_name,
@@ -279,6 +300,22 @@ async def update_my_email(body: UpdateEmailRequest, authorization: Optional[str]
         user.disposable_email_attempts = (user.disposable_email_attempts or 0) + 1
         user.disposable_email_used = True
         await user.save()
+        try:
+            from app.services.audit_service import log_action as _audit
+            await _audit(
+                actor_email=user.email,
+                action="disposable_email_update_attempt",
+                resource_type="user",
+                resource_id=str(user.id),
+                details={
+                    "attempted_email": body.email,
+                    "risk_score": check.risk_score,
+                    "confidence": check.confidence,
+                    "attempts": user.disposable_email_attempts,
+                },
+            )
+        except Exception:
+            pass
         return UpdateEmailResponse(is_disposable=True, attempts=user.disposable_email_attempts, email=user.email)
 
     user.email = body.email
@@ -300,6 +337,17 @@ async def ignore_disposable_email(authorization: Optional[str] = Header(None)) -
     user.disposable_email_used = True
     user.disposable_email_ignored = True
     await user.save()
+    try:
+        from app.services.audit_service import log_action as _audit
+        await _audit(
+            actor_email=user.email,
+            action="disposable_email_ignored",
+            resource_type="user",
+            resource_id=str(user.id),
+            details={"email": user.email},
+        )
+    except Exception:
+        pass
     return {"ok": True}
 
 

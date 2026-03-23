@@ -56,6 +56,9 @@ _DEFINITE_BLOCK_IMPORTS: frozenset[str] = frozenset({
     "fabric",       # SSH orchestration
     "winreg",       # Windows registry
     "msvcrt",       # Windows CRT
+    "pty",          # pseudo-terminal — reverse shells
+    "pexpect",      # interactive process spawning
+    "nt",           # Windows OS module
 })
 
 # Imports that are suspicious but context-dependent — collected as hints only
@@ -73,6 +76,14 @@ _SUSPICIOUS_IMPORTS: frozenset[str] = frozenset({
     "shutil",       # file operations
     "multiprocessing",  # might be fine for CPU parallelism
     "concurrent",   # same
+    "threading",    # threads can be used to fire exfil in background, evading timing detection
+    "importlib",    # dynamic module loading — could be used to import blocked modules
+    "pkgutil",      # package utilities — can enumerate/load modules dynamically
+    "inspect",      # frame/globals inspection — can traverse the call stack for secrets
+    "gc",           # garbage collector — can access all live objects in memory
+    "weakref",      # can hold references to live objects including sensitive ones
+    "functools",    # reduce(getattr, [...], obj) — chained attribute traversal attack
+    "operator",     # attrgetter('environ') — attribute getter obfuscation
     "requests",     # HTTP — could be for dataset download or exfil
     "urllib",       # HTTP
     "httpx",        # HTTP
@@ -83,6 +94,11 @@ _SUSPICIOUS_IMPORTS: frozenset[str] = frozenset({
     "imaplib",      # email reading
     "boto3",        # AWS SDK — cloud storage might be legitimate
     "botocore",     # boto3 core
+    "dns",          # DNS library — DNS exfiltration
+    "dnslib",       # DNS exfiltration
+    "scapy",        # packet crafting — exfiltration / C2
+    "cryptography", # encryption — could be used to hide exfiltrated data
+    "Crypto",       # PyCryptodome — same
 })
 
 # Attribute accesses that are suspicious but context-dependent
@@ -195,6 +211,15 @@ class _AstCollector(ast.NodeVisitor):
                            "__import__() call — dynamic module loading.",
                            context=ast.unparse(node) if hasattr(ast, "unparse") else "")
 
+            # vars() / dir() — can expose __builtins__ or other live namespaces
+            elif name in ("vars", "dir"):
+                self._hint(
+                    node, f"builtin_{name}",
+                    f"{name}() call — can expose live namespaces including __builtins__ "
+                    "and module internals; often used in getattr-chain attacks.",
+                    context=ast.unparse(node) if hasattr(ast, "unparse") else "",
+                )
+
         # Method call: os.system(...), proc.popen(...) — always suspicious
         elif isinstance(func, ast.Attribute):
             attr = func.attr
@@ -205,15 +230,135 @@ class _AstCollector(ast.NodeVisitor):
                     f".{attr}() call — shell execution.",
                 )
 
+        # ── getattr() abuse ───────────────────────────────────────────────
+        # These patterns are used to evade import/attribute detection by
+        # hiding the module or attribute name behind a dynamic lookup.
+        if isinstance(func, ast.Name) and func.id == "getattr":
+            args = node.args
+            if len(args) >= 1:
+                first = args[0]
+                # getattr(__builtins__, anything) — ALWAYS import smuggling
+                if isinstance(first, ast.Name) and first.id in ("__builtins__", "builtins"):
+                    self._block(
+                        node, "getattr_builtins",
+                        "getattr(__builtins__, ...) bypasses the import system — classic import smuggling.",
+                    )
+            if len(args) >= 2:
+                second = args[1]
+                # getattr(anything, '__import__') — ALWAYS import smuggling
+                if isinstance(second, ast.Constant) and second.value == "__import__":
+                    self._block(
+                        node, "getattr_dunder_import",
+                        "getattr(..., '__import__') — dynamic access to __import__ to smuggle module loads.",
+                    )
+                # getattr(anything, <variable>) — obfuscated dynamic attribute
+                elif not isinstance(second, ast.Constant):
+                    self._hint(
+                        node, "getattr_dynamic_attr",
+                        "getattr() called with a non-constant attribute name — "
+                        "may be hiding access to 'environ', '__import__', or other sensitive attributes.",
+                        context=ast.unparse(node) if hasattr(ast, "unparse") else "",
+                    )
+                # getattr(anything, '<sensitive attr>') — suspicious even when literal
+                elif isinstance(second, ast.Constant) and second.value in _SUSPICIOUS_ATTRS:
+                    self._hint(
+                        node, f"getattr_attr:{second.value}",
+                        f"getattr(..., '{second.value}') — dynamic access to sensitive attribute.",
+                        context=ast.unparse(node) if hasattr(ast, "unparse") else "",
+                    )
+
+        # ── ''.join([char, list]) obfuscation ─────────────────────────────
+        # Detects split-string technique: ['e','n','v' 'iron'] → 'environ'
+        # Python's parser already folds adjacent literals, so 'v' 'iron' → 'viron'
+        # in the AST, making ''.join(['e','n','viron']) detectable at parse time.
+        _join_sensitive = frozenset({
+            "environ", "getenv", "__import__", "__builtins__",
+            "system", "popen", "execve", "modules",
+        })
+        if isinstance(func, ast.Attribute) and func.attr == "join":
+            if isinstance(func.value, ast.Constant) and func.value.value == "":
+                if node.args and isinstance(node.args[0], ast.List):
+                    parts = []
+                    all_const = True
+                    for elt in node.args[0].elts:
+                        if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                            parts.append(elt.value)
+                        else:
+                            all_const = False
+                            break
+                    if all_const:
+                        joined = "".join(parts)
+                        if joined in _join_sensitive:
+                            self._block(
+                                node, "string_join_obfuscation",
+                                f"''.join([...]) constructs the sensitive identifier '{joined}' "
+                                "— obfuscated attribute name to evade static analysis.",
+                            )
+
         self.generic_visit(node)
 
     # ── Attribute accesses ────────────────────────────────────────────────────
+
+    # Attributes that indicate MRO / class-hierarchy traversal to reach dangerous
+    # classes (subprocess.Popen, io.FileIO, etc.) via __subclasses__() chains.
+    _MRO_TRAVERSAL_ATTRS: frozenset[str] = frozenset({
+        "__subclasses__", "__bases__", "__mro__",
+        "__globals__", "__code__", "__func__",
+        "__dict__",        # used in vars(__builtins__)['__import__'] attacks
+    })
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if node.attr in _SUSPICIOUS_ATTRS:
             self._hint(
                 node, f"attr:{node.attr}",
                 f"'.{node.attr}' access — evaluate whether it exposes host data.",
+                context=ast.unparse(node) if hasattr(ast, "unparse") else "",
+            )
+        # MRO traversal / class introspection — definite block
+        # These have no legitimate ML use and are exclusively used for sandbox escape.
+        if node.attr in self._MRO_TRAVERSAL_ATTRS:
+            self._block(
+                node, f"mro_traversal:{node.attr}",
+                f"'.{node.attr}' access — used in Python class-hierarchy traversal to reach "
+                "dangerous classes (subprocess.Popen, io.FileIO, etc.) and escape sandboxes.",
+            )
+        self.generic_visit(node)
+
+    # ── Subscript access ──────────────────────────────────────────────────────
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        """
+        Detect dictionary-style builtins access:
+          __builtins__['__import__']
+          vars(__builtins__)['__import__']
+          sys.modules['os']
+        """
+        slice_val = node.slice
+        # Unwrap Index node (Python < 3.9 wraps slice in ast.Index)
+        if isinstance(slice_val, ast.Index):  # type: ignore[attr-defined]
+            slice_val = slice_val.value  # type: ignore[attr-defined]
+
+        key_str: Optional[str] = None
+        if isinstance(slice_val, ast.Constant) and isinstance(slice_val.value, str):
+            key_str = slice_val.value
+
+        # __builtins__['anything'] or __builtins__['__import__']
+        if isinstance(node.value, ast.Name) and node.value.id == "__builtins__":
+            self._block(
+                node, "builtins_subscript",
+                f"__builtins__['{key_str or '?'}'] — dict-style builtins access, "
+                "used to smuggle imports or override built-in functions.",
+            )
+        # sys.modules['os'] or sys.modules.get('os') variants
+        elif (
+            isinstance(node.value, ast.Attribute)
+            and node.value.attr == "modules"
+            and key_str is not None
+        ):
+            self._hint(
+                node, "sys_modules_subscript",
+                f"sys.modules['{key_str}'] — retrieves a module from the live import registry; "
+                "can be used to obtain already-imported modules without triggering import hooks.",
                 context=ast.unparse(node) if hasattr(ast, "unparse") else "",
             )
         self.generic_visit(node)
@@ -444,6 +589,12 @@ ALSO scan the entire code independently for threats the static analyzer CANNOT s
   • Steganographic exfiltration: data hidden in ML model weights, image pixels, etc.
   • DNS exfiltration: encoding secrets in subdomain lookups
   • Import smuggling: importlib.import_module(), __import__(), pkgutil tricks
+  • getattr(__builtins__, '__import__')('os') — accesses the import machinery via builtins dict
+  • vars(__builtins__)['__import__']('os') — same via vars()
+  • ''.join(['e','n','v','i','r','o','n']) to reconstruct sensitive identifiers at runtime
+  • reduce(getattr, ['os', 'environ'], __import__('os')) — attribute chains through reduce()
+  • sys.modules['os'] — retrieves already-imported modules from the live registry
+  • Returning os.environ / secrets as the PREDICT RESULT — the platform reads predict() output
   • Monkey-patching builtins: builtins.open = malicious_open
   • Abusing trainer callbacks/hooks to run code outside the normal train/predict flow
   • Writing to shared volumes or paths that other services read from
@@ -498,7 +649,11 @@ def _build_security_prompt(source: str, trainer_name: str, hints: List[Dict[str,
     else:
         parts.append(
             "\n━━ STATIC ANALYSIS HINTS ━━\n"
-            "None — no suspicious patterns detected by static analysis.\n"
+            "No patterns were flagged by static analysis.\n"
+            "WARNING: Zero hints does NOT mean the code is safe — it may mean the author used\n"
+            "sophisticated obfuscation (getattr chains, string-join construction of identifiers,\n"
+            "vars(__builtins__) lookups, sys.modules access, or data returned via predict() result)\n"
+            "that the static analyzer could not detect. Scan the full code independently with extra care.\n"
         )
 
     # ── Part 2: full source for independent scan ───────────────────────────

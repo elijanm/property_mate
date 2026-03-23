@@ -1,6 +1,52 @@
 import client from './client'
 import type { ModelDeployment } from '@/types/trainer'
 
+export interface ModelScanEvent {
+  type: 'log' | 'status' | 'done' | 'ping' | 'error'
+  level?: 'info' | 'success' | 'warn' | 'error'
+  msg?: string
+  status?: string
+  job_id?: string
+  model_name?: string
+  timeout?: boolean
+}
+
+/**
+ * Open an SSE stream for a model scan job.
+ * Returns a cleanup function that closes the EventSource.
+ */
+export function streamModelScan(
+  scanId: string,
+  token: string,
+  onEvent: (e: ModelScanEvent) => void,
+  onDone: (e: ModelScanEvent) => void,
+): () => void {
+  const url = `/api/v1/models/scan/${scanId}/stream?token=${encodeURIComponent(token)}`
+  const es = new EventSource(url)
+
+  const handle = (raw: MessageEvent, type: string) => {
+    try {
+      const payload: ModelScanEvent = { ...JSON.parse(raw.data), type: type as ModelScanEvent['type'] }
+      if (type === 'done') {
+        onDone(payload)
+        es.close()
+      } else {
+        onEvent(payload)
+      }
+    } catch {
+      // ignore parse errors
+    }
+  }
+
+  es.addEventListener('log', e => handle(e as MessageEvent, 'log'))
+  es.addEventListener('status', e => handle(e as MessageEvent, 'status'))
+  es.addEventListener('done', e => handle(e as MessageEvent, 'done'))
+  es.addEventListener('ping', () => {})
+  es.addEventListener('error', e => handle(e as MessageEvent, 'error'))
+
+  return () => es.close()
+}
+
 export interface DeployUriPayload {
   name: string
   version?: string

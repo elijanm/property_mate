@@ -113,88 +113,103 @@ async def _run_alert_evaluation() -> None:
 
 async def run_wallet_reconciliation(cutoff_hours: int = 2) -> dict:
     """
-    Release wallet reservations for any job that has an open reserve transaction
-    but no corresponding release transaction.  Returns a result dict so it can
-    be called directly from an admin endpoint as well as from the scheduler.
+    Release every open wallet reservation that has no corresponding release
+    transaction.  Uses WalletTransactions as the authoritative source — NOT
+    TrainingJob.wallet_reserved (which is never zeroed after completion and
+    therefore cannot be used to detect orphaned reserves).
 
-    Covers two cases:
-    1. Stale queued/running jobs (server crash, timeout) — mark them failed.
-    2. Already-failed/completed jobs whose failure path skipped the release.
+    Algorithm:
+      1. Find all "reserve" transactions (age-filtered if cutoff_hours > 0).
+      2. For each, check if a matching "release" transaction exists by job_id.
+      3. If not, call release_and_charge(actual_cost=0) to refund in full.
+      4. If a stale queued/running TrainingJob matches, mark it failed.
 
-    cutoff_hours=0 bypasses the age filter (admin force-clear).
+    cutoff_hours=0  → release ALL open reserves regardless of age (force-clear).
+    cutoff_hours=2  → only touch reserves created more than 2 hours ago (safe).
     """
     from datetime import datetime, timezone, timedelta
+    from app.models.wallet import Wallet, WalletTransaction
     from app.models.training_job import TrainingJob
-    from app.models.wallet import WalletTransaction
     from app.services import wallet_service
 
     now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(hours=cutoff_hours) if cutoff_hours > 0 else now + timedelta(seconds=1)
 
-    # Case 1: stale active jobs
-    stale_filter: dict = {"status": {"$in": ["queued", "running"]}}
+    # Build age filter for reserve transactions
+    reserve_filter: dict = {"type": "reserve"}
     if cutoff_hours > 0:
-        stale_filter["created_at"] = {"$lt": cutoff}
-    stale_jobs = await TrainingJob.find(stale_filter).to_list()
+        cutoff = now - timedelta(hours=cutoff_hours)
+        reserve_filter["created_at"] = {"$lt": cutoff}
 
-    # Case 2: already-terminal jobs with wallet_reserved > 0 and no release tx
-    orphaned_filter: dict = {"status": {"$in": ["failed", "completed"]}, "wallet_reserved": {"$gt": 0}}
-    if cutoff_hours > 0:
-        orphaned_filter["created_at"] = {"$lt": cutoff}
-    orphaned_jobs = await TrainingJob.find(orphaned_filter).to_list()
+    all_reserves = await WalletTransaction.find(reserve_filter).to_list()
 
     released = 0
     skipped = 0
     errors = 0
     items: list[dict] = []
 
-    for job in stale_jobs + orphaned_jobs:
-        if not job.owner_email:
+    for reserve_tx in all_reserves:
+        job_id = reserve_tx.job_id
+        if not job_id:
             skipped += 1
             continue
-        reserve_tx = await WalletTransaction.find_one(
-            WalletTransaction.job_id == str(job.id),
-            WalletTransaction.type == "reserve",
-            WalletTransaction.user_email == job.owner_email,
+
+        # Already released?
+        already = await WalletTransaction.find_one(
+            {"job_id": job_id, "type": "release", "user_email": reserve_tx.user_email}
         )
-        if not reserve_tx:
+        if already:
             skipped += 1
             continue
-        already_released = await WalletTransaction.find_one(
-            WalletTransaction.job_id == str(job.id),
-            WalletTransaction.type == "release",
-            WalletTransaction.user_email == job.owner_email,
+
+        # Also skip if a debit already exists (job was charged — release may have been missed
+        # but funds were already consumed, don't double-release)
+        already_debited = await WalletTransaction.find_one(
+            {"job_id": job_id, "type": "debit", "user_email": reserve_tx.user_email}
         )
-        if already_released:
+        if already_debited:
             skipped += 1
             continue
 
         try:
-            w = await wallet_service.get_or_create(job.owner_email, job.org_id)
-            await wallet_service.release_and_charge(w, str(job.id), actual_cost=0.0)
-            if job.status in ("queued", "running"):
+            wallet = await Wallet.find_one(
+                {"user_email": reserve_tx.user_email, "org_id": reserve_tx.org_id}
+            )
+            if not wallet:
+                skipped += 1
+                continue
+
+            await wallet_service.release_and_charge(wallet, job_id, actual_cost=0.0)
+
+            # If there's a matching stale job, mark it failed
+            try:
+                from bson import ObjectId as _ObjId
+                job = await TrainingJob.find_one({"_id": _ObjId(job_id)})
+            except Exception:
+                job = None
+            if job and job.status in ("queued", "running"):
                 await job.set({
                     "status": "failed",
-                    "error": "Job timed out — reservation auto-released",
+                    "error": "Reservation auto-released by admin reconciliation",
                     "finished_at": now,
                     "updated_at": now,
                 })
+
             released += 1
             items.append({
-                "job_id": str(job.id),
-                "user_email": job.owner_email,
+                "job_id": job_id,
+                "user_email": reserve_tx.user_email,
                 "reserved_amount": reserve_tx.amount,
-                "previous_status": job.status,
+                "previous_status": job.status if job else "unknown",
             })
             logger.info(
                 "wallet_reconciliation_released",
-                job_id=str(job.id),
-                owner=job.owner_email,
+                job_id=job_id,
+                user=reserve_tx.user_email,
                 reserved=reserve_tx.amount,
             )
         except Exception as exc:
             errors += 1
-            logger.warning("wallet_reconciliation_release_failed", job_id=str(job.id), error=str(exc))
+            logger.warning("wallet_reconciliation_release_failed", job_id=job_id, error=str(exc))
 
     if released:
         logger.info("wallet_reconciliation_complete", released=released, errors=errors)

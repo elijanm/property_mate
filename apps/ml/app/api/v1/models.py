@@ -1,14 +1,16 @@
 """Model deployment management."""
 import asyncio
-from typing import Dict, List, Optional
+from typing import AsyncIterator, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 import mlflow
 from mlflow.tracking import MlflowClient
+from sse_starlette.sse import EventSourceResponse
 
 from app.core.config import settings
 from app.dependencies.auth import require_roles, get_current_user
 from app.models.model_deployment import ModelDeployment
+from app.models.model_scan_job import ModelScanJob
 from app.services.zip_deploy_service import ZipManifestError, deploy_from_zip
 from app.tasks.train_task import enqueue_pretrained_deploy
 from app.utils.datetime import utc_now
@@ -18,6 +20,16 @@ router = APIRouter(prefix="/models", tags=["models"])
 
 _any_role = Depends(require_roles("viewer", "engineer", "admin"))
 _engineer = Depends(require_roles("engineer", "admin"))
+
+# Keep strong references to background scan tasks so they aren't garbage-collected
+# before they complete (asyncio.create_task() alone doesn't prevent GC).
+_running_scan_tasks: set = set()
+
+
+def _fire_scan(coro) -> None:
+    task = asyncio.create_task(coro)
+    _running_scan_tasks.add(task)
+    task.add_done_callback(_running_scan_tasks.discard)
 
 
 class DeployPretrainedRequest(BaseModel):
@@ -88,17 +100,11 @@ async def deploy_pretrained_from_file(
     user=Depends(require_roles("engineer", "admin")),
 ):
     """
-    Upload a model file and deploy it — no training run required.
+    Upload a model file, run a security scan, then deploy.
 
-    **Standard formats** (auto-detected, no inference script needed):
-    - `.pkl` / `.joblib` → scikit-learn
-    - `.onnx` → ONNX Runtime
-    - `.pt` / `.pth` → PyTorch
-    - `.h5` / `.keras` → Keras
-
-    **Custom formats**: upload an `inference_script` (.py) that defines a
-    `mlflow.pyfunc.PythonModel` subclass. The model file is available at
-    `context.artifacts["model_file"]` inside `load_context`.
+    Returns immediately with a ``scan_id``. Connect to
+    ``GET /models/scan/{scan_id}/stream`` (SSE) to watch the scan console.
+    On scan pass the deploy job is queued automatically.
     """
     model_bytes = await file.read()
     script_bytes: Optional[bytes] = None
@@ -114,14 +120,29 @@ async def deploy_pretrained_from_file(
         "file_name": file.filename or "model.pkl",
         "set_as_default": set_as_default,
     }
-    job_id = await enqueue_pretrained_deploy(
-        deploy_kwargs,
-        file_bytes=model_bytes,
-        inference_script=script_bytes,
+
+    scan_job = ModelScanJob(
+        org_id=user.org_id or "",
         owner_email=user.email,
-        org_id=user.org_id,
+        filename=file.filename or "model.pkl",
+        file_size_bytes=len(model_bytes),
+        upload_type="file",
     )
-    return {"job_id": job_id, "status": "queued"}
+    await scan_job.insert()
+
+    from app.services.model_scan_service import run_model_scan_background
+    _fire_scan(run_model_scan_background(
+        scan_id=str(scan_job.id),
+        zip_bytes=None,
+        file_bytes=model_bytes,
+        script_bytes=script_bytes,
+        filename=file.filename or "model.pkl",
+        deploy_kwargs=deploy_kwargs,
+        owner_email=user.email,
+        org_id=user.org_id or "",
+    ))
+
+    return {"scan_id": str(scan_job.id), "status": "scanning"}
 
 
 @router.post("/deploy-pretrained/zip")
@@ -138,7 +159,8 @@ async def deploy_pretrained_from_zip(
     Pass ``action=upgrade`` to add a new version, or ``action=replace`` to archive
     all previous deployments and redeploy.
 
-    Returns immediately with a `job_id`. Poll `GET /training/jobs/{job_id}` for status.
+    Returns immediately with a ``scan_id``. Connect to
+    ``GET /models/scan/{scan_id}/stream`` (SSE) to watch the scan console.
     """
     import io as _io
     import json as _json
@@ -178,7 +200,8 @@ async def deploy_pretrained_from_zip(
                 "existing_mlflow_version": existing.mlflow_model_version,
             }
 
-    # Replace: archive all previous deployments for this model
+    # Replace: archive all previous deployments for this model (synchronous — must happen
+    # before the background task runs to avoid race conditions)
     if peeked_name and action == "replace":
         prev = await ModelDeployment.find(
             ModelDeployment.trainer_name == peeked_name,
@@ -186,12 +209,54 @@ async def deploy_pretrained_from_zip(
         for p in prev:
             await p.set({"status": "archived", "is_default": False, "updated_at": utc_now()})
 
-    try:
-        job_id, model_name = await deploy_from_zip(zip_bytes, owner_email=user.email, org_id=user.org_id)
-    except ZipManifestError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    scan_job = ModelScanJob(
+        org_id=user.org_id or "",
+        owner_email=user.email,
+        filename=file.filename or "model.zip",
+        file_size_bytes=len(zip_bytes),
+        upload_type="zip",
+    )
+    await scan_job.insert()
 
-    return {"job_id": job_id, "model_name": model_name, "status": "queued"}
+    from app.services.model_scan_service import run_model_scan_background
+    _fire_scan(run_model_scan_background(
+        scan_id=str(scan_job.id),
+        zip_bytes=zip_bytes,
+        file_bytes=None,
+        script_bytes=None,
+        filename=file.filename or "model.zip",
+        deploy_kwargs={"name": peeked_name or "", "version": peeked_version or "1.0.0"},
+        owner_email=user.email,
+        org_id=user.org_id or "",
+        zip_action=action,
+    ))
+
+    return {
+        "scan_id": str(scan_job.id),
+        "status": "scanning",
+        "model_name": peeked_name,
+    }
+
+
+@router.get("/scan/{scan_id}/stream")
+async def stream_model_scan(
+    scan_id: str,
+    user=Depends(get_current_user),
+):
+    """SSE stream for a model upload's scan/deploy progress.
+
+    Connect with EventSource at:
+      /api/v1/models/scan/{scan_id}/stream?token=<jwt>
+
+    Events:
+      log    — { type: "log", level: "info|success|warn|error", msg: string }
+      status — { type: "status", status: string }
+      done   — terminal event; close the EventSource
+      ping   — heartbeat, ignore
+      error  — access error
+    """
+    from app.services.model_scan_service import model_scan_sse_generator
+    return EventSourceResponse(model_scan_sse_generator(scan_id, user.org_id or ""))
 
 
 @router.get("")

@@ -110,8 +110,18 @@ _EXFILTRATION = re.compile(
       | smtplib\.SMTP\s*\(
       | open\s*\([^)]*['"]\/etc\/
       | open\s*\([^)]*['"]\/proc\/
+      | getattr\s*\(\s*__builtins__   # import smuggling via builtins
     )""",
     re.VERBOSE | re.IGNORECASE,
+)
+
+# Import smuggling and dynamic-attribute obfuscation patterns that survive string-stripping
+_IMPORT_SMUGGLING = re.compile(
+    r"""(?:
+      getattr\s*\(\s*__builtins__   # getattr(__builtins__, '__import__')
+      | __builtins__\s*\[           # __builtins__['__import__']
+    )""",
+    re.VERBOSE,
 )
 
 _SYSTEM_MODIFICATION = re.compile(
@@ -155,6 +165,45 @@ _OBFUSCATION = re.compile(
 )
 
 
+_SENSITIVE_ATTRS = frozenset({
+    "environ", "getenv", "__import__", "__builtins__", "system", "popen",
+    "execve", "execvp", "modules", "read_bytes",
+})
+
+_JOIN_SENSITIVE = frozenset({
+    "environ", "getenv", "__import__", "__builtins__", "system", "popen",
+    "execve", "execvp", "modules",
+})
+
+
+def _try_fold_join(node: ast.Call) -> Optional[str]:
+    """
+    If `node` is `''.join([list, of, string, constants])`, return the joined string.
+    Returns None if the pattern doesn't match or not all elements are constants.
+    This catches `['e','n','v' 'iron']` → 'environ' obfuscation.
+    Note: Python's parser already folds adjacent string literals so
+    `'v' 'iron'` → Constant('viron') before we even see the AST.
+    """
+    if not (isinstance(node.func, ast.Attribute) and node.func.attr == "join"):
+        return None
+    # delimiter must be an empty string constant
+    delim = node.func.value
+    if not (isinstance(delim, ast.Constant) and delim.value == ""):
+        return None
+    if not node.args:
+        return None
+    arg = node.args[0]
+    if not isinstance(arg, ast.List):
+        return None
+    parts = []
+    for elt in arg.elts:
+        if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+            parts.append(elt.value)
+        else:
+            return None  # non-constant element — can't fold
+    return "".join(parts)
+
+
 def _analyze_python_ast(source: str) -> List[str]:
     """Parse Python AST and flag dangerous node patterns."""
     threats = []
@@ -177,11 +226,46 @@ def _analyze_python_ast(source: str) -> List[str]:
                 if isinstance(t, ast.Name) and t.id == "__builtins__":
                     threats.append("Overrides __builtins__")
 
-        # Dynamic attribute access trying to hide calls
         if isinstance(node, ast.Call):
+            # Dynamic attribute access trying to hide calls
             if isinstance(node.func, ast.Attribute):
                 if node.func.attr in {"__class__", "__subclasses__", "__globals__", "__code__"}:
                     threats.append(f"Introspection abuse: {node.func.attr}")
+
+            # ── getattr() abuse detection ──────────────────────────────────
+            if isinstance(node.func, ast.Name) and node.func.id == "getattr":
+                args = node.args
+                if len(args) >= 1:
+                    first = args[0]
+                    # getattr(__builtins__, ...) — always import smuggling
+                    if isinstance(first, ast.Name) and first.id in ("__builtins__", "builtins"):
+                        threats.append(
+                            "Import smuggling: getattr(__builtins__, ...) bypasses import system"
+                        )
+                if len(args) >= 2:
+                    second = args[1]
+                    # getattr(anything, '__import__') — always import smuggling
+                    if isinstance(second, ast.Constant) and second.value == "__import__":
+                        threats.append(
+                            "Import smuggling: getattr(..., '__import__') — dynamic __import__ access"
+                        )
+                    # getattr(anything, <sensitive_attr_string>)
+                    elif isinstance(second, ast.Constant) and second.value in _SENSITIVE_ATTRS:
+                        threats.append(
+                            f"Dynamic attribute exfiltration: getattr(..., '{second.value}')"
+                        )
+                    # getattr(anything, <variable>) — hidden dynamic lookup
+                    elif not isinstance(second, ast.Constant):
+                        threats.append(
+                            "Obfuscated attribute access: getattr() with non-constant attribute name"
+                        )
+
+            # ── String-join obfuscation: ''.join([...]) to hide attr names ─
+            folded = _try_fold_join(node)
+            if folded and folded in _JOIN_SENSITIVE:
+                threats.append(
+                    f"String-join obfuscation constructs sensitive identifier '{folded}'"
+                )
 
     return threats
 
@@ -205,6 +289,12 @@ def _analyze_code(source: str, filename: str) -> List[str]:
 
     if _OBFUSCATION.search(code_only):
         threats.append("Obfuscated payload detected")
+
+    # _IMPORT_SMUGGLING is checked on the RAW source (not string-stripped) because
+    # `__builtins__` is an identifier, not a string literal, so stripping does not
+    # remove it. String-stripping would only remove the second argument.
+    if _IMPORT_SMUGGLING.search(source):
+        threats.append("Import smuggling via __builtins__ access detected")
 
     if filename.endswith(".py"):
         threats.extend(_analyze_python_ast(source))
