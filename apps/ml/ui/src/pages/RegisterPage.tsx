@@ -65,7 +65,7 @@ export default function RegisterPage({ onGoLogin, onGoHome, initialRole }: Props
   const [error, setError] = useState('')
   const [annotatorSuccess, setAnnotatorSuccess] = useState(false)
   const [couponCode, setCouponCode] = useState('')
-  const [couponStatus, setCouponStatus] = useState<{ valid: boolean; credit_usd?: number } | null>(null)
+  const [couponStatus, setCouponStatus] = useState<{ valid: boolean; credit_usd?: number; credit_type?: 'standard' | 'accelerated' } | null>(null)
   const [couponChecking, setCouponChecking] = useState(false)
   const [showDisposableModal, setShowDisposableModal] = useState(false)
   const [disposableAttempts, setDisposableAttempts] = useState(0)
@@ -613,7 +613,9 @@ export default function RegisterPage({ onGoLogin, onGoHome, initialRole }: Props
                   </button>
                 </div>
                 {couponStatus?.valid === true && (
-                  <p className="text-xs text-emerald-400">✓ ${couponStatus.credit_usd} credit will be added to your wallet after email verification</p>
+                  <p className="text-xs text-emerald-400">
+                    ✓ ${couponStatus.credit_usd} {couponStatus.credit_type === 'accelerated' ? '⚡ accelerated compute' : '🖥 standard compute'} credit will be added after email verification
+                  </p>
                 )}
                 {couponStatus?.valid === false && (
                   <p className="text-xs text-red-400">✗ Invalid or expired coupon code</p>

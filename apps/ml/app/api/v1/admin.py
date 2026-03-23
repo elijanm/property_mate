@@ -1222,6 +1222,7 @@ class CouponCreateRequest(BaseModel):
     code: str
     description: str = ""
     credit_usd: float
+    credit_type: str = "standard"   # "standard" | "accelerated"
     max_uses: int = 0
     expires_at: Optional[datetime] = None
 
@@ -1229,6 +1230,7 @@ class CouponCreateRequest(BaseModel):
 class CouponUpdateRequest(BaseModel):
     description: Optional[str] = None
     credit_usd: Optional[float] = None
+    credit_type: Optional[str] = None
     max_uses: Optional[int] = None
     is_active: Optional[bool] = None
     expires_at: Optional[datetime] = None
@@ -1240,6 +1242,7 @@ def _coupon_dict(c) -> dict:
         "code": c.code,
         "description": c.description,
         "credit_usd": c.credit_usd,
+        "credit_type": getattr(c, "credit_type", "standard"),
         "max_uses": c.max_uses,
         "uses_count": c.uses_count,
         "is_active": c.is_active,
@@ -1277,10 +1280,13 @@ async def create_coupon(body: CouponCreateRequest, user=Depends(get_current_user
     existing = await Coupon.find_one({"code": code})
     if existing:
         raise HTTPException(status_code=409, detail="A coupon with this code already exists")
+    if body.credit_type not in ("standard", "accelerated"):
+        raise HTTPException(status_code=400, detail="credit_type must be 'standard' or 'accelerated'")
     coupon = Coupon(
         code=code,
         description=body.description,
         credit_usd=body.credit_usd,
+        credit_type=body.credit_type,
         max_uses=body.max_uses,
         expires_at=body.expires_at,
         created_by=user.email,
@@ -1300,6 +1306,10 @@ async def update_coupon(code: str, body: CouponUpdateRequest, _=Depends(get_curr
         updates["description"] = body.description
     if body.credit_usd is not None:
         updates["credit_usd"] = body.credit_usd
+    if body.credit_type is not None:
+        if body.credit_type not in ("standard", "accelerated"):
+            raise HTTPException(status_code=400, detail="credit_type must be 'standard' or 'accelerated'")
+        updates["credit_type"] = body.credit_type
     if body.max_uses is not None:
         updates["max_uses"] = body.max_uses
     if body.is_active is not None:

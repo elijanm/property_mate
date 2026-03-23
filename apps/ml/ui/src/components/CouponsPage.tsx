@@ -94,6 +94,12 @@ export default function CouponsPage() {
                     <div className="text-gray-600">credit</div>
                   </div>
                   <div className="text-center">
+                    <div className={`font-semibold ${c.credit_type === 'accelerated' ? 'text-violet-400' : 'text-sky-400'}`}>
+                      {c.credit_type === 'accelerated' ? '⚡ Accelerated' : '🖥 Standard'}
+                    </div>
+                    <div className="text-gray-600">compute</div>
+                  </div>
+                  <div className="text-center">
                     <div className="text-white font-semibold">{c.uses_count}{c.max_uses > 0 ? `/${c.max_uses}` : ''}</div>
                     <div className="text-gray-600">uses</div>
                   </div>
@@ -160,6 +166,7 @@ function CouponForm({ initial, onSave, onCancel }: {
   const [code, setCode] = useState(initial?.code ?? '')
   const [description, setDescription] = useState(initial?.description ?? '')
   const [creditUsd, setCreditUsd] = useState(String(initial?.credit_usd ?? ''))
+  const [creditType, setCreditType] = useState<'standard' | 'accelerated'>(initial?.credit_type ?? 'standard')
   const [maxUses, setMaxUses] = useState(String(initial?.max_uses ?? '0'))
   const [expiresAt, setExpiresAt] = useState(initial?.expires_at ? initial.expires_at.slice(0, 10) : '')
   const [saving, setSaving] = useState(false)
@@ -175,6 +182,7 @@ function CouponForm({ initial, onSave, onCancel }: {
         code: code.trim().toUpperCase(),
         description,
         credit_usd: credit,
+        credit_type: creditType,
         max_uses: parseInt(maxUses) || 0,
         expires_at: expiresAt || null,
       })
@@ -201,6 +209,26 @@ function CouponForm({ initial, onSave, onCancel }: {
         <div className="space-y-1">
           <label className="text-xs text-gray-400">Credit (USD)</label>
           <input type="number" min="0.01" step="0.01" value={creditUsd} onChange={e => setCreditUsd(e.target.value)} placeholder="5.00" className={inputCls} />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs text-gray-400">Compute type</label>
+          <div className="flex gap-2">
+            {(['standard', 'accelerated'] as const).map(t => (
+              <button key={t} type="button" onClick={() => setCreditType(t)}
+                className={`flex-1 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                  creditType === t
+                    ? t === 'accelerated'
+                      ? 'border-violet-500 bg-violet-900/30 text-violet-300'
+                      : 'border-sky-500 bg-sky-900/30 text-sky-300'
+                    : 'border-white/10 text-gray-500 hover:border-white/20 hover:text-gray-300'
+                }`}>
+                {t === 'accelerated' ? '⚡ Accelerated' : '🖥 Standard'}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-gray-600">
+            {creditType === 'accelerated' ? 'Credits cloud GPU (general balance)' : 'Credits CPU / local GPU (standard balance)'}
+          </p>
         </div>
         <div className="space-y-1">
           <label className="text-xs text-gray-400">Max uses <span className="text-gray-600">(0 = unlimited)</span></label>

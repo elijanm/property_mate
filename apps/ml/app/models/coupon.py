@@ -10,7 +10,8 @@ from app.utils.datetime import utc_now
 class Coupon(Document):
     code: str                              # e.g. "LAUNCH50" — unique, case-insensitive stored UPPER
     description: str = ""                  # internal note
-    credit_usd: float                      # amount to credit (standard balance)
+    credit_usd: float                      # amount to credit
+    credit_type: str = "standard"          # "standard" (CPU/local GPU) | "accelerated" (cloud GPU)
     max_uses: int = 0                      # 0 = unlimited
     uses_count: int = 0                    # incremented atomically on redemption
     is_active: bool = True

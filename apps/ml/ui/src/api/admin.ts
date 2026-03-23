@@ -165,10 +165,10 @@ export const adminApi = {
   listCoupons: () =>
     client.get<Coupon[]>('/admin/coupons').then(r => r.data),
 
-  createCoupon: (data: { code: string; description?: string; credit_usd: number; max_uses?: number; expires_at?: string | null }) =>
+  createCoupon: (data: { code: string; description?: string; credit_usd: number; credit_type?: 'standard' | 'accelerated'; max_uses?: number; expires_at?: string | null }) =>
     client.post<Coupon>('/admin/coupons', data).then(r => r.data),
 
-  updateCoupon: (code: string, data: Partial<{ description: string; credit_usd: number; max_uses: number; is_active: boolean; expires_at: string | null }>) =>
+  updateCoupon: (code: string, data: Partial<{ description: string; credit_usd: number; credit_type: 'standard' | 'accelerated'; max_uses: number; is_active: boolean; expires_at: string | null }>) =>
     client.patch<Coupon>(`/admin/coupons/${code}`, data).then(r => r.data),
 
   deleteCoupon: (code: string) =>
@@ -183,6 +183,7 @@ export interface Coupon {
   code: string
   description: string
   credit_usd: number
+  credit_type: 'standard' | 'accelerated'
   max_uses: number
   uses_count: number
   is_active: boolean

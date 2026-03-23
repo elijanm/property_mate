@@ -57,7 +57,7 @@ async def validate_coupon(code: str) -> dict:
     from app.services.coupon_service import validate_coupon as _validate
     try:
         coupon = await _validate(code)
-        return {"valid": True, "credit_usd": coupon.credit_usd, "code": coupon.code}
+        return {"valid": True, "credit_usd": coupon.credit_usd, "credit_type": coupon.credit_type, "code": coupon.code}
     except Exception as exc:
         return {"valid": False, "error": str(exc)}
 

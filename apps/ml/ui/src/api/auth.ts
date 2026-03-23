@@ -54,7 +54,7 @@ export const authApi = {
     client.patch('/auth/profile', data).then(r => r.data),
 
   validateCoupon: (code: string) =>
-    client.get<{ valid: boolean; credit_usd?: number; code?: string; error?: string }>(`/auth/validate-coupon`, { params: { code } }).then(r => r.data),
+    client.get<{ valid: boolean; credit_usd?: number; credit_type?: 'standard' | 'accelerated'; code?: string; error?: string }>(`/auth/validate-coupon`, { params: { code } }).then(r => r.data),
 
   checkEmail: (email: string) =>
     client.post<{ is_disposable: boolean; risk_score: number; confidence: string }>('/auth/check-email', { email }).then(r => r.data),

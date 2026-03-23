@@ -44,12 +44,14 @@ async def redeem(coupon: Coupon, user_email: str, org_id: str) -> float:
         return 0.0
 
     wallet = await wallet_service.get_or_create(user_email, org_id)
+    is_standard = coupon.credit_type != "accelerated"
+    type_label = "standard compute" if is_standard else "accelerated compute"
     await wallet_service.credit(
         wallet,
         coupon.credit_usd,
         reference=f"coupon:{coupon.code}",
-        description=f"Coupon credit — {coupon.code}",
-        is_standard=True,
+        description=f"Coupon credit — {coupon.code} ({type_label})",
+        is_standard=is_standard,
     )
 
     # Record redemption
