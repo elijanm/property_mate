@@ -25,6 +25,12 @@ export interface SignupPayload {
   org_name: string
 }
 
+export interface EmailCheckResult {
+  is_disposable: boolean
+  risk_score: number
+  confidence: string
+}
+
 export const authApi = {
   me(): Promise<MeResponse> {
     return client.get<MeResponse>('/auth/me').then((r) => r.data)
@@ -36,5 +42,17 @@ export const authApi = {
 
   verifyOtp(data: { email: string; otp: string }): Promise<LoginResponse> {
     return client.post<LoginResponse>('/auth/signup/verify-otp', data).then((r) => r.data)
+  },
+
+  checkEmail(email: string): Promise<EmailCheckResult> {
+    return client.post<EmailCheckResult>('/auth/check-email', { email }).then((r) => r.data)
+  },
+
+  updateEmail(email: string): Promise<{ is_disposable: boolean; attempts: number; email: string; user: MeResponse }> {
+    return client.patch('/auth/me/email', { email }).then((r) => r.data)
+  },
+
+  ignoreDisposableEmail(): Promise<{ ok: boolean }> {
+    return client.post('/auth/me/email/ignore').then((r) => r.data)
   },
 }

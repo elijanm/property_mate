@@ -3,7 +3,9 @@ import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import AuthLayout from '@/layouts/AuthLayout'
 import apiClient from '@/api/client'
+import { authApi } from '@/api/auth'
 import { extractApiError } from '@/utils/apiError'
+import DisposableEmailModal from '@/components/DisposableEmailModal'
 
 export default function LoginPage() {
   const { login } = useAuth()
@@ -12,6 +14,8 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [showDisposableModal, setShowDisposableModal] = useState(false)
+  const [disposableAttempts, setDisposableAttempts] = useState(0)
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -21,6 +25,19 @@ export default function LoginPage() {
       const res = await apiClient.post('/auth/login', { email, password })
       const { token, user, refresh_token } = res.data
       login(token, user, refresh_token)
+
+      try {
+        const check = await authApi.checkEmail(email)
+        if (check.is_disposable && check.confidence !== 'unavailable') {
+          setDisposableAttempts(0)
+          setShowDisposableModal(true)
+          setLoading(false)
+          return
+        }
+      } catch {
+        // Inference unavailable — proceed normally
+      }
+
       navigate('/', { replace: true })
     } catch (err) {
       setError(extractApiError(err).message)
@@ -29,8 +46,33 @@ export default function LoginPage() {
     }
   }
 
+  async function handleUseRealEmail(realEmail: string) {
+    const result = await authApi.updateEmail(realEmail)
+    if (!result.is_disposable) {
+      setShowDisposableModal(false)
+      navigate('/', { replace: true })
+    }
+    setDisposableAttempts(result.attempts)
+    return { is_disposable: result.is_disposable, attempts: result.attempts }
+  }
+
+  async function handleKeepDisposable() {
+    try { await authApi.ignoreDisposableEmail() } catch { /* best-effort */ }
+    setShowDisposableModal(false)
+    navigate('/', { replace: true })
+  }
+
   return (
     <AuthLayout>
+      {showDisposableModal && (
+        <DisposableEmailModal
+          suspectedEmail={email}
+          attempts={disposableAttempts}
+          onUseReal={handleUseRealEmail}
+          onKeep={handleKeepDisposable}
+        />
+      )}
+
       <form onSubmit={handleSubmit} className="space-y-4">
         {error && (
           <div className="bg-red-50 text-red-700 rounded px-4 py-2 text-sm">{error}</div>

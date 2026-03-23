@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useRunningJobsCount } from './hooks/useTrainingJob'
 import { trackPageView } from './utils/analytics'
 import { trainersApi } from './api/trainers'
 import { authApi } from './api/auth'
@@ -98,7 +99,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'datasets',    label: 'Datasets',     icon: <Database size={14} /> },
       { id: 'annotate',    label: 'Annotate',     icon: <Pencil size={14} /> },
       { id: 'editor',          label: 'Code Editor',      icon: <Code2 size={14} />, roles: ['engineer', 'admin'] },
-      { id: 'trainers',        label: 'Trainers',         icon: <Brain size={14} />, roles: ['engineer', 'admin'] },
+      { id: 'trainers',        label: 'Neurals',          icon: <Brain size={14} />, roles: ['engineer', 'admin'] },
       { id: 'experiments', label: 'Experiments',  icon: <GitCompare size={14} />, roles: ['engineer', 'admin'] },
     ],
   },
@@ -143,7 +144,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: 'accounts',        label: 'Accounts',        icon: <UserCheck size={14} /> },
       { id: 'security',        label: 'Security',        icon: <Shield size={14} /> },
-      { id: 'trainer-reviews', label: 'Trainer Reviews', icon: <ShieldAlert size={14} /> },
+      { id: 'trainer-reviews', label: 'Neural Reviews',  icon: <ShieldAlert size={14} /> },
       { id: 'audit',           label: 'Audit Log',       icon: <ClipboardList size={14} /> },
       { id: 'analytics',       label: 'Analytics',       icon: <BarChart2 size={14} /> },
     ],
@@ -168,7 +169,7 @@ const NAV = NAV_GROUPS.flatMap(g => g.items)
 
 const PAGE_TITLE: Record<Page, string> = {
   models:      'Model Deployments',
-  trainers:    'Trainer Plugins',
+  trainers:    'Neurals',
   editor:      'Code Editor',
   deploy:      'Deploy Model',
   training:    'Training',
@@ -192,15 +193,16 @@ const PAGE_TITLE: Record<Page, string> = {
   usage:       'Usage Tracker',
   staff:       'Staff Management',
   clients:     'Clients',
-  marketplace: 'Trainer Marketplace',
+  marketplace: 'Neural Marketplace',
   profile:     'My Profile',
   accounts:         'All Accounts',
   watermark:        'Watermark Settings',
-  'trainer-reviews':  'Trainer Security Reviews',
+  'trainer-reviews':  'Neural Security Reviews',
 }
 
 export default function App() {
   const { user, logout, loading: authLoading, pendingEmail, clearPending, login, setOnboarded } = useAuth()
+  const runningJobsCount = useRunningJobsCount()
 
   // Annotator session — stored separately from engineer/admin session
   const [annotatorUser, setAnnotatorUser] = useState(() => {
@@ -308,6 +310,16 @@ export default function App() {
     trackPageView(`/${target}`)
   }
 
+  // Allow child pages (e.g. CodeEditorPage) to navigate via window events
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (typeof detail === 'string') navigate(detail as Page)
+    }
+    window.addEventListener('navigate', handler)
+    return () => window.removeEventListener('navigate', handler)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleTrainingCompleted = async (trainerName: string) => {
     setRefreshing(true)
     try {
@@ -325,7 +337,7 @@ export default function App() {
 
   const title = selected ? selected.mlflow_model_name : PAGE_TITLE[page]
   const subtitle = selected
-    ? `Trainer: ${selected.trainer_name}`
+    ? `Neural: ${selected.trainer_name}`
     : page === 'models'
       ? `${deployments.length} deployed model${deployments.length !== 1 ? 's' : ''}`
       : ''
@@ -541,6 +553,12 @@ export default function App() {
                         page === item.id && !selected ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200'
                       )}>
                       {item.icon} {item.label}
+                      {item.id === 'training' && runningJobsCount > 0 && (
+                        <span className="ml-auto flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                          <span className="text-[10px] text-amber-400 font-mono">{runningJobsCount}</span>
+                        </span>
+                      )}
                     </button>
                   ))}
                 </div>

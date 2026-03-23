@@ -1563,6 +1563,7 @@ class <ClassName>(BaseTrainer):
         #     # r2=float(r2_score(y_te, y_pred)),                   # regression
         #     y_true=list(y_te), y_pred=list(y_pred),              # for confusion matrix
         #     extra_metrics={"<custom_metric>": <float_value>},
+        #     tags={"dataset_version": "v1", "environment": "prod"},  # optional string labels
         # )
         raise NotImplementedError("Replace this with real evaluation logic")
 
@@ -2471,8 +2472,13 @@ async def _main():
     from app.abstract.base_trainer import TrainingConfig
 
     await init_db()
-    print("[editor] Scanning plugins...", flush=True)
-    await scan_and_register_plugins()
+    from pathlib import Path as _Path
+    print("[editor] Scanning plugins (targeted)...", flush=True)
+    await scan_and_register_plugins(
+        owner_email={owner_email!r} or None,
+        org_id={org_id!r} or None,
+        only_file=_Path({plugin_path!r}),
+    )
 
     cls = get_trainer_class({trainer_name!r})
     if not cls:
@@ -2530,6 +2536,7 @@ async def _execute_trainer(
     plugin_path: Path,
     overrides: Optional[dict],
     org_id: str = "",
+    owner_email: str = "",
     billing_info: Optional[dict] = None,
 ) -> None:
     """Run the trainer in a subprocess and push output lines to the in-memory queue."""
@@ -2550,6 +2557,8 @@ async def _execute_trainer(
         trainer_name=trainer_name,
         overrides_snippet=overrides_snippet or "    pass  # no overrides",
         plugin_path=str(plugin_path),
+        owner_email=owner_email,
+        org_id=org_id,
     )
 
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": "/app", "ML_ORG_ID": org_id}
@@ -2563,7 +2572,7 @@ async def _execute_trainer(
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-c", runner_code,
+            sys.executable, "-u","-c", runner_code,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=env,
@@ -2690,7 +2699,8 @@ async def run_trainer(body: RunRequest, user=Depends(require_roles("engineer", "
     # Fire background task
     asyncio.create_task(
         _execute_trainer(job_id, body.trainer_name, full, body.config_overrides,
-                         org_id=user.org_id or "", billing_info=billing_info)
+                         org_id=user.org_id or "", owner_email=user.email or "",
+                         billing_info=billing_info)
     )
 
     return {"job_id": job_id, "status": "running"}

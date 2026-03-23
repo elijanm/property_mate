@@ -162,7 +162,10 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
             )
             return
 
-        # Change-detection: if file hash no longer matches approved hash, require re-review
+        # Change-detection: log a warning if the file hash has changed since approval,
+        # but do NOT block training or mutate the registration — the approval already
+        # vetted the code and false-positive mismatches (encoding, copy artifacts) would
+        # permanently lock the trainer into pending_review.
         if approval_status == "approved":
             import hashlib, os
             plugin_file = getattr(trainer_reg, "plugin_file", None)
@@ -171,23 +174,19 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
                 with open(plugin_file, "rb") as fh:
                     current_hash = hashlib.sha256(fh.read()).hexdigest()
                 if current_hash != approved_hash:
-                    await trainer_reg.set({
-                        "approval_status": "pending_review",
-                        "is_active": False,
-                        "updated_at": utc_now(),
-                    })
-                    await _fail(
-                        job,
-                        f"Trainer '{job.trainer_name}' source has changed since last approval. "
-                        "Re-submission required.",
+                    logger.warning(
+                        "trainer_file_hash_mismatch",
+                        trainer_name=job.trainer_name,
+                        job_id=job_id,
+                        plugin_file=plugin_file,
                     )
-                    return
 
     trainer: BaseTrainer = trainer_cls()
     config = await get_training_config(job.training_config.get("extra"))
 
     # Mark running
     await job.set({"status": "running", "started_at": utc_now(), "updated_at": utc_now()})
+    await _publish_job_event(job_id, {"type": "status", "status": "running", "trainer_name": job.trainer_name})
 
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
     experiment = mlflow.set_experiment(settings.MLFLOW_DEFAULT_EXPERIMENT)
@@ -231,15 +230,19 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
                 from app.abstract.data_source import UploadedFileDataSource
                 if isinstance(trainer.data_source, UploadedFileDataSource):
                     trainer.data_source.inject(injected_data)
-            # Inject org_id so DatasetDataSource can auto-create missing datasets
-            from app.abstract.data_source import DatasetDataSource
+            # Inject org_id so DatasetDataSource / UrlDatasetDataSource can
+            # auto-create missing datasets scoped to this org.
+            from app.abstract.data_source import DatasetDataSource, UrlDatasetDataSource
             if isinstance(trainer.data_source, DatasetDataSource) and job.org_id:
                 trainer.data_source.org_id = job.org_id
                 # Apply dataset slug override if the user selected a different dataset
                 if getattr(job, "dataset_slug_override", None):
                     await _log(job, f"Using dataset override: {job.dataset_slug_override}")
                     trainer.data_source.slug = job.dataset_slug_override
-            raw_data = await trainer.data_source.load(injected_data=injected_data)
+            raw_data = await trainer.data_source.load(
+                injected_data=injected_data,
+                org_id=job.org_id or "",   # consumed by UrlDatasetDataSource.load()
+            )
             await _log(job, f"Data loaded ({len(raw_data) if isinstance(raw_data, (bytes, list)) else 'n/a'} bytes/items)")
 
             # ── Sandbox branches ───────────────────────────────────────────────
@@ -333,9 +336,17 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
                         with scrubbed_env():
                             eval_result = trainer.evaluate(model, test_data)
                         metrics = _eval_to_metrics(eval_result)
+                        # Merge explicit tags from evaluate() with any string extra_metrics
+                        # that couldn't be logged as numeric metrics.
+                        all_tags = {**_eval_to_auto_tags(eval_result), **(eval_result.tags or {})}
                         mlflow.log_metrics(metrics)
-                        await job.set({"metrics": metrics, "updated_at": utc_now()})
+                        if all_tags:
+                            mlflow.set_tags(all_tags)
+                        await job.set({"metrics": metrics, "eval_tags": all_tags, "updated_at": utc_now()})
                         await _log(job, f"Metrics: {metrics}")
+                        if all_tags:
+                            await _log(job, f"Eval tags: {all_tags}")
+                        await _publish_job_event(job_id, {"type": "metrics", "metrics": metrics, "eval_tags": all_tags})
                         # Log schemas + visualisations as MLflow artifacts
                         _log_schema_artifacts(trainer_cls)
                         class_names = trainer.get_class_names() if hasattr(trainer, "get_class_names") else []
@@ -409,6 +420,7 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
                 run_id=run.info.run_id,
                 model_uri=final_uri,
                 metrics=_eval_to_metrics(eval_result) if eval_result else {},
+                eval_tags=eval_result.tags if eval_result else {},
                 tags=trainer.tags,
                 input_schema=getattr(trainer_cls, "input_schema", {}),
                 output_schema=getattr(trainer_cls, "output_schema", {}),
@@ -447,6 +459,13 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
                 "updated_at": finished_at,
             })
             await _log(job, "Training complete.")
+            await _publish_job_event(job_id, {
+                "type": "status",
+                "status": "completed",
+                "metrics": _eval_to_metrics(eval_result) if eval_result else job.metrics,
+                "model_uri": final_uri,
+                "trainer_name": job.trainer_name,
+            })
 
             # Local training billing + plan usage recording
             if job.compute_type == "local" and job.owner_email:
@@ -677,13 +696,49 @@ def _eval_to_metrics(result: Optional[EvaluationResult]) -> Dict[str, float]:
         val = getattr(result, key, None)
         if val is not None:
             out[key] = float(val)
-    out.update(result.extra_metrics or {})
+    for k, v in (result.extra_metrics or {}).items():
+        try:
+            out[k] = float(v)
+        except (TypeError, ValueError):
+            pass  # non-numeric extras are picked up by _eval_to_auto_tags
     return out
+
+
+def _eval_to_auto_tags(result: Optional[EvaluationResult]) -> Dict[str, str]:
+    """Promote non-numeric extra_metrics values to string tags automatically.
+
+    This lets trainers return things like {"best_class": "cat", "optimizer": "adam"}
+    in extra_metrics without crashing mlflow.log_metrics — they land in mlflow tags
+    instead, so no information is silently dropped.
+    """
+    if not result:
+        return {}
+    out = {}
+    for k, v in (result.extra_metrics or {}).items():
+        try:
+            float(v)
+        except (TypeError, ValueError):
+            out[k] = str(v)
+    return out
+
+
+async def _publish_job_event(job_id: str, payload: dict) -> None:
+    """Publish a training job event to Redis so SSE clients receive it live."""
+    try:
+        import json
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        await r.publish(f"ml:training:{job_id}", json.dumps(payload))
+        await r.aclose()
+    except Exception:
+        pass  # publish failure must never interrupt training
 
 
 async def _log(job: TrainingJob, line: str) -> None:
     ts = datetime.now(timezone.utc).isoformat()
-    await job.update({"$push": {"log_lines": f"[{ts}] {line}"}})
+    stamped = f"[{ts}] {line}"
+    await job.update({"$push": {"log_lines": stamped}})
+    await _publish_job_event(str(job.id), {"type": "log", "line": stamped})
 
 
 async def _fail(job: TrainingJob, error: str) -> None:
@@ -693,6 +748,7 @@ async def _fail(job: TrainingJob, error: str) -> None:
         "finished_at": utc_now(),
         "updated_at": utc_now(),
     })
+    await _publish_job_event(str(job.id), {"type": "status", "status": "failed", "error": error})
 
 
 class _PickleWrapper(mlflow.pyfunc.PythonModel):

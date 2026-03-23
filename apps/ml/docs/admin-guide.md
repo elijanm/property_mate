@@ -16,6 +16,8 @@
 8. [Environment Variables](#8-environment-variables)
 9. [Rotating the Default Admin](#9-rotating-the-default-admin)
 10. [Troubleshooting Auth Issues](#10-troubleshooting-auth-issues)
+11. [Server Sizing & Traffic Capacity](#11-server-sizing--traffic-capacity)
+12. [Platform Comparison: PMS ML Studio vs Replicate vs Hugging Face](#12-platform-comparison-pms-ml-studio-vs-replicate-vs-hugging-face)
 
 ---
 
@@ -367,6 +369,201 @@ Authorization: Bearer <token>
 ```
 
 If role is `viewer` or `engineer`, an admin must elevate it.
+
+---
+
+---
+
+## 11. Server Sizing & Traffic Capacity
+
+### Memory layout (all services on one host)
+
+| Component | Idle RAM | Under load |
+|---|---|---|
+| FastAPI (uvicorn, 4 workers) | ~200 MB | ~600–900 MB |
+| MongoDB | ~300 MB | ~1–2 GB |
+| Redis | ~50 MB | ~200–400 MB |
+| RabbitMQ | ~100 MB | ~200 MB |
+| OS + misc | ~500 MB | ~500 MB |
+| **Total** | **~1.2 GB** | **~3–4 GB** |
+
+A box with 8 GB RAM has ~4 GB of safe working headroom after services settle.
+
+### Request throughput
+
+**Standard API requests** (list neurals, get submission, inference, etc.):
+- FastAPI async + Motor handles ~800–1,500 req/s per uvicorn worker
+- 4 workers → **~3,000–5,000 req/s** — bottleneck is MongoDB, not Python
+
+**Neural uploads + security scans:**
+- Each active LLM scan holds ~2–5 MB in Python heap (prompt + response buffers)
+- Safe concurrent scans: **~20–30 simultaneous** before RAM pressure builds
+- At ~30s average scan time → **~40–60 uploads/minute** sustained
+
+**SSE streams** (submission status, real-time events):
+- Each open SSE = 1 asyncio task + 1 Redis pubsub subscription
+- Safe concurrent connections: **~500–800** before fd/Redis connection limits apply
+
+**Training jobs:**
+- Each job loads its dataset into Python memory — this is the single largest RAM consumer
+- Dataset fits in RAM: **2–4 concurrent runs** safely on 8 GB
+- Large dataset (>500 MB): **1 at a time**
+
+**Inference requests:**
+- Depends on loaded model size (sklearn/small torch: 50–200 MB each)
+- **10–20 small models** can be cached simultaneously on 8 GB
+
+### The critical variable: Ollama placement
+
+> If Ollama is running on the same host as the ML service, a 7B parameter model alone consumes 5–6 GB of RAM. This leaves only 2–3 GB for everything else and will cause OOM under moderate load.
+
+| Ollama placement | Practical concurrent users |
+|---|---|
+| Same box (7B model) | ~30 max |
+| Separate host | ~300–500 comfortably |
+| Remote API (OpenAI / Anthropic) | ~800–1,000 |
+
+### Recommended server sizes
+
+| Workload | Min RAM | Notes |
+|---|---|---|
+| Internal / ops tool (<50 users) | 8 GB | Move Ollama off-box |
+| Small team (50–200 users) | 16 GB | Ollama can share if <13B model |
+| Production (200–500 users) | 32 GB | Ollama on-box, 2–4 training workers |
+| High-traffic (500+ users) | 32 GB + scale horizontally | Multiple API replicas behind a load balancer |
+
+### Configuration knobs for 8 GB deployments
+
+**`mongod.conf`** — cap WiredTiger cache so MongoDB doesn't eat all available RAM:
+```yaml
+storage:
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: 1
+```
+
+**Redis** — set an eviction ceiling:
+```
+maxmemory 512mb
+maxmemory-policy allkeys-lru
+```
+
+**uvicorn workers** — reduce to 2 if training jobs also run on the same box:
+```bash
+uvicorn app.main:app --workers 2
+```
+
+**Scan concurrency** — throttle simultaneous LLM scans via environment variable:
+```
+TRAINER_SCAN_CONCURRENCY=3
+```
+
+---
+
+---
+
+## 12. Platform Comparison: PMS ML Studio vs Replicate vs Hugging Face
+
+### What each platform is solving
+
+| | PMS ML Studio | Replicate | Hugging Face |
+|---|---|---|---|
+| **Purpose** | Operational ML layer inside a multi-tenant SaaS product | Serverless inference API for running any model with one call | Community hub for discovering, sharing, and running pre-trained models |
+| **Primary audience** | Your org's engineers and their end-customers | Developers who want inference without infra | Researchers, companies, the entire AI community |
+| **Compute ownership** | Self-hosted on your infrastructure | Replicate's cloud (billed per second) | HF's cloud (Inference API) or self-hosted (Transformers) |
+
+---
+
+### Pricing
+
+Replicate bills per second of compute used:
+
+| Instance | Replicate rate | Your infra cost (est.) | Your margin |
+|---|---|---|---|
+| CPU | ~$0.0001/sec | ~$0.000023/sec on a $20/mo VPS | ~4× |
+| T4 GPU | ~$0.000225/sec | ~$0.00008/sec spot | ~3× |
+| A40 GPU | ~$0.000725/sec | ~$0.00025/sec spot | ~3× |
+| A100 GPU | ~$0.0023/sec | ~$0.0008/sec spot | ~3× |
+
+HF Inference API is free for small models; pro tier starts at $9/mo with dedicated endpoints billed at similar GPU rates to Replicate.
+
+PMS ML Studio has no per-second billing built in today — the wallet/credit system (`activation_cost_usd`) currently covers plugin activation, not compute time. Adding compute metering (track `training_duration_s` × rate per instance type → deduct credits) is the path to matching Replicate's model.
+
+---
+
+### Feature matrix
+
+| Feature | PMS ML Studio | Replicate | Hugging Face |
+|---|---|---|---|
+| **Inference** | | | |
+| Run a model via API | ✅ | ✅ Core product | ✅ Inference API |
+| Serverless / scale-to-zero | ❌ always-warm | ✅ | ✅ Serverless endpoints |
+| Streaming output (SSE) | ✅ | ✅ | ✅ |
+| Batch inference | ✅ | ✅ | ✅ |
+| Webhooks on completion | ❌ | ✅ | ❌ |
+| **Models** | | | |
+| Bring your own model code | ✅ BaseTrainer plugin | ✅ Cog container | ✅ push_to_hub |
+| Pre-trained foundation models | ❌ | ✅ Llama, SD, Whisper… | ✅ 800k+ models |
+| Model versioning | ✅ MLflow | ✅ | ✅ git-based |
+| Public model hub / discovery | ❌ private only | ✅ | ✅ massive community |
+| Model cards / documentation | ❌ | ✅ | ✅ |
+| Fork a public model | ❌ | ✅ | ✅ |
+| **Training** | | | |
+| Trigger training runs | ✅ full pipeline | ✅ limited fine-tune API | ✅ AutoTrain |
+| Training UI with live log stream | ✅ SSE console | ❌ | ❌ |
+| Experiment tracking | ✅ MLflow | ❌ | ❌ |
+| A/B testing | ✅ | ❌ | ❌ |
+| Drift detection | ✅ | ❌ | ❌ |
+| Alert rules on model metrics | ✅ | ❌ | ❌ |
+| Custom trainer plugins | ✅ uploaded Python class | ❌ | ❌ |
+| **Security** | | | |
+| Code scanning before execution | ✅ AST + LLM scan | ❌ trusts your container | ❌ |
+| Admin approval workflow | ✅ | ❌ | ❌ |
+| IP threat scoring + banning | ✅ | ❌ | ❌ |
+| Audit trail | ✅ | ❌ | ❌ |
+| **Data** | | | |
+| Dataset management | ✅ | ❌ | ✅ HF Datasets |
+| Annotation pipeline integration | ✅ | ❌ | ❌ |
+| Community datasets | ❌ | ❌ | ✅ |
+| **Multi-tenancy** | | | |
+| Hard per-org data isolation | ✅ first-class | ❌ single-tenant | ❌ namespace only |
+| Per-org roles (viewer/engineer/admin) | ✅ | ❌ | ❌ |
+| Per-org billing / wallets | ✅ | ❌ (billed to account) | ❌ |
+| Commercial plugin marketplace | ✅ activation_cost_usd | ❌ | ❌ |
+| **Ops** | | | |
+| API keys with rate limits | ✅ | ✅ | ✅ |
+| Prometheus + Grafana | ✅ | ❌ proprietary | ❌ proprietary |
+| Self-hostable | ✅ fully | ❌ | ✅ (Transformers, not the hub) |
+
+---
+
+### Where each platform wins
+
+**Replicate wins when:**
+- You want to run a pre-trained model (Llama, Stable Diffusion, Whisper) in one API call with zero infra setup
+- You need true scale-to-zero — pay nothing when idle
+- Your use case is pure inference, no training, no custom code
+
+**Hugging Face wins when:**
+- You need access to 800k+ community models and datasets
+- You're doing research and want to share/discover pre-trained weights
+- Fine-tuning a foundation model is more useful than training from scratch
+
+**PMS ML Studio wins when:**
+- You're building a product where each customer must have fully isolated ML data — Replicate and HF cannot offer this without a complete architecture change
+- You need to let untrusted users upload training code — the AST + LLM security gate is unique to this platform
+- You need a full MLOps loop (training → experiment tracking → A/B → drift → alerts) not just inference
+- You want a commercial plugin ecosystem where ML engineers sell trained models to other orgs
+
+---
+
+### Gaps to close before going public
+
+1. **Compute metering** — track `training_duration_s` × rate per instance type → deduct from wallet (matches Replicate's billing model)
+2. **Container-isolated training** — each job in its own Kubernetes pod with resource limits (today all jobs share the worker process)
+3. **Serverless inference** — cold-start support so idle models don't hold RAM
+4. **Public model hub** — `visibility: public` on `TrainerRegistration` + unauthenticated browse page
+5. **Foundation model wrappers** — BaseTrainer plugins that wrap HF models for fine-tuning (bridges the pre-trained model gap without hosting weights yourself)
 
 ---
 

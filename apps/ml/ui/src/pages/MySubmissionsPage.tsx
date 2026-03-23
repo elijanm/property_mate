@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   ShieldAlert, ShieldCheck, Clock, RefreshCw, Loader2,
   AlertTriangle, CheckCircle2, XCircle, FileCode, Play,
   ChevronDown, ChevronUp,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { trainerSubmissionsApi } from '@/api/trainerSubmissions'
+import { trainerSubmissionsApi, streamSubmissionStatus } from '@/api/trainerSubmissions'
 import type { TrainerSubmission } from '@/types/trainerSubmission'
 
 // ── Status helpers ─────────────────────────────────────────────────────────────
@@ -40,7 +40,7 @@ const STATUS_CONFIG: Record<
     icon: ShieldCheck,
     color: 'text-emerald-400',
     bg: 'bg-emerald-900/20 border-emerald-800/40',
-    desc: 'Approved and active. You can run this trainer.',
+    desc: 'Approved and active. You can run this neural.',
   },
   rejected: {
     label: 'Rejected',
@@ -177,6 +177,8 @@ function SubmissionCard({ sub, onRun }: { sub: TrainerSubmission; onRun: (name: 
 export default function MySubmissionsPage() {
   const [submissions, setSubmissions] = useState<TrainerSubmission[]>([])
   const [loading, setLoading] = useState(true)
+  // track open SSE streams so we can clean them up
+  const streamsRef = useRef<Map<string, () => void>>(new Map())
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -189,12 +191,62 @@ export default function MySubmissionsPage() {
 
   useEffect(() => { load() }, [load])
 
-  // Auto-refresh while any submission is scanning
+  // Open SSE streams for any scanning submissions; close stale streams
   useEffect(() => {
-    const scanning = submissions.some(s => s.status === 'scanning')
-    if (!scanning) return
-    const t = setTimeout(load, 4000)
-    return () => clearTimeout(t)
+    const scanning = submissions.filter(s => s.status === 'scanning')
+    const streams = streamsRef.current
+
+    // Close streams for submissions no longer scanning
+    for (const [id, close] of streams) {
+      if (!scanning.find(s => s.id === id)) {
+        close()
+        streams.delete(id)
+      }
+    }
+
+    // Open new streams for newly scanning submissions
+    for (const sub of scanning) {
+      if (streams.has(sub.id)) continue
+
+      const close = streamSubmissionStatus(
+        sub.id,
+        (evt) => {
+          // Patch this submission's status in state live
+          setSubmissions(prev => prev.map(s =>
+            s.id === sub.id
+              ? {
+                  ...s,
+                  status: evt.status,
+                  llm_scan_result: evt.llm_scan_result
+                    ? evt.llm_scan_result as TrainerSubmission['llm_scan_result']
+                    : s.llm_scan_result,
+                }
+              : s
+          ))
+        },
+        (_finalStatus) => {
+          // Terminal — reload list to get full fresh data
+          streams.delete(sub.id)
+          load()
+          // If approved, tell TrainersPage to reload so the new trainer appears immediately
+          if (_finalStatus === 'approved') {
+            window.dispatchEvent(new CustomEvent('trainers-refresh'))
+          }
+        },
+        () => {
+          // SSE error — fall back to a single poll
+          streams.delete(sub.id)
+          load()
+        },
+      )
+      streams.set(sub.id, close)
+    }
+
+    return () => {
+      // Cleanup all streams on unmount
+      for (const close of streams.values()) close()
+      streams.clear()
+    }
   }, [submissions, load])
 
   const handleRun = (trainerName: string) => {
@@ -213,8 +265,8 @@ export default function MySubmissionsPage() {
         <div className="flex items-center gap-3">
           <FileCode size={20} className="text-brand-400" />
           <div>
-            <h1 className="text-lg font-bold text-white">My Trainer Submissions</h1>
-            <p className="text-xs text-gray-600">Track approval status of your uploaded trainers</p>
+            <h1 className="text-lg font-bold text-white">My Neural Submissions</h1>
+            <p className="text-xs text-gray-600">Track approval status of your uploaded neurals</p>
           </div>
         </div>
         <button
@@ -250,8 +302,8 @@ export default function MySubmissionsPage() {
       ) : submissions.length === 0 ? (
         <div className="text-center py-20 space-y-3">
           <FileCode size={32} className="text-gray-700 mx-auto" />
-          <p className="text-sm text-gray-500">No trainer submissions yet.</p>
-          <p className="text-xs text-gray-600">Upload a <code className="text-gray-400">.py</code> trainer from the code editor to get started.</p>
+          <p className="text-sm text-gray-500">No neural submissions yet.</p>
+          <p className="text-xs text-gray-600">Upload a <code className="text-gray-400">.py</code> neural from the code editor to get started.</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -260,7 +312,7 @@ export default function MySubmissionsPage() {
             <div className="flex items-center gap-2.5 bg-emerald-900/20 border border-emerald-800/40 rounded-xl px-4 py-3">
               <CheckCircle2 size={15} className="text-emerald-400 flex-shrink-0" />
               <p className="text-sm text-emerald-300">
-                {approved} trainer{approved > 1 ? 's are' : ' is'} approved and ready to run.
+                {approved} neural{approved > 1 ? 's are' : ' is'} approved and ready to run.
               </p>
             </div>
           )}

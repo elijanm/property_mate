@@ -1,6 +1,51 @@
 import api from './client';
 import type { TrainerSubmission, AdminTicket } from '../types/trainerSubmission';
 
+export type SubStatusEvent = {
+  status: TrainerSubmission['status']
+  message?: string
+  summary?: string
+  severity?: string
+  instant?: boolean
+  llm_scan_result?: Record<string, unknown>
+}
+
+/**
+ * Open an SSE stream for a submission.
+ * Uses EventSource with ?token= because browser EventSource cannot set headers.
+ * Returns a cleanup function — call it to close the stream.
+ */
+export function streamSubmissionStatus(
+  submissionId: string,
+  onStatus: (evt: SubStatusEvent) => void,
+  onDone: (finalStatus: TrainerSubmission['status']) => void,
+  onError?: () => void,
+): () => void {
+  const token = localStorage.getItem('ml_token') ?? ''
+  const url = `/api/v1/trainer-submissions/${submissionId}/stream?token=${encodeURIComponent(token)}`
+  const es = new EventSource(url)
+
+  es.addEventListener('status', (e: MessageEvent) => {
+    try { onStatus(JSON.parse(e.data)) } catch {}
+  })
+
+  es.addEventListener('done', (e: MessageEvent) => {
+    try {
+      const d = JSON.parse(e.data)
+      onDone(d.status)
+    } catch {}
+    es.close()
+  })
+
+  es.addEventListener('error', () => {
+    onError?.()
+    es.close()
+  })
+
+  // Ignore ping events
+  return () => es.close()
+}
+
 export const trainerSubmissionsApi = {
   upload: async (file: File): Promise<TrainerSubmission> => {
     const formData = new FormData();

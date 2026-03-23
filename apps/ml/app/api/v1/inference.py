@@ -177,13 +177,31 @@ async def run_inference_upload(
     filename = file.filename or "upload"
     mime = file.content_type or "application/octet-stream"
 
+    b64_data = _file_to_b64(data)
     inputs: dict = {
-        "file_b64": _file_to_b64(data),
+        "file_b64": b64_data,
         "file_name": filename,
         "mime_type": mime,
     }
     if mime.startswith("image/"):
-        inputs["image_b64"] = inputs["file_b64"]
+        inputs["image_b64"] = b64_data
+
+    # Map uploaded file to schema-declared image/file fields so trainers that
+    # read inputs["image"] (or any other declared name) receive the data correctly.
+    from app.models.model_deployment import ModelDeployment as _Dep
+    _dep = await _Dep.find_one(
+        _Dep.trainer_name == trainer_name,
+        _Dep.status == "active",
+        _Dep.is_default == True,  # noqa: E712
+    ) or await _Dep.find(
+        _Dep.trainer_name == trainer_name,
+        _Dep.status == "active",
+    ).sort(-_Dep.deployed_at).first_or_none()
+    if _dep and _dep.input_schema:
+        for _field_name, _field_spec in _dep.input_schema.items():
+            if isinstance(_field_spec, dict) and _field_spec.get("type") in ("image", "file"):
+                inputs.setdefault(_field_name, b64_data)
+
     if extra:
         try:
             inputs.update(json.loads(extra))
@@ -430,13 +448,29 @@ async def run_inference_org_upload(
     filename = file.filename or "upload"
     mime = file.content_type or "application/octet-stream"
 
+    b64_data = _file_to_b64(data)
     inputs: dict = {
-        "file_b64": _file_to_b64(data),
+        "file_b64": b64_data,
         "file_name": filename,
         "mime_type": mime,
     }
     if mime.startswith("image/"):
-        inputs["image_b64"] = inputs["file_b64"]
+        inputs["image_b64"] = b64_data
+
+    from app.models.model_deployment import ModelDeployment as _Dep
+    _dep = await _Dep.find_one(
+        _Dep.trainer_name == trainer_name,
+        _Dep.status == "active",
+        _Dep.is_default == True,  # noqa: E712
+    ) or await _Dep.find(
+        _Dep.trainer_name == trainer_name,
+        _Dep.status == "active",
+    ).sort(-_Dep.deployed_at).first_or_none()
+    if _dep and _dep.input_schema:
+        for _field_name, _field_spec in _dep.input_schema.items():
+            if isinstance(_field_spec, dict) and _field_spec.get("type") in ("image", "file"):
+                inputs.setdefault(_field_name, b64_data)
+
     if extra:
         try:
             inputs.update(json.loads(extra))

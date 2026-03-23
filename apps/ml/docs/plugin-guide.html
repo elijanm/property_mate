@@ -174,6 +174,7 @@
     <li><a href="#dataset-source">↳ MLDock Dataset</a></li>
     <li><a href="#fetch-bytes">↳ _fetch_bytes helper</a></li>
     <li><a href="#data-sources-other">↳ Other sources</a></li>
+    <li><a href="#url-dataset-source">↳ URL Dataset Source</a></li>
     <li><a href="#predict-inference">predict() &amp; Inference Inputs</a></li>
     <li><a href="#trainer-bundle">↳ TrainerBundle</a></li>
     <li><a href="#trainer-lifecycle">Training Lifecycle</a></li>
@@ -1185,6 +1186,175 @@ data_source = <span class="cl">PaginatedAPIDataSource</span>(
     data_key=<span class="st">"results"</span>,
     max_pages=<span class="nu">50</span>,
 )</code></pre>
+  </section>
+
+  <!-- ═══ URL DATASET SOURCE ═══ -->
+  <section id="url-dataset-source">
+    <h2>UrlDatasetDataSource — Scheduled URL Caching</h2>
+
+    <p>
+      <code class="inline">UrlDatasetDataSource</code> lets you point a trainer at any public or private URL
+      (JSON list, CSV, image manifest, video file) and have the platform fetch and cache it in S3
+      on a configurable schedule. <strong>The URL is never hit at training time</strong> — trainer code
+      only reads from the S3 cache, which means it passes the security scanner without any workarounds.
+    </p>
+
+    <div class="warning-box" style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.3);border-radius:8px;padding:14px 18px;margin-bottom:20px;">
+      <strong style="color:#60a5fa;">Why not URLDataSource?</strong><br>
+      <code class="inline">URLDataSource</code> hits the URL directly at training time — it is blocked by the
+      security scanner when the URL is hardcoded in the plugin. <code class="inline">UrlDatasetDataSource</code>
+      moves the HTTP fetch into the service layer (scheduler), so the scanner sees only an S3 read.
+    </div>
+
+    <h3>Step 1 — Create the URL dataset (UI or API)</h3>
+
+    <p>Go to <strong>Data → URL Datasets → New</strong> in the UI, or call the API:</p>
+
+    <pre><code><span class="cm"># Flat JSON array (e.g. disposable email domain blocklist)</span>
+POST /api/v1/url-datasets
+{
+    <span class="st">"name"</span>: <span class="st">"Disposable Email Domains"</span>,
+    <span class="st">"source_url"</span>: <span class="st">"https://disposable.github.io/disposable-email-domains/domains.json"</span>,
+    <span class="st">"refresh_interval_hours"</span>: <span class="nu">24</span>
+}
+
+<span class="cm"># JSON array of objects with an image URL field</span>
+POST /api/v1/url-datasets
+{
+    <span class="st">"name"</span>: <span class="st">"Cat Photo Dataset"</span>,
+    <span class="st">"source_url"</span>: <span class="st">"https://example.com/cats.json"</span>,
+    <span class="st">"url_field"</span>: <span class="st">"image_url"</span>,
+    <span class="st">"max_items"</span>: <span class="nu">5000</span>,
+    <span class="st">"refresh_interval_hours"</span>: <span class="nu">168</span>
+}
+
+<span class="cm"># CSV file</span>
+POST /api/v1/url-datasets
+{
+    <span class="st">"name"</span>: <span class="st">"Fraud Labels CSV"</span>,
+    <span class="st">"source_url"</span>: <span class="st">"https://internal.example.com/labels/fraud.csv"</span>,
+    <span class="st">"refresh_interval_hours"</span>: <span class="nu">6</span>
+}
+
+<span class="cm"># Response contains the source_id you need for the trainer</span>
+{ <span class="st">"id"</span>: <span class="st">"67d2a1f4abc12345..."</span>, <span class="st">"status"</span>: <span class="st">"pending"</span>, ... }</code></pre>
+
+    <p>The first fetch runs immediately in the background. <code class="inline">status</code> moves from
+    <code class="inline">pending</code> → <code class="inline">fetching</code> → <code class="inline">ready</code>
+    (or <code class="inline">error</code> on failure). Poll <code class="inline">GET /api/v1/url-datasets/{id}</code>
+    to check readiness.</p>
+
+    <h3>Step 2 — Reference it in your trainer</h3>
+
+    <pre><code><span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> BaseTrainer, TrainingConfig, EvaluationResult
+<span class="kw">from</span> app.abstract.data_source <span class="kw">import</span> UrlDatasetDataSource
+
+<span class="kw">class</span> <span class="cl">DisposableEmailClassifier</span>(<span class="cl">BaseTrainer</span>):
+    name      = <span class="st">"disposable_email_classifier"</span>
+    framework = <span class="st">"sklearn"</span>
+    version   = <span class="st">"1.0.0"</span>
+
+    <span class="cm"># Reads from S3 cache — URL is never hit at training time</span>
+    data_source = <span class="cl">UrlDatasetDataSource</span>(source_id=<span class="st">"67d2a1f4abc12345..."</span>)
+
+    <span class="kw">def</span> <span class="fn">preprocess</span>(<span class="dt">self</span>, raw, config: TrainingConfig):
+        <span class="cm"># raw is the parsed JSON: ["mailnull.com", "guerrillamail.com", ...]</span>
+        domains = <span class="fn">set</span>(raw)
+        <span class="kw">return</span> domains
+
+    <span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed, config: TrainingConfig):
+        <span class="cm"># "model" is just the frozen set of blocked domains</span>
+        <span class="kw">return</span> preprocessed
+
+    <span class="kw">def</span> <span class="fn">predict</span>(<span class="dt">self</span>, model, inputs: dict) -> dict:
+        domain = inputs[<span class="st">"email"</span>].split(<span class="st">"@"</span>)[-<span class="nu">1</span>].lower()
+        <span class="kw">return</span> {<span class="st">"disposable"</span>: domain <span class="kw">in</span> model, <span class="st">"domain"</span>: domain}</code></pre>
+
+    <h3>What <code class="inline">load()</code> returns by content type</h3>
+
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:24px;">
+      <thead><tr style="background:var(--surface2);">
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">URL content type</th>
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">url_field set?</th>
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">load() returns</th>
+      </tr></thead>
+      <tbody>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">application/json (array)</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">No</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Parsed list (Python)</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">application/json (array of objects)</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Yes (e.g. "image_url")</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">List of dicts from manifest.json, each with <code class="inline">_s3_key</code> + <code class="inline">_index</code></td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">text/csv</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">—</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">List of dicts (csv.DictReader rows)</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">text/plain</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">—</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Decoded string</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">image/* or video/*</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">—</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Raw bytes</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Change-detection hooks</h3>
+
+    <p>
+      When a scheduled refresh detects that the URL content has changed (SHA-256 hash differs from
+      the previous fetch), it can automatically fire a webhook and/or enqueue a retraining job.
+      Configure hooks at creation time or via PATCH:
+    </p>
+
+    <pre><code><span class="cm"># Configure at creation</span>
+POST /api/v1/url-datasets
+{
+    <span class="st">"name"</span>: <span class="st">"Fraud Labels CSV"</span>,
+    <span class="st">"source_url"</span>: <span class="st">"https://internal.example.com/labels/fraud.csv"</span>,
+    <span class="st">"refresh_interval_hours"</span>: <span class="nu">6</span>,
+    <span class="st">"on_change_webhook_url"</span>: <span class="st">"https://your-system.example.com/hooks/dataset-updated"</span>,
+    <span class="st">"on_change_retrain"</span>: <span class="st">"fraud_detector"</span>
+}
+
+<span class="cm"># Or update hooks on an existing dataset</span>
+PATCH /api/v1/url-datasets/{id}
+{
+    <span class="st">"on_change_retrain"</span>: <span class="st">"disposable_email_classifier"</span>
+}</code></pre>
+
+    <p>When content changes:</p>
+    <ol style="font-size:13px;line-height:1.8;margin-left:20px;">
+      <li><strong>Webhook</strong> — POST to <code class="inline">on_change_webhook_url</code> with body:<br>
+        <code class="inline">{ "event": "url_dataset_changed", "source_id": "...", "name": "...", "org_id": "...", "content_hash": "...", "item_count": N, "fetched_at": "..." }</code></li>
+      <li><strong>Retrain</strong> — enqueues a training job for <code class="inline">on_change_retrain</code> (the trainer's <code class="inline">name</code> field) with <code class="inline">trigger="url_dataset_changed"</code></li>
+    </ol>
+    <p>Neither hook fires on the <em>first</em> fetch — only when a subsequent refresh produces different content.</p>
+
+    <h3>Refresh schedule</h3>
+
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px;">
+      <thead><tr style="background:var(--surface2);">
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">refresh_interval_hours</th>
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">Behaviour</th>
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">Use case</th>
+      </tr></thead>
+      <tbody>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">0</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Manual only (POST /refresh)</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Static reference lists that rarely change</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">6</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">4× per day</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Fraud labels, pricing feeds</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">24</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Daily (default)</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Blocklists, news categories</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">168</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Weekly</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Image datasets that grow slowly</td></tr>
+      </tbody>
+    </table>
+
+    <p>The scheduler checks every <strong>15 minutes</strong> for overdue datasets. A dataset whose
+    <code class="inline">next_fetch_at</code> has passed will be re-fetched on the next scheduler tick.</p>
+
+    <h3>API reference</h3>
+
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px;">
+      <thead><tr style="background:var(--surface2);">
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">Method</th>
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">Path</th>
+        <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">Description</th>
+      </tr></thead>
+      <tbody>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">POST</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">/url-datasets</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Create and trigger first fetch</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">GET</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">/url-datasets</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">List all URL datasets for the org</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">GET</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">/url-datasets/{id}</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Get status, item_count, last_fetched_at</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">PATCH</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">/url-datasets/{id}</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Update metadata or change-detection hooks</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">POST</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">/url-datasets/{id}/refresh</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Manually trigger a re-fetch</td></tr>
+        <tr><td style="padding:8px 12px;border-bottom:1px solid var(--border);">DELETE</td><td style="padding:8px 12px;border-bottom:1px solid var(--border);"><code class="inline">/url-datasets/{id}</code></td><td style="padding:8px 12px;border-bottom:1px solid var(--border);">Soft-delete the dataset</td></tr>
+      </tbody>
+    </table>
   </section>
 
   <!-- ═══ PREDICT & INFERENCE INPUTS ═══ -->

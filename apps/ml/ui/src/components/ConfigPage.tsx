@@ -3,7 +3,8 @@ import { configApi, type TrainingConfig, type DeviceInfo, type CudaDeviceDetail 
 import { orgConfigApi } from '@/api/orgConfig'
 import { useAuth } from '@/context/AuthContext'
 import { useOrgConfig } from '@/context/OrgConfigContext'
-import { Cpu, Save, Loader2, CheckCircle2, Zap, Globe, Eye, Building2 } from 'lucide-react'
+import { Cpu, Save, Loader2, CheckCircle2, Zap, Globe, Eye, Building2, Bell } from 'lucide-react'
+import { isSoundEnabled, setSoundEnabled } from './NeuralUploadModal'
 import clsx from 'clsx'
 
 type Tab = 'training' | 'discovery' | 'organisation'
@@ -24,6 +25,7 @@ export default function ConfigPage() {
   const [saved, setSaved] = useState(false)
   const [form, setForm] = useState<Partial<TrainingConfig>>({})
   const [tab, setTab] = useState<Tab>('training')
+  const [scanSound, setScanSound] = useState(isSoundEnabled)
 
   // Org config local form state (seeded from context)
   const [orgSlug, setOrgSlug] = useState('')
@@ -441,6 +443,25 @@ export default function ConfigPage() {
             hint="0 = inferred automatically"
           />
         </div>
+      </Section>
+
+      {/* Notifications */}
+      <Section title="Notifications">
+        <label className="flex items-center gap-3 cursor-pointer">
+          <button
+            onClick={() => { setSoundEnabled(!scanSound); setScanSound(v => !v) }}
+            className={clsx('w-9 h-5 rounded-full transition-colors relative shrink-0', scanSound ? 'bg-brand-600' : 'bg-gray-700')}
+          >
+            <div className={clsx('absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all', scanSound ? 'left-4' : 'left-0.5')} />
+          </button>
+          <div className="flex items-center gap-2">
+            <Bell size={13} className="text-gray-500" />
+            <div>
+              <p className="text-sm text-gray-200">Neural scan sound notification</p>
+              <p className="text-xs text-gray-500">Play a chime when a neural security scan completes (approval or review)</p>
+            </div>
+          </div>
+        </label>
       </Section>
 
       {/* Debug / visibility */}

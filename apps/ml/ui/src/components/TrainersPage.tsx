@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { trainersApi } from '@/api/trainers'
 import { datasetsApi } from '@/api/datasets'
-import { trainerSubmissionsApi } from '@/api/trainerSubmissions'
+import { trainerSubmissionsApi, streamSubmissionStatus } from '@/api/trainerSubmissions'
 import client from '@/api/client'
 import type { TrainerRegistration, TrainerGroup } from '@/types/trainer'
 import type { DatasetProfile } from '@/types/dataset'
@@ -9,11 +9,12 @@ import type { TrainerSubmission } from '@/types/trainerSubmission'
 import StatusBadge from './StatusBadge'
 import JobsPanel from './JobsPanel'
 import DatasetUploadModal from './DatasetUploadModal'
-import TrainerAnomalyModal from './TrainerAnomalyModal'
+import NeuralUploadModal, { playApprovalSound, playErrorSound } from './NeuralUploadModal'
 import {
   Upload, RefreshCw, Scan, Trash2, Brain, Loader2, ChevronDown, ChevronRight,
   ChevronLeft, Play, Database, AlertTriangle, CheckCircle2, X, Plus, ExternalLink,
-  Download, ShieldCheck, ShieldAlert, Clock, Copy, Globe, Lock,
+  Download, Clock, Copy, Globe, Lock,
+  Search, SlidersHorizontal, ArrowUpDown, Bell,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -26,17 +27,20 @@ interface Props {
 
 type Tab = 'trainers' | 'jobs'
 type TrainerScope = 'private' | 'public'
+type SortKey = 'name' | 'recent' | 'edited' | 'inferenced'
 
 // ─── Dataset status chip (for trainer card) ────────────────────────────────
 
 function DatasetChip({
   datasetId,
   datasetSlug,
+  allowEmpty = false,
   onUpload,
   onGoDatasets,
 }: {
   datasetId?: string
   datasetSlug?: string
+  allowEmpty?: boolean
   onUpload: (dataset: DatasetProfile) => void
   onGoDatasets?: () => void
 }) {
@@ -88,35 +92,54 @@ function DatasetChip({
     </div>
   )
 
-  if (count === 0) return (
-    <div className="flex items-start gap-3 p-3 bg-amber-950/30 border border-amber-800/40 rounded-xl">
-      <AlertTriangle size={14} className="text-amber-400 flex-shrink-0 mt-0.5" />
-      <div className="flex-1 min-w-0">
-        <p className="text-xs font-medium text-amber-300">Dataset is empty — training will fail</p>
-        <p className="text-[11px] text-amber-400/70 mt-0.5">
-          <span className="font-medium text-amber-200">{dataset.name}</span>
-          {dataset.slug && <span className="ml-1 text-amber-500/60">#{dataset.slug}</span>}
-          {' '}has no entries yet.
-        </p>
-        <div className="flex items-center gap-2 mt-2">
-          <button
-            onClick={() => onUpload(dataset)}
-            className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-[11px] font-medium text-white rounded-lg transition-colors"
-          >
-            <Upload size={10} /> Upload Training Data
-          </button>
-          {onGoDatasets && (
+  if (count === 0) {
+    if (allowEmpty) return (
+      <div className="flex items-center gap-2 text-[11px] text-gray-500">
+        <Database size={11} className="text-gray-600" />
+        <span className="text-gray-300 font-medium">{dataset.name}</span>
+        {dataset.slug && (
+          <span className="text-[10px] text-gray-600 bg-gray-800 border border-gray-700 px-1.5 py-0.5 rounded font-mono">
+            #{dataset.slug}
+          </span>
+        )}
+        <span className="text-gray-700">· empty</span>
+        <span className="text-[10px] text-gray-700 italic">(optional — trainer runs without data)</span>
+        <button onClick={() => onUpload(dataset)}
+          className="ml-1 flex items-center gap-1 text-[10px] text-gray-600 hover:text-brand-400 transition-colors">
+          <Upload size={9} /> Add data
+        </button>
+      </div>
+    )
+    return (
+      <div className="flex items-start gap-3 p-3 bg-amber-950/30 border border-amber-800/40 rounded-xl">
+        <AlertTriangle size={14} className="text-amber-400 flex-shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-medium text-amber-300">Dataset is empty — training will fail</p>
+          <p className="text-[11px] text-amber-400/70 mt-0.5">
+            <span className="font-medium text-amber-200">{dataset.name}</span>
+            {dataset.slug && <span className="ml-1 text-amber-500/60">#{dataset.slug}</span>}
+            {' '}has no entries yet.
+          </p>
+          <div className="flex items-center gap-2 mt-2">
             <button
-              onClick={onGoDatasets}
-              className="flex items-center gap-1 text-[11px] text-amber-500 hover:text-amber-300 transition-colors"
+              onClick={() => onUpload(dataset)}
+              className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-[11px] font-medium text-white rounded-lg transition-colors"
             >
-              <ExternalLink size={10} /> Open Datasets
+              <Upload size={10} /> Upload Training Data
             </button>
-          )}
+            {onGoDatasets && (
+              <button
+                onClick={onGoDatasets}
+                className="flex items-center gap-1 text-[11px] text-amber-500 hover:text-amber-300 transition-colors"
+              >
+                <ExternalLink size={10} /> Open Datasets
+              </button>
+            )}
+          </div>
         </div>
       </div>
-    </div>
-  )
+    )
+  }
 
   return (
     <div className="flex items-center gap-2 text-[11px]">
@@ -174,6 +197,7 @@ function DataSourceRow({
   const sampleCsvEndpoint = typeof info.sample_csv_endpoint === 'string' ? info.sample_csv_endpoint : null
   const datasetId = typeof info.dataset_id === 'string' && info.dataset_id ? info.dataset_id : undefined
   const datasetSlug = typeof info.dataset_slug === 'string' && info.dataset_slug ? info.dataset_slug : undefined
+  const allowEmpty = info.allow_empty === true
   const isDataset = type === 'dataset' && (datasetId || datasetSlug)
 
   const handleDownloadSample = async () => {
@@ -227,6 +251,7 @@ function DataSourceRow({
         <DatasetChip
           datasetId={datasetId}
           datasetSlug={datasetSlug}
+          allowEmpty={allowEmpty}
           onUpload={onUpload}
           onGoDatasets={onGoDatasets}
         />
@@ -254,10 +279,20 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
   const [cloningName, setCloningName] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  // LLM scan state
-  const [scanSubmission, setScanSubmission] = useState<TrainerSubmission | null>(null)
-  const [scanPolling, setScanPolling] = useState(false)
-  const [anomalyModalOpen, setAnomalyModalOpen] = useState(false)
+  // Upload modal state
+  const [uploadModalSub, setUploadModalSub] = useState<TrainerSubmission | null>(null)
+  const [uploadFileName, setUploadFileName] = useState('')
+  const [uploadIsUpgrade, setUploadIsUpgrade] = useState(false)
+  const [uploadUpgradeFrom, setUploadUpgradeFrom] = useState<string | undefined>()
+
+  // Background scan tracking (dismissed modal but scan still running)
+  const bgStreamRef = useRef<Map<string, () => void>>(new Map())
+
+  // Search / sort / filter state
+  const [search, setSearch] = useState('')
+  const [sortKey, setSortKey] = useState<SortKey>('recent')
+  const [categoryFilter, setCategoryFilter] = useState<string>('all')
+  const [showFilters, setShowFilters] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -269,6 +304,8 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
     finally { setLoading(false) }
   }
 
+  const [creditError, setCreditError] = useState<{ msg: string; required: number; balance: number } | null>(null)
+
   const handleClone = async (name: string) => {
     setCloningName(name)
     try {
@@ -276,21 +313,38 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
       setUploadMsg(`Cloned "${name}" to your workspace`)
       setScope('private')
       await load()
-    } catch {
-      setUploadMsg(`Failed to clone "${name}"`)
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: { code?: string; message?: string; required_usd?: number; balance_usd?: number } } }; message?: string })
+        ?.response?.data?.detail
+      if (detail && typeof detail === 'object' && detail.code === 'INSUFFICIENT_CREDITS') {
+        setCreditError({
+          msg: detail.message ?? 'Insufficient credits',
+          required: detail.required_usd ?? 0,
+          balance: detail.balance_usd ?? 0,
+        })
+      } else {
+        setUploadMsg(`Failed to clone "${name}"`)
+        setTimeout(() => setUploadMsg(null), 4000)
+      }
     } finally {
       setCloningName(null)
-      setTimeout(() => setUploadMsg(null), 4000)
     }
   }
 
   useEffect(() => { load() }, [])
 
+  // Refresh when the editor registers a new trainer (fired after a successful direct run)
+  useEffect(() => {
+    const handler = () => load()
+    window.addEventListener('trainers-refresh', handler)
+    return () => window.removeEventListener('trainers-refresh', handler)
+  }, [])
+
   const handleScan = async () => {
     setScanning(true)
     try {
       const res = await trainersApi.scan()
-      setUploadMsg(`Scan complete — ${res.trainers_registered} trainer(s) registered`)
+      setUploadMsg(`Scan complete — ${res.trainers_registered} neural(s) registered`)
       await load()
     } catch {}
     finally { setScanning(false); setTimeout(() => setUploadMsg(null), 3000) }
@@ -299,45 +353,60 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
   const handleUpload = async (file: File) => {
     setUploading(true)
     setUploadMsg(null)
-    setScanSubmission(null)
     try {
-      // Use submission API — triggers security scan in background
       const submission = await trainerSubmissionsApi.upload(file)
-      setScanSubmission(submission)
-      setUploadMsg(`Uploaded "${file.name}" — running security scan…`)
 
-      // Poll until scan completes (not 'scanning')
-      setScanPolling(true)
-      let attempts = 0
-      const poll = async () => {
-        try {
-          const updated = await trainerSubmissionsApi.get(submission.id)
-          setScanSubmission(updated)
-          if (updated.status !== 'scanning' || attempts >= 30) {
-            setScanPolling(false)
-            setAnomalyModalOpen(true)
-            setUploadMsg(
-              updated.status === 'approved'
-                ? `✓ "${file.name}" passed security scan and is now active`
-                : `⚠ "${file.name}" flagged for review — see scan results`
-            )
-            await load()
-          } else {
-            attempts++
-            setTimeout(poll, 2000)
-          }
-        } catch {
-          setScanPolling(false)
-        }
+      // Detect upgrade: base name (strip _vN suffix) matches an existing active trainer
+      const base = file.name.replace(/\.py$/i, '').replace(/_v\d+$/, '')
+      const existing = trainers.find(t => {
+        const tBase = t.base_name || t.name.replace(/_v\d+$/, '')
+        return tBase.toLowerCase() === base.toLowerCase() && t.is_active && t.approval_status === 'approved'
+      })
+
+      setUploadFileName(file.name)
+      setUploadIsUpgrade(!!existing)
+      setUploadUpgradeFrom(existing?.name)
+      setUploadModalSub(submission)
+
+      if (existing) {
+        console.log(
+          `%c[Neural Upgrade] %c${base} → ${submission.trainer_name}`,
+          'color:#818cf8;font-weight:bold', 'color:#c4b5fd',
+          '\n  Replacing:', existing.name,
+          '\n  Submission ID:', submission.id,
+        )
       }
-      setTimeout(poll, 2000)
     } catch (err: unknown) {
       setUploadMsg(`Upload failed: ${err instanceof Error ? err.message : String(err)}`)
-      setUploading(false)
+      setTimeout(() => setUploadMsg(null), 6000)
     } finally {
       setUploading(false)
-      setTimeout(() => setUploadMsg(null), 8000)
+      if (fileRef.current) fileRef.current.value = ''
     }
+  }
+
+  const handleBgStream = (subId: string, closeStream: () => void) => {
+    // Store the already-open stream from the modal
+    bgStreamRef.current.set(subId, closeStream)
+
+    // Open a fresh SSE to track completion (modal handed off the stream)
+    const close = streamSubmissionStatus(
+      subId,
+      () => {},
+      (finalStatus) => {
+        bgStreamRef.current.delete(subId)
+        if (finalStatus === 'approved') {
+          playApprovalSound()
+          load()
+          window.dispatchEvent(new CustomEvent('trainers-refresh'))
+        } else {
+          playErrorSound()
+          load()
+        }
+      },
+      () => { bgStreamRef.current.delete(subId) },
+    )
+    bgStreamRef.current.set(subId, close)
   }
 
   const handleDeactivate = async (name: string) => {
@@ -357,7 +426,7 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
   const activeList = scope === 'private' ? trainers : publicTrainers
 
   // Group trainers by base_name so versioned trainers appear as one entry
-  const groups: TrainerGroup[] = (() => {
+  const allGroups: TrainerGroup[] = (() => {
     const map = new Map<string, TrainerRegistration[]>()
     for (const t of activeList) {
       const key = t.base_name || t.name.replace(/_v\d+$/, '') || t.name
@@ -366,27 +435,76 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
       map.set(key, arr)
     }
     return Array.from(map.entries()).map(([base_name, versions]) => {
-      // Sort highest plugin_version first
       const sorted = [...versions].sort((a, b) => (b.plugin_version ?? 0) - (a.plugin_version ?? 0))
-      // Prefer the highest approved+active version as the "latest" shown on the card.
-      // If none are approved (e.g. all under review) fall back to the highest version.
       const approved = sorted.filter(v => v.is_active && v.approval_status === 'approved')
       const latest = approved[0] ?? sorted[0]
       return { base_name, latest, versions: sorted }
     })
   })()
 
+  // Unique categories: prefer dedicated category field, fall back to framework
+  const _getCategory = (t: TrainerRegistration): string => t.category || t.framework || ''
+  const allCategories = Array.from(new Set(allGroups.map(g => _getCategory(g.latest)).filter(Boolean)))
+
+  // Category display labels
+  const CATEGORY_LABELS: Record<string, string> = {
+    detection: 'Object Detection',
+    classification: 'Classification',
+    segmentation: 'Segmentation',
+    regression: 'Regression',
+    nlp: 'NLP',
+    nlp_classification: 'NLP Classification',
+    similarity: 'Similarity',
+    anomaly: 'Anomaly Detection',
+    forecast: 'Forecasting',
+    clustering: 'Clustering',
+    ocr: 'OCR',
+    yolo: 'YOLO',
+  }
+
+  // Apply search + category filter
+  const filteredGroups = allGroups.filter(g => {
+    const q = search.toLowerCase()
+    const matchSearch = !q ||
+      g.base_name.toLowerCase().includes(q) ||
+      (g.latest.description ?? '').toLowerCase().includes(q) ||
+      (g.latest.framework ?? '').toLowerCase().includes(q) ||
+      (g.latest.category ?? '').toLowerCase().includes(q) ||
+      g.versions.some(v => v.name.toLowerCase().includes(q))
+    const matchCat = categoryFilter === 'all' || _getCategory(g.latest) === categoryFilter
+    return matchSearch && matchCat
+  })
+
+  // Apply sort
+  const groups = [...filteredGroups].sort((a, b) => {
+    if (sortKey === 'name') return a.base_name.localeCompare(b.base_name)
+    if (sortKey === 'inferenced') {
+      const aInf = a.latest.last_inferenced_at ?? a.latest.created_at ?? ''
+      const bInf = b.latest.last_inferenced_at ?? b.latest.created_at ?? ''
+      return bInf.localeCompare(aInf)
+    }
+    if (sortKey === 'edited') {
+      const aEd = a.latest.updated_at ?? a.latest.created_at ?? ''
+      const bEd = b.latest.updated_at ?? b.latest.created_at ?? ''
+      return bEd.localeCompare(aEd)
+    }
+    // 'recent' — by created_at desc
+    const aD = a.latest.created_at ?? ''
+    const bD = b.latest.created_at ?? ''
+    return bD.localeCompare(aD)
+  })
+
   const totalPages = Math.max(1, Math.ceil(groups.length / PAGE_SIZE))
   const safePage = Math.min(page, totalPages)
   const paginated = groups.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
 
   const TABS: { id: Tab; label: string; count?: number }[] = [
-    { id: 'trainers', label: 'Trainer Plugins', count: groups.length },
+    { id: 'trainers', label: 'Neurals', count: groups.length },
     { id: 'jobs',     label: 'Training Jobs' },
   ]
 
   const SCOPE_TABS: { id: TrainerScope; label: string; icon: React.ReactNode; count: number }[] = [
-    { id: 'private', label: 'My Trainers',     icon: <Lock size={11} />,  count: trainers.length },
+    { id: 'private', label: 'My Neurals',      icon: <Lock size={11} />,  count: trainers.length },
     { id: 'public',  label: 'Public Library',  icon: <Globe size={11} />, count: publicTrainers.length },
   ]
 
@@ -416,28 +534,16 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
         </button>
 
-        {/* Scan status badge */}
-        {scanSubmission && (
-          <button
-            onClick={() => setAnomalyModalOpen(true)}
-            className={clsx(
-              'flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-colors',
-              scanPolling
-                ? 'bg-amber-950/40 border-amber-800/50 text-amber-400'
-                : scanSubmission.status === 'approved'
-                  ? 'bg-emerald-950/40 border-emerald-800/50 text-emerald-400'
-                  : 'bg-red-950/40 border-red-800/50 text-red-400'
-            )}
-          >
-            {scanPolling
-              ? <><Loader2 size={11} className="animate-spin" /> Scanning…</>
-              : scanSubmission.status === 'approved'
-                ? <><ShieldCheck size={11} /> Scan passed</>
-                : <><ShieldAlert size={11} /> Review needed</>}
-          </button>
+        {/* Background scan indicator */}
+        {bgStreamRef.current.size > 0 && (
+          <span className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border bg-brand-950/40 border-brand-800/50 text-brand-400">
+            <Loader2 size={11} className="animate-spin" /> Scanning in background…
+          </span>
         )}
 
-        {uploadMsg && !scanSubmission && (
+        {/* Background scan result — sound-only; no popup */}
+
+        {uploadMsg && (
           <span className={clsx('text-xs px-3 py-1.5 rounded-lg border', uploadMsg.includes('failed')
             ? 'bg-red-950/50 text-red-400 border-red-800'
             : 'bg-emerald-950/50 text-emerald-400 border-emerald-800'
@@ -471,6 +577,63 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
       {/* ── Trainers tab ── */}
       {tab === 'trainers' && (
         <>
+          {/* Search + Sort + Filter bar */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative flex-1 min-w-[180px]">
+              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+              <input
+                type="text"
+                value={search}
+                onChange={e => { setSearch(e.target.value); setPage(1) }}
+                placeholder="Search neurals…"
+                className="w-full pl-8 pr-3 py-2 bg-gray-900 border border-gray-800 rounded-xl text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-brand-600"
+              />
+            </div>
+            <select
+              value={sortKey}
+              onChange={e => setSortKey(e.target.value as SortKey)}
+              className="bg-gray-900 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-400 focus:outline-none focus:border-brand-600"
+            >
+              <option value="recent">Recently Added</option>
+              <option value="edited">Recently Edited</option>
+              <option value="inferenced">Recently Inferenced</option>
+              <option value="name">Name A–Z</option>
+            </select>
+            <button
+              onClick={() => setShowFilters(v => !v)}
+              className={clsx('flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm border transition-colors',
+                showFilters || categoryFilter !== 'all'
+                  ? 'bg-brand-900/40 border-brand-700/50 text-brand-400'
+                  : 'bg-gray-900 border-gray-800 text-gray-500 hover:text-gray-300'
+              )}
+            >
+              <SlidersHorizontal size={13} /> Filter
+              {categoryFilter !== 'all' && (
+                <span className="bg-brand-600 text-white text-[10px] px-1.5 py-0.5 rounded-full">1</span>
+              )}
+            </button>
+          </div>
+
+          {/* Filter panel */}
+          {showFilters && (
+            <div className="flex items-center gap-2 flex-wrap px-1">
+              <span className="text-[10px] text-gray-600 uppercase tracking-widest">Category</span>
+              {['all', ...allCategories].map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => { setCategoryFilter(cat); setPage(1) }}
+                  className={clsx('px-3 py-1 text-xs rounded-full border transition-colors',
+                    categoryFilter === cat
+                      ? 'bg-brand-600 border-brand-500 text-white'
+                      : 'bg-gray-900 border-gray-800 text-gray-500 hover:text-gray-300'
+                  )}
+                >
+                  {cat === 'all' ? 'All' : (CATEGORY_LABELS[cat] ?? cat)}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Scope sub-tabs */}
           <div className="flex gap-1 p-1 bg-gray-900 rounded-xl border border-gray-800 w-fit">
             {SCOPE_TABS.map(st => (
@@ -496,12 +659,15 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
 
           {scope === 'public' && (
             <p className="text-[11px] text-gray-600">
-              Public trainers are read-only templates. Clone one to your workspace to train and customise it.
+              Public neurals are read-only templates. Clone one to your workspace to train and customise it.
             </p>
           )}
           <p className="text-xs text-gray-600">
-            {activeList.length} trainer{activeList.length !== 1 ? 's' : ''}
+            {groups.length !== allGroups.length
+              ? `${groups.length} of ${allGroups.length} neural${allGroups.length !== 1 ? 's' : ''}`
+              : `${allGroups.length} neural${allGroups.length !== 1 ? 's' : ''}`}
             {totalPages > 1 && ` · page ${safePage}/${totalPages}`}
+            {search && <button onClick={() => setSearch('')} className="ml-2 text-brand-400 hover:text-brand-300"><X size={10} /></button>}
           </p>
 
           {loading ? (
@@ -513,7 +679,7 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
           ) : groups.length === 0 ? (
             <div className="text-center py-16 text-gray-600">
               <Brain size={32} className="mx-auto mb-3 opacity-30" />
-              <p className="text-sm">No trainers registered. Upload a .py plugin or scan the plugin directory.</p>
+              <p className="text-sm">No neurals registered. Upload a .py plugin or scan the plugin directory.</p>
             </div>
           ) : (
             <>
@@ -542,6 +708,11 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
                               {t.version_full ?? `v${t.plugin_version ?? 0}.0.0.0`}
                             </span>
                             <span className={clsx('text-[10px] font-medium', frameworkColor(t.framework))}>{t.framework}</span>
+                            {_getCategory(t) && _getCategory(t) !== t.framework && (
+                              <span className="text-[10px] text-gray-500 bg-gray-800 border border-gray-700 px-1.5 py-0.5 rounded">
+                                {CATEGORY_LABELS[_getCategory(t)] ?? _getCategory(t)}
+                              </span>
+                            )}
                             {isDatasetSource && (
                               <span className="flex items-center gap-1 text-[10px] text-brand-300 bg-brand-900/30 border border-brand-800/40 px-1.5 py-0.5 rounded">
                                 <Database size={9} /> dataset
@@ -558,16 +729,23 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
                         </div>
                         <div className="flex items-center gap-1 flex-shrink-0">
                           {scope === 'public' ? (
-                            <button
-                              onClick={() => handleClone(t.name)}
-                              disabled={cloningName === t.name}
-                              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 rounded-lg transition-colors disabled:opacity-50"
-                            >
-                              {cloningName === t.name
-                                ? <Loader2 size={11} className="animate-spin" />
-                                : <Copy size={11} />}
-                              Clone
-                            </button>
+                            <div className="flex items-center gap-2">
+                              {(t.activation_cost_usd ?? 0) > 0 && (
+                                <span className="text-[10px] text-amber-400 bg-amber-900/30 border border-amber-800/50 px-2 py-0.5 rounded-full font-mono">
+                                  ${t.activation_cost_usd?.toFixed(2)}
+                                </span>
+                              )}
+                              <button
+                                onClick={() => handleClone(t.name)}
+                                disabled={cloningName === t.name}
+                                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 rounded-lg transition-colors disabled:opacity-50"
+                              >
+                                {cloningName === t.name
+                                  ? <Loader2 size={11} className="animate-spin" />
+                                  : <Copy size={11} />}
+                                Clone
+                              </button>
+                            </div>
                           ) : (
                             <>
                               {onStartTraining && (
@@ -705,12 +883,60 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
         />
       )}
 
-      {/* Scan result modal */}
-      <TrainerAnomalyModal
-        open={anomalyModalOpen}
-        onClose={() => setAnomalyModalOpen(false)}
-        submission={scanSubmission}
-      />
+      {/* Credit error modal */}
+      {creditError && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="bg-gray-950 border border-gray-800 rounded-2xl shadow-2xl w-full max-w-sm">
+            <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-800">
+              <AlertTriangle size={18} className="text-amber-400" />
+              <div className="flex-1">
+                <p className="text-sm font-bold text-white">Insufficient Credits</p>
+                <p className="text-[11px] text-gray-500">Credit top-up required to activate this plugin</p>
+              </div>
+              <button onClick={() => setCreditError(null)} className="p-1.5 text-gray-600 hover:text-gray-300 rounded-lg"><X size={14} /></button>
+            </div>
+            <div className="p-5 space-y-4">
+              <p className="text-sm text-gray-400 leading-relaxed">{creditError.msg}</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-3 text-center">
+                  <div className="text-lg font-bold text-amber-400">${creditError.required.toFixed(2)}</div>
+                  <div className="text-[10px] text-gray-600 mt-0.5">Required</div>
+                </div>
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-3 text-center">
+                  <div className="text-lg font-bold text-gray-400">${creditError.balance.toFixed(2)}</div>
+                  <div className="text-[10px] text-gray-600 mt-0.5">Your Balance</div>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <button onClick={() => setCreditError(null)}
+                  className="flex-1 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-xl text-sm border border-gray-700 transition-colors">
+                  Cancel
+                </button>
+                <a href="/wallet"
+                  className="flex-1 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-xl text-sm text-center transition-colors">
+                  Top Up Credits
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Neural upload scan modal */}
+      {uploadModalSub && (
+        <NeuralUploadModal
+          submission={uploadModalSub}
+          fileName={uploadFileName}
+          isUpgrade={uploadIsUpgrade}
+          upgradeFrom={uploadUpgradeFrom}
+          onClose={() => setUploadModalSub(null)}
+          onApproved={() => { load(); window.dispatchEvent(new CustomEvent('trainers-refresh')) }}
+          onBackground={(subId, closeStream) => {
+            setUploadModalSub(null)
+            handleBgStream(subId, closeStream)
+          }}
+        />
+      )}
     </div>
   )
 }

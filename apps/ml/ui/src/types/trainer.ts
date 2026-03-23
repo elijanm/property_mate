@@ -15,12 +15,16 @@ export interface TrainerRegistration {
   framework: string
   schedule: string | null
   tags: string[]
+  category?: string
   data_source_info: Record<string, unknown>
   status: 'active' | 'inactive'
   is_active: boolean
   last_trained_at: string | null
   created_at: string
   updated_at?: string
+  last_inferenced_at?: string | null
+  activation_cost_usd?: number
+  commercial?: string
   derived_metrics?: TrainerDerivedMetricSpec[]
   alias?: string
   namespace?: string
@@ -60,6 +64,7 @@ export interface ModelDeployment {
   input_schema: Record<string, SchemaField>
   output_schema: Record<string, OutputSchemaField>
   metrics: Record<string, number>
+  eval_tags: Record<string, string>
   tags: Record<string, string>
   category: Record<string, string>  // { key: 'ocr', label: 'OCR & Vision' }
   visibility: 'viewer' | 'engineer'  // 'viewer' = all roles, 'engineer' = engineer/admin only

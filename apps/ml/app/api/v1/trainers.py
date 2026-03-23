@@ -73,31 +73,30 @@ async def download_churn_sample_csv(user=Depends(get_current_user)):
 
 
 def _trainer_is_live(r: TrainerRegistration) -> bool:
-    """True when a registration has no file path (in-memory) or its file exists on disk.
+    """True when the registration should appear in the live trainers list.
 
-    System trainers (org_id="") may live anywhere inside TRAINER_PLUGIN_DIR (including
-    samples/, the root, etc.) — we only require the file to exist.
-    Org trainers must live inside running/ so stale registrations from old flat-dir
-    paths are automatically excluded.
+    System trainers (org_id=""): must have a file inside TRAINER_PLUGIN_DIR.
+    Org trainers: the DB is the source of truth — if is_active=True and
+    approval_status="approved", show it even if the file has been moved
+    (e.g. tmp cleanup after submission, container restart).  File existence is
+    only used to filter out obviously stale system-trainer entries.
     """
+    plugin_base = Path(settings.TRAINER_PLUGIN_DIR)
     if not r.plugin_file:
         return True
     p = Path(r.plugin_file)
-    if not p.exists():
-        return False
-    plugin_base = Path(settings.TRAINER_PLUGIN_DIR)
     if not r.org_id:
-        # System trainer — accept any path inside the plugin dir
-        return str(p.resolve()).startswith(str(plugin_base.resolve()))
-    # Org trainer — must be in running/ OR global_sample/ (clones of public trainers
-    # point to the shared global_sample/ file and are always valid while that file exists).
-    running_dir = plugin_base / "running"
-    global_sample_dir = plugin_base / "global_sample"
-    resolved = str(p.resolve())
-    return (
-        resolved.startswith(str(running_dir.resolve()))
-        or resolved.startswith(str(global_sample_dir.resolve()))
-    )
+        # System trainer — file must exist inside the plugin dir
+        return p.exists() and str(p.resolve()).startswith(str(plugin_base.resolve()))
+    # Org trainer — trust DB flags; file absence after approval is not a blocker
+    # (file may be in /tmp/ml_uploads/ that was cleaned, or running/ that was remounted).
+    # Also treat empty/None approval_status as "approved" — registrations created before the
+    # field existed were active by definition (is_active=True already passed the outer filter).
+    non_approved = {"pending_review", "pending_admin", "flagged", "rejected"}
+    if r.approval_status not in non_approved:
+        return True
+    # For non-approved org trainers, still require the file (avoids ghost pending entries)
+    return p.exists()
 
 
 @router.get("")
@@ -240,6 +239,23 @@ async def clone_trainer(name: str, user=Depends(require_roles("engineer", "admin
     if not is_public and not is_own_org and not source.downloadable:
         raise HTTPException(status_code=403, detail="This trainer is not available for cloning.")
 
+    # Credit check: if trainer has an activation cost, verify wallet balance
+    if source.activation_cost_usd > 0:
+        from app.models.wallet import Wallet
+        wallet = await Wallet.find_one({"org_id": user.org_id or ""})
+        balance = wallet.balance_usd if wallet else 0.0
+        if balance < source.activation_cost_usd:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "code": "INSUFFICIENT_CREDITS",
+                    "message": f"You need ${source.activation_cost_usd:.2f} credits to activate this plugin. "
+                               f"Your current balance is ${balance:.2f}.",
+                    "required_usd": source.activation_cost_usd,
+                    "balance_usd": balance,
+                }
+            )
+
     target_org = user.org_id or ""
     base = source.base_name or re.sub(r"_v\d+$", "", source.name)
 
@@ -297,6 +313,17 @@ async def clone_trainer(name: str, user=Depends(require_roles("engineer", "admin
         updated_at=utc_now(),
     )
     await clone.insert()
+
+    # Deduct activation credit after successful clone
+    if source.activation_cost_usd > 0:
+        try:
+            from app.models.wallet import Wallet
+            await Wallet.find_one_and_update(
+                {"org_id": target_org},
+                {"$inc": {"balance_usd": -source.activation_cost_usd}},
+            )
+        except Exception:
+            pass  # non-fatal: clone is already created; billing team can reconcile
 
     # Scaffold the trainer's dataset for the target org so the user can immediately
     # see where to upload data. The dataset is empty — the user fills it themselves.

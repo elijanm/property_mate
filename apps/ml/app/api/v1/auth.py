@@ -195,6 +195,94 @@ async def me(authorization: Optional[str] = Header(None)):
     return {**_user_dict(user), "last_login_at": user.last_login_at}
 
 
+class CheckEmailRequest(BaseModel):
+    email: str
+
+
+class CheckEmailResponse(BaseModel):
+    is_disposable: bool
+    risk_score: float
+    confidence: str
+
+
+async def _run_disposable_check(email: str) -> CheckEmailResponse:
+    from app.core.config import settings
+    import httpx
+    if not settings.disposable_email_check_url:
+        return CheckEmailResponse(is_disposable=False, risk_score=0.0, confidence="unavailable")
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as c:
+            resp = await c.post(
+                settings.disposable_email_check_url,
+                headers={"X-Api-Key": settings.disposable_email_api_key, "Content-Type": "application/json"},
+                json={"inputs": {"email": email}},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            pred = data.get("prediction", data)
+            return CheckEmailResponse(
+                is_disposable=bool(pred.get("is_disposable", False)),
+                risk_score=float(pred.get("risk_score", 0.0)),
+                confidence=str(pred.get("confidence", "low")),
+            )
+    except Exception:
+        return CheckEmailResponse(is_disposable=False, risk_score=0.0, confidence="unavailable")
+
+
+@router.post("/check-email", response_model=CheckEmailResponse)
+async def check_email(body: CheckEmailRequest) -> CheckEmailResponse:
+    """Check if an email is disposable. Safe fallback if inference is unavailable."""
+    return await _run_disposable_check(body.email)
+
+
+class UpdateEmailRequest(BaseModel):
+    email: str
+
+
+class UpdateEmailResponse(BaseModel):
+    is_disposable: bool
+    attempts: int
+    email: str
+
+
+@router.patch("/me/email", response_model=UpdateEmailResponse)
+async def update_my_email(body: UpdateEmailRequest, authorization: Optional[str] = Header(None)) -> UpdateEmailResponse:
+    """Update email — re-checks disposable service. Clean: saves + clears flags. Still disposable: increments counter."""
+    from fastapi import HTTPException
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = authorization.split(" ", 1)[1]
+    user = await auth_service.get_current_user(token)
+
+    check = await _run_disposable_check(body.email)
+    if check.is_disposable and check.confidence != "unavailable":
+        user.disposable_email_attempts = (user.disposable_email_attempts or 0) + 1
+        user.disposable_email_used = True
+        await user.save()
+        return UpdateEmailResponse(is_disposable=True, attempts=user.disposable_email_attempts, email=user.email)
+
+    user.email = body.email
+    user.disposable_email_used = False
+    user.disposable_email_ignored = False
+    user.disposable_email_attempts = 0
+    await user.save()
+    return UpdateEmailResponse(is_disposable=False, attempts=0, email=body.email)
+
+
+@router.post("/me/email/ignore")
+async def ignore_disposable_email(authorization: Optional[str] = Header(None)) -> dict:
+    """User chose to keep their disposable email — flag the account."""
+    from fastapi import HTTPException
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = authorization.split(" ", 1)[1]
+    user = await auth_service.get_current_user(token)
+    user.disposable_email_used = True
+    user.disposable_email_ignored = True
+    await user.save()
+    return {"ok": True}
+
+
 class UpdateProfileRequest(BaseModel):
     full_name: Optional[str] = None
     role: Optional[str] = None

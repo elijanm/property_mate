@@ -19,6 +19,9 @@ class User(Document):
     last_name: str = ""
     phone: Optional[str] = None
     is_active: bool = True
+    disposable_email_used: bool = False       # flagged when disposable email detected
+    disposable_email_ignored: bool = False    # user clicked "keep my temporary email"
+    disposable_email_attempts: int = 0        # how many disposable emails tried
     deleted_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

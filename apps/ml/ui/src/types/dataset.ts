@@ -1,4 +1,4 @@
-export type FieldType = 'image' | 'video' | 'media' | 'file' | 'text' | 'number'
+export type FieldType = 'image' | 'video' | 'media' | 'file' | 'text' | 'number' | 'select'
 export type CaptureMode = 'camera_only' | 'upload_only' | 'both'
 export type DescriptionMode = 'none' | 'free_text' | 'preset'
 export type DatasetStatus = 'draft' | 'active' | 'closed'
@@ -24,6 +24,19 @@ export interface DatasetField {
 
 export type DatasetVisibility = 'private' | 'public'
 export type ReferenceType = 'clone' | 'reference' | null
+
+export interface UrlDatasetInfo {
+  id: string
+  source_url: string
+  status: 'pending' | 'fetching' | 'ready' | 'error'
+  item_count: number | null
+  size_bytes: number | null
+  last_fetched_at: string | null
+  next_fetch_at: string | null
+  fetch_error: string | null
+  refresh_interval_hours: number
+  content_type: string
+}
 
 export interface DatasetProfile {
   id: string
@@ -55,6 +68,7 @@ export interface DatasetProfile {
   created_at: string
   updated_at: string
   collectors?: DatasetCollector[]
+  url_dataset?: UrlDatasetInfo
 }
 
 export interface DatasetCollector {

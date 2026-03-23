@@ -2,13 +2,15 @@
 import csv
 import io
 from typing import Optional, List
-from fastapi import APIRouter, Depends, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.dependencies.auth import RequireEngineer, RequireViewer
 from app.models.ml_user import MLUser
+from app.utils.datetime import utc_now
 import app.services.dataset_service as svc
+import app.services.url_dataset_service as url_svc
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -92,7 +94,9 @@ class AddCollectorRequest(BaseModel):
 @router.get("")
 async def list_datasets(user: MLUser = RequireEngineer):
     items = await svc.list_datasets(user.org_id)
-    return [_profile_dict(p) for p in items]
+    profile_ids = [str(p.id) for p in items]
+    url_map = await _batch_url_datasets(profile_ids)
+    return [_profile_dict(p, url_map.get(str(p.id))) for p in items]
 
 
 @router.get("/public")
@@ -112,7 +116,8 @@ async def create_dataset(body: DatasetCreateRequest, user: MLUser = RequireEngin
 async def get_dataset(dataset_id: str, user: MLUser = RequireEngineer):
     profile = await svc.get_dataset(user.org_id, dataset_id)
     collectors = await svc.get_collectors(user.org_id, dataset_id)
-    resp = _profile_dict(profile)
+    url_ds = await _get_url_dataset_for_profile(str(profile.id))
+    resp = _profile_dict(profile, url_ds)
     resp["collectors"] = [_collector_dict(c) for c in collectors]
     return resp
 
@@ -126,6 +131,28 @@ async def update_dataset(dataset_id: str, body: DatasetUpdateRequest, user: MLUs
 @router.delete("/{dataset_id}", status_code=204)
 async def delete_dataset(dataset_id: str, user: MLUser = RequireEngineer):
     await svc.delete_dataset(user.org_id, dataset_id)
+
+
+@router.post("/{dataset_id}/url-fetch")
+async def trigger_url_fetch(
+    dataset_id: str,
+    background_tasks: BackgroundTasks,
+    user: MLUser = RequireEngineer,
+):
+    """Manually trigger a re-fetch of the URL source linked to this dataset."""
+    profile = await svc.get_dataset(user.org_id, dataset_id)
+    url_ds = await _get_url_dataset_for_profile(str(profile.id))
+    if not url_ds:
+        raise HTTPException(status_code=404, detail="No URL source linked to this dataset")
+    if url_ds["status"] == "fetching":
+        raise HTTPException(status_code=409, detail="Fetch already in progress")
+    from app.models.url_dataset import UrlDataset as _UD
+    from beanie import PydanticObjectId
+    src = await _UD.find_one({"_id": PydanticObjectId(url_ds["id"]), "deleted_at": None})
+    if src:
+        await src.set({"status": "fetching", "updated_at": utc_now()})
+        background_tasks.add_task(url_svc.fetch_and_store, str(src.id))
+    return {"ok": True, "status": "fetching"}
 
 
 @router.patch("/{dataset_id}/visibility")
@@ -337,9 +364,11 @@ async def get_dataset_by_slug(slug: str, user: MLUser = RequireEngineer):
 
 # ── Serialisers ────────────────────────────────────────────────────────────────
 
-def _profile_dict(p) -> dict:
+def _profile_dict(p, url_dataset: dict | None = None) -> dict:
     d = p.model_dump()
     d["id"] = str(p.id)
+    if url_dataset is not None:
+        d["url_dataset"] = url_dataset
     return d
 
 
@@ -347,6 +376,41 @@ def _collector_dict(c) -> dict:
     d = c.model_dump()
     d["id"] = str(c.id)
     return d
+
+
+# ── URL dataset helpers ────────────────────────────────────────────────────────
+
+def _url_dataset_dict(d) -> dict:
+    return {
+        "id": str(d.id),
+        "source_url": d.source_url,
+        "status": d.status,
+        "item_count": d.item_count,
+        "size_bytes": d.size_bytes,
+        "last_fetched_at": d.last_fetched_at.isoformat() if d.last_fetched_at else None,
+        "next_fetch_at": d.next_fetch_at.isoformat() if d.next_fetch_at else None,
+        "fetch_error": d.fetch_error,
+        "refresh_interval_hours": d.refresh_interval_hours,
+        "content_type": d.content_type,
+    }
+
+
+async def _batch_url_datasets(profile_ids: list[str]) -> dict:
+    """Return {profile_id: url_dataset_dict} for all linked URL datasets."""
+    from app.models.url_dataset import UrlDataset as _UD
+    if not profile_ids:
+        return {}
+    docs = await _UD.find({
+        "dataset_profile_id": {"$in": profile_ids},
+        "deleted_at": None,
+    }).to_list()
+    return {d.dataset_profile_id: _url_dataset_dict(d) for d in docs if d.dataset_profile_id}
+
+
+async def _get_url_dataset_for_profile(profile_id: str) -> dict | None:
+    from app.models.url_dataset import UrlDataset as _UD
+    doc = await _UD.find_one({"dataset_profile_id": profile_id, "deleted_at": None})
+    return _url_dataset_dict(doc) if doc else None
 
 
 class EntryReviewRequest(BaseModel):

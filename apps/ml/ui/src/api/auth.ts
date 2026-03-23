@@ -52,4 +52,13 @@ export const authApi = {
 
   updateProfile: (data: { full_name?: string; role?: string; is_onboarded?: boolean }) =>
     client.patch('/auth/profile', data).then(r => r.data),
+
+  checkEmail: (email: string) =>
+    client.post<{ is_disposable: boolean; risk_score: number; confidence: string }>('/auth/check-email', { email }).then(r => r.data),
+
+  updateEmail: (email: string) =>
+    client.patch<{ is_disposable: boolean; attempts: number; email: string }>('/auth/me/email', { email }).then(r => r.data),
+
+  ignoreDisposableEmail: () =>
+    client.post<{ ok: boolean }>('/auth/me/email/ignore').then(r => r.data),
 }

@@ -10,7 +10,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl dos2unix \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
     clamav clamav-daemon \
-    && rm -rf /var/lib/apt/lists/*
+    git \
+    && rm -rf /var/lib/apt/lists/* \
+    && git --version
 
 # Prepare ClamAV directories and write a minimal clamd.conf
 # (the default Debian package conf uses OnAccessScanning which requires inotify — disable it)

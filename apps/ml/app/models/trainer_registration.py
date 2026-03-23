@@ -24,6 +24,7 @@ class TrainerRegistration(Document):
     class_path: str = ""                  # module.ClassName for dynamic loading
     plugin_file: Optional[str] = None     # path to .py file
     tags: Dict[str, str] = {}
+    category: str = ""              # e.g. "detection", "classification", "segmentation"
 
     # Namespace/identity
     namespace: str = "system"           # "system" for built-ins, org_id for user uploads
@@ -35,7 +36,8 @@ class TrainerRegistration(Document):
     author_email: str = ""
     author_url: str = ""
     git_url: str = ""
-    commercial: str = "public"          # "public" | "private"
+    commercial: str = "public"          # "public" | "private" | "commercial"
+    activation_cost_usd: float = 0.0    # wallet deduction required to clone/activate (0 = free)
     downloadable: bool = False
     protect_model: bool = False
     icon_url: str = ""

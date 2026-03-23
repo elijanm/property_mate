@@ -204,7 +204,7 @@ function ReviewSlideOver({
               {/* Metadata */}
               {sub.parsed_metadata && Object.keys(sub.parsed_metadata).length > 0 && (
                 <div>
-                  <p className="text-[11px] text-gray-500 uppercase tracking-widest mb-2">Trainer Metadata</p>
+                  <p className="text-[11px] text-gray-500 uppercase tracking-widest mb-2">Neural Metadata</p>
                   <div className="bg-gray-900 border border-gray-800 rounded-lg divide-y divide-gray-800">
                     {Object.entries(sub.parsed_metadata).map(([k, v]) => (
                       <div key={k} className="flex items-center gap-3 px-3 py-2">
@@ -463,7 +463,7 @@ function SubmissionRow({
           {/* Metadata */}
           {sub.parsed_metadata && Object.keys(sub.parsed_metadata).length > 0 && (
             <div>
-              <p className="text-[10px] text-gray-600 uppercase tracking-widest mb-1.5">Trainer Metadata</p>
+              <p className="text-[10px] text-gray-600 uppercase tracking-widest mb-1.5">Neural Metadata</p>
               <div className="grid grid-cols-2 gap-x-4 gap-y-1">
                 {Object.entries(sub.parsed_metadata).map(([k, v]) => (
                   <div key={k} className="flex items-center gap-1.5 text-xs">
@@ -599,7 +599,7 @@ export default function TrainerReviewPage() {
           <ShieldAlert size={20} className="text-amber-400" />
           <div>
             <h1 className="text-lg font-bold text-white">Security Reviews</h1>
-            <p className="text-xs text-gray-600">Trainer submissions flagged by the security scanner</p>
+            <p className="text-xs text-gray-600">Neural submissions flagged by the security scanner</p>
           </div>
         </div>
         <button

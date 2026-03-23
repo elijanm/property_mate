@@ -105,6 +105,9 @@ def _validate_inputs_against_schema(inputs: Any, schema: Optional[dict]) -> Opti
         field_type = field_spec.get("type", "text")
         value = inputs.get(field_name)
         if required and (value is None or value == ""):
+            # For image/file fields: accept upload-endpoint aliases as satisfying the requirement
+            if field_type in ("image", "file") and (inputs.get("image_b64") or inputs.get("file_b64")):
+                continue
             errors.append(f"'{field_name}' is required")
             continue
         if value is None:

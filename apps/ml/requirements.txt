@@ -48,3 +48,4 @@ paramiko==3.5.0                   # FTPDataSource (SFTP)
 # Auth
 python-jose[cryptography]==3.3.0  # JWT tokens
 
+open-clip-torch

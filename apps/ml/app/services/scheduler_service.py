@@ -40,6 +40,14 @@ async def start_scheduler() -> None:
         replace_existing=True,
     )
 
+    # ── URL dataset refresh every 15 minutes ─────────────────────────────
+    _scheduler.add_job(
+        _run_url_dataset_refresh,
+        CronTrigger(minute="*/15"),
+        id="url_dataset_refresh",
+        replace_existing=True,
+    )
+
     # ── Wallet reservation reconciliation every 30 minutes ───────────────
     # Finds jobs stuck in queued/running for >2h with a wallet reservation
     # and releases the held funds back to the user's balance.
@@ -161,6 +169,14 @@ async def _run_wallet_reconciliation() -> None:
             logger.info("wallet_reconciliation_complete", released=released)
     except Exception as exc:
         logger.error("wallet_reconciliation_failed", error=str(exc))
+
+
+async def _run_url_dataset_refresh() -> None:
+    try:
+        from app.services.url_dataset_service import refresh_due
+        await refresh_due()
+    except Exception as exc:
+        logger.error("url_dataset_refresh_failed", error=str(exc))
 
 
 async def stop_scheduler() -> None:

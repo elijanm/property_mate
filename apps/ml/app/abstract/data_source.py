@@ -18,6 +18,7 @@ Available sources
   FTPDataSource             — FTP / SFTP remote file
   PaginatedAPIDataSource    — paginated REST API (fetches all pages)
   RedisDataSource           — Redis list, set, sorted-set, or key pattern
+  UrlDatasetDataSource      — URL dataset cached in S3, refreshed on a schedule
 
 Example
 -------
@@ -35,7 +36,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-
+import logging
+import asyncio
+import sys
+logger = logging.getLogger("runner")
+logger.setLevel(logging.INFO)
+logger.addHandler(logging.StreamHandler(sys.stdout))
 
 # ── Abstract base ─────────────────────────────────────────────────────────────
 
@@ -879,6 +885,7 @@ class DatasetDataSource(DataSource):
     slug: Optional[str] = None          # look up by slug instead of id
     sample_csv_endpoint: Optional[str] = None  # included in describe() for UI
     auto_create_spec: Optional[Dict] = None    # dataset to create if slug not found
+    allow_empty: bool = False           # if True, proceed with empty list when dataset has no entries
 
     @property
     def source_type(self) -> str:
@@ -959,6 +966,17 @@ class DatasetDataSource(DataSource):
             entries = await db["dataset_entries"].find(
                 {"dataset_id": resolved_id}
             ).to_list(length=None)
+
+            # If dataset is empty and allow_empty is True, return empty list without raising.
+            # The trainer's train() is expected to handle an empty list gracefully.
+            if not entries and self.allow_empty:
+                return []
+            if not entries and not self.allow_empty:
+                raise ValueError(
+                    f"Dataset '{self.slug or self.dataset_id}' has no entries. "
+                    "Upload training data before running this trainer, or set allow_empty=True "
+                    "on the DatasetDataSource if the trainer handles empty data."
+                )
 
             collectors_raw = await db["dataset_collectors"].find(
                 {"dataset_id": resolved_id}
@@ -1056,4 +1074,245 @@ class DatasetDataSource(DataSource):
             d["dataset_id"] = self.dataset_id
         if self.sample_csv_endpoint:
             d["sample_csv_endpoint"] = self.sample_csv_endpoint
+        if self.allow_empty:
+            d["allow_empty"] = True
+        return d
+
+
+# ── URL Dataset (S3-cached, scheduler-refreshed) ──────────────────────────────
+
+@dataclass
+class UrlDatasetDataSource(DataSource):
+    """
+    Load training data from a URL that is fetched on a schedule and cached in S3.
+
+    Follows the same ergonomics as DatasetDataSource — use ``slug`` + ``source_url``
+    and the dataset is created automatically on the first training run for each org.
+    It also appears in the Datasets UI so collectors can add manually labelled entries
+    alongside the URL-fetched content.
+
+    The source URL is **never** hit at training time — only the scheduler touches it.
+
+    Basic usage (flat JSON / CSV / single file):
+
+        data_source = UrlDatasetDataSource(
+            slug="disposable-email-data",
+            source_url="https://disposable.github.io/disposable-email-domains/domains.json",
+            refresh_interval_hours=24,
+        )
+
+    With auto_create_spec (dataset visible in UI, collectors can add labelled entries):
+
+        data_source = UrlDatasetDataSource(
+            slug="disposable-email-data",
+            source_url="https://disposable.github.io/disposable-email-domains/domains.json",
+            refresh_interval_hours=24,
+            allow_empty=True,
+            auto_create_spec={
+                "name": "Disposable Email Dataset",
+                "description": "Optionally upload labelled emails to improve accuracy.",
+                "fields": [
+                    {"label": "Email",  "type": "text",   "required": True},
+                    {"label": "Label",  "type": "select", "required": True,
+                     "options": ["disposable", "legitimate"]},
+                ],
+            },
+        )
+
+    For JSON arrays of objects with a media URL field (image / video datasets):
+
+        data_source = UrlDatasetDataSource(
+            slug="cat-photos",
+            source_url="https://example.com/cats.json",
+            url_field="image_url",
+            max_items=5000,
+            refresh_interval_hours=168,
+        )
+
+    Change-detection hooks — fire when the URL content changes between refreshes:
+
+        data_source = UrlDatasetDataSource(
+            slug="fraud-labels",
+            source_url="https://internal.example.com/labels/fraud.csv",
+            refresh_interval_hours=6,
+            on_change_retrain="fraud_detector",
+            on_change_webhook_url="https://your-system.example.com/hooks/dataset-updated",
+        )
+    """
+    name: str = ""
+    slug: str = ""
+    source_url: str = ""
+    refresh_interval_hours: int = 24
+    url_field: Optional[str] = None         # field in JSON objects holding a media URL
+    max_items: Optional[int] = None
+    allow_empty: bool = False
+    auto_create_spec: Optional[Dict] = None
+    on_change_webhook_url: Optional[str] = None
+    on_change_retrain: Optional[str] = None
+    # Legacy: direct source_id lookup (bypasses slug resolution)
+    source_id: Optional[str] = None
+
+    @property
+    def source_type(self) -> str:
+        return "url_dataset"
+
+    async def load(self, **kwargs) -> Any:
+        from app.models.url_dataset import UrlDataset
+        from app.services.url_dataset_service import get_or_create_by_slug
+
+        org_id: str = kwargs.get("org_id") or ""
+
+        # Resolve by slug (standard path)
+        if self.slug:
+            if not self.source_url:
+                raise ValueError(
+                    f"UrlDatasetDataSource with slug={self.slug!r} requires source_url to be set."
+                )
+            src = await get_or_create_by_slug(
+                slug=self.slug,
+                org_id=org_id,
+                source_url=self.source_url,
+                refresh_interval_hours=self.refresh_interval_hours,
+                url_field=self.url_field,
+                max_items=self.max_items,
+                on_change_webhook_url=self.on_change_webhook_url,
+                on_change_retrain=self.on_change_retrain,
+                auto_create_spec=self.auto_create_spec,
+            )
+        elif self.source_id:
+            # Legacy direct ID path
+            try:
+                from beanie import PydanticObjectId
+                src = await UrlDataset.find_one({
+                    "_id": PydanticObjectId(self.source_id),
+                    "deleted_at": None,
+                })
+            except Exception:
+                src = None
+            if not src:
+                raise ValueError(f"URL dataset '{self.source_id}' not found")
+        else:
+            raise ValueError("UrlDatasetDataSource requires either slug or source_id")
+
+        if src.status == "pending":
+            # Dataset exists but was never fetched — run fetch now and wait for it.
+           #  logger.info(f"[UrlDatasetDS] status=pending slug={src.slug!r} → triggering fetch")
+            from app.services.url_dataset_service import fetch_and_store as _fetch
+            await _fetch(str(src.id))
+            # Reload after fetch
+            if self.slug:
+                from app.services.url_dataset_service import get_or_create_by_slug as _goc
+                src = await _goc(
+                    slug=self.slug, org_id=org_id, source_url=self.source_url,
+                    refresh_interval_hours=self.refresh_interval_hours,
+                    url_field=self.url_field, max_items=self.max_items,
+                )
+            else:
+                src = await UrlDataset.get(str(src.id))
+
+        if src.status != "ready":
+           #  logger.info(f"[UrlDatasetDS] status={src.status!r} slug={src.slug!r} → returning []")
+            if self.allow_empty:
+                return []
+            raise ValueError(
+                f"URL dataset '{src.name}' is not ready yet (status={src.status}). "
+                "The first fetch runs automatically — wait a moment and retry, "
+                "or trigger it manually via POST /api/v1/url-datasets/{id}/refresh"
+            )
+
+       #  logger.info(f"[UrlDatasetDS] slug={src.slug!r} org_id={src.org_id!r} dataset_profile_id={src.dataset_profile_id!r}")
+
+        # Return DB entries (same shape as DatasetDataSource) so preprocess() receives
+        # a consistent list of dicts. The entry has field_id="source_data", file_key
+        # pointing to the canonical S3 file. Users call load_from_s3_sync() themselves
+        # inside preprocess() if they need the raw file content.
+        from motor.motor_asyncio import AsyncIOMotorClient
+        from app.core.config import settings as _s
+        from app.utils.s3_url import generate_presigned_url as _presign
+
+        client = AsyncIOMotorClient(_s.MONGODB_URL)
+        db = client[_s.MONGODB_DATABASE]
+        try:
+            # Resolve profile by slug (same pattern as DatasetDataSource).
+            # Fall back to dataset_profile_id if slug is absent.
+            if src.slug:
+                profile = await db["dataset_profiles"].find_one({
+                    "slug": src.slug,
+                    "org_id": src.org_id,
+                    "deleted_at": None,
+                })
+               #  logger.info(f"[UrlDatasetDS] profile by slug={src.slug!r}: {profile and str(profile['_id'])}")
+            elif src.dataset_profile_id:
+                from bson import ObjectId as _BsonOID
+                try:
+                    profile = await db["dataset_profiles"].find_one({
+                        "_id": _BsonOID(src.dataset_profile_id),
+                        "deleted_at": None,
+                    })
+                except Exception:
+                    profile = None
+               #  logger.info(f"[UrlDatasetDS] profile by id={src.dataset_profile_id!r}: {profile and str(profile['_id'])}")
+            else:
+                profile = None
+               #  logger.info(f"[UrlDatasetDS] no slug or dataset_profile_id → profile=None")
+
+            if not profile:
+                if self.allow_empty:
+                    return []
+                raise ValueError(
+                    f"URL dataset '{src.name}' has no companion dataset profile. "
+                    "Trigger a refresh to create it."
+                )
+
+            resolved_id = str(profile["_id"])
+            field_map = {f["id"]: f for f in profile.get("fields", [])}
+
+            entries = await db["dataset_entries"].find(
+                {"dataset_id": resolved_id, "file_key": {"$exists": True, "$ne": ""}}
+            ).to_list(length=None)
+
+            if not entries:
+                if self.allow_empty:
+                    return []
+                raise ValueError(
+                    f"URL dataset '{src.name}' has no entries yet. "
+                    "Trigger a refresh to populate it."
+                )
+
+            results = []
+            for e in entries:
+                field_meta = field_map.get(e.get("field_id", ""), {})
+                file_key = e.get("file_key") or ""
+                file_url = _presign(file_key) if file_key else None
+                results.append({
+                    "entry_id": str(e.get("_id", "")),
+                    "field_id": e.get("field_id", ""),
+                    "field_label": field_meta.get("label", "Source Data"),
+                    "field_type": field_meta.get("type", "file"),
+                    "text_value": e.get("text_value"),
+                    "file_url": file_url,
+                    "file_key": file_key,
+                    "file_mime": e.get("file_mime"),
+                    "file_size_bytes": e.get("file_size_bytes"),
+                    "description": e.get("description"),
+                    "captured_at": str(e.get("captured_at", "")),
+                    "collector_id": str(e.get("collector_id", "")),
+                })
+            return results
+        finally:
+            client.close()
+
+    def describe(self) -> Dict:
+        d: Dict = {"type": "url_dataset"}
+        if self.slug:
+            d["slug"] = self.slug
+            d["source_url"] = self.source_url
+        elif self.source_id:
+            d["source_id"] = self.source_id
+        if self.refresh_interval_hours != 24:
+            d["refresh_interval_hours"] = self.refresh_interval_hours
+        if self.url_field:
+            d["url_field"] = self.url_field
+        if self.allow_empty:
+            d["allow_empty"] = True
         return d

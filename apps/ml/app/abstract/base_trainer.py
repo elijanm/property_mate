@@ -216,6 +216,9 @@ class EvaluationResult:
     y_true: Optional[List] = None
     y_pred: Optional[List] = None
     extra_metrics: Dict[str, float] = field(default_factory=dict)
+    # Arbitrary string labels attached to this evaluation run (e.g. dataset version,
+    # environment, experiment name).  Stored as MLflow run tags and surfaced in the UI.
+    tags: Dict[str, str] = field(default_factory=dict)
 
 
 # ── TrainerBundle ──────────────────────────────────────────────────────────────

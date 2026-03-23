@@ -128,6 +128,8 @@ services:
     build:
       context: ../../apps/frontend
       dockerfile: Dockerfile
+      args:
+        PMS_API_URL: http://backend:8000
     restart: unless-stopped
     ports:
       - "5174:80"
@@ -397,6 +399,8 @@ services:
       S3_BUCKET: pms-ml
       S3_REGION: us-east-1
       PMS_API_URL: http://backend:8000/api/v1
+      disposable_email_check_url: ${DISPOSABLE_EMAIL_CHECK_URL:-}
+      disposable_email_api_key: ${DISPOSABLE_EMAIL_API_KEY:-}
       CUDA_DEVICE: auto
       TRAINING_WORKERS: "4"
       TRAINING_BATCH_SIZE: "32"

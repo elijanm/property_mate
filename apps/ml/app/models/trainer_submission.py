@@ -29,5 +29,6 @@ class TrainerSubmission(Document):
     approved_at: Optional[datetime] = None
     rejection_reason: Optional[str] = None
     parsed_metadata: Dict[str, Any] = {}
+    fast_path: bool = False             # True when hash matched previous approval — no LLM scan run
     submitted_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

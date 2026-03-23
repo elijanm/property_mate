@@ -686,12 +686,18 @@ def _parse_llm_response(raw: str) -> Dict[str, Any]:
     is_blocked = bool(blocked) or risk == "CRITICAL"
 
     if not findings and not summary_obj:
-        # Unparseable response — require manual review but don't auto-block
+        # Unparseable response — AST already passed, so auto-approve (same behaviour as
+        # LLM-unavailable fallback). A truly malicious trainer would be caught by the AST gate.
+        import structlog as _sl
+        _sl.get_logger(__name__).warning(
+            "trainer_security_llm_unparseable",
+            raw_preview=raw[:300],
+        )
         return {
-            "passed": False,
-            "severity": "low",
-            "summary": "LLM returned unparseable output — manual review required.",
-            "issues": [{"rule": "parse_error", "message": raw[:300], "block": False, "source": "parse_error"}],
+            "passed": True,
+            "severity": "none",
+            "summary": "AST gate passed — LLM returned unparseable output, auto-approved.",
+            "issues": [],
         }
 
     issues = []

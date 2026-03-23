@@ -2228,6 +2228,9 @@ export default function CodeEditorPage() {
   const [saving, setSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
 
+  // Error modal (save / deploy / install failures)
+  const [errorModal, setErrorModal] = useState<{ title: string; message: string } | null>(null)
+
   // Run / logs
   const [running, setRunning] = useState(false)
   const [insufficientBalance, setInsufficientBalance] = useState<string | null>(null)
@@ -2300,12 +2303,16 @@ export default function CodeEditorPage() {
       .catch(() => setInstallStatus('idle'))
   }, [activeTab, pendingSubmissions]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // When an approved or under-review trainer file gets edited, reset to idle so user can resubmit
+  // When an approved or under-review trainer file gets edited, reset to idle so user can resubmit.
+  // Exception: if the base trainer is currently running, keep 'ok' so Run stays enabled —
+  // the user is testing changes before upgrading to v2.
   useEffect(() => {
-    if (activeTabData?.dirty && (installStatus === 'ok' || installStatus === 'pending_admin')) {
-      setInstallStatus('idle')
-    }
-  }, [activeTabData?.dirty, installStatus])
+    if (!activeTabData?.dirty) return
+    if (installStatus !== 'ok' && installStatus !== 'pending_admin') return
+    const baseName = _baseName(activeTabData.name.replace(/\.py$/, ''))
+    if (activeTrainerNames.has(baseName)) return   // currently running — keep Run enabled
+    setInstallStatus('idle')
+  }, [activeTabData?.dirty, activeTabData?.name, installStatus, activeTrainerNames])
 
   // ── Load ───────────────────────────────────────────────────────────────────
 
@@ -2472,8 +2479,13 @@ export default function CodeEditorPage() {
       setTabs(prev => prev.map(t => t.path === activeTabData.path ? { ...t, dirty: false } : t))
       setSaveStatus('saved')
       await loadTree()
-    } catch {
+    } catch (err: unknown) {
       setSaveStatus('error')
+      const msg = err instanceof Error ? err.message : String(err)
+      setErrorModal({
+        title: 'Save Failed',
+        message: msg || 'Could not save the file. Check that the server is reachable and you have write permission.',
+      })
     } finally {
       setSaving(false)
       setTimeout(() => setSaveStatus('idle'), 2000)
@@ -2670,6 +2682,8 @@ export default function CodeEditorPage() {
         if (data.status === 'completed') {
           addLog(`✓ Training completed. Metrics: ${JSON.stringify(data.metrics)}`, 'done')
           loadActiveTrainers()
+          // Notify TrainersPage to refresh so the newly registered trainer appears
+          window.dispatchEvent(new CustomEvent('trainers-refresh'))
         } else {
           // If dataset is missing/not accessible, skip the raw error and show upload modal
           const isDatasetError = data.error && (
@@ -2745,8 +2759,21 @@ export default function CodeEditorPage() {
     }
   }
 
-  const handleDeploy = () => {
-    // Navigate to deploy page — done by parent App
+  const handleDeploy = async () => {
+    // Save unsaved changes first
+    if (activeTabData?.dirty) {
+      try {
+        await handleSave()
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setErrorModal({
+          title: 'Deploy Failed — Could Not Save',
+          message: msg || 'Failed to save the file before deploying. Fix the save issue and try again.',
+        })
+        return
+      }
+    }
+    // Navigate to deploy page — handled by App.tsx window event listener
     window.dispatchEvent(new CustomEvent('navigate', { detail: 'deploy' }))
   }
 
@@ -2780,15 +2807,25 @@ export default function CodeEditorPage() {
     return `${clean}_v${max + 1}`
   }
 
-  /** Inject or update `# Name:` header so the backend registers the versioned name */
+  /** Inject or update `# Name:` header AND class `name` attribute so the backend
+   *  registers the versioned name (trainer_name() reads the class attribute, not the header) */
   const _injectName = (content: string, versionedName: string): string => {
-    const lines = content.split('\n')
-    const idx = lines.findIndex(l => /^#\s*[Nn]ame\s*:/.test(l))
-    if (idx !== -1) {
-      lines[idx] = `# Name: ${versionedName}`
-      return lines.join('\n')
+    const baseName = _baseName(versionedName)
+    // 1. Update / inject # Name: header
+    let result = content
+    if (/^#\s*[Nn]ame\s*:/m.test(result)) {
+      result = result.replace(/^(#\s*[Nn]ame\s*:).*$/m, `# Name: ${versionedName}`)
+    } else {
+      result = `# Name: ${versionedName}\n${result}`
     }
-    return `# Name: ${versionedName}\n${content}`
+    // 2. Update indented `name = "baseName"` → `name = "versionedName"` inside the class body
+    //    This is what trainer_name() reads — without this update the backend still registers
+    //    the base name and never creates a versioned registration.
+    result = result.replace(
+      new RegExp(`^(\\s+name\\s*=\\s*['"])${baseName}(['"])`, 'm'),
+      `$1${versionedName}$2`
+    )
+    return result
   }
 
   /** Called by the upgrade-confirm modal "Confirm" button — skips the prompt */
@@ -2857,13 +2894,33 @@ export default function CodeEditorPage() {
       addLog(`● Security scan started (id: ${submission.id.slice(0, 8)}…)`, 'connected')
       setInstallStatus('scanning')
 
-      // Poll until scan finishes (max 60 attempts × 2 s = 2 min)
-      let attempts = 0
-      while (submission.status === 'scanning' && attempts < 60) {
-        await new Promise(r => setTimeout(r, 2000))
-        submission = await trainerSubmissionsApi.get(submission.id)
-        setScanSubmission(submission)
-        attempts++
+      // Wait for scan result via SSE (instant — no polling delay)
+      if (submission.status === 'scanning') {
+        addLog('● Waiting for scan result…', 'connected')
+        submission = await new Promise<typeof submission>((resolve) => {
+          const token = localStorage.getItem('ml_token') ?? ''
+          const url = `/api/v1/trainer-submissions/${submission.id}/stream?token=${encodeURIComponent(token)}`
+          const es = new EventSource(url)
+          // Timeout after 3 min
+          const timer = setTimeout(() => { es.close(); resolve(submission) }, 180_000)
+          es.addEventListener('status', (e: MessageEvent) => {
+            try {
+              const d = JSON.parse(e.data)
+              setScanSubmission(prev => prev ? { ...prev, status: d.status, llm_scan_result: d.llm_scan_result ?? prev.llm_scan_result } : prev)
+            } catch {}
+          })
+          es.addEventListener('done', (e: MessageEvent) => {
+            clearTimeout(timer)
+            es.close()
+            try {
+              const d = JSON.parse(e.data)
+              setScanSubmission(prev => prev ? { ...prev, status: d.status ?? prev.status } : prev)
+            } catch {}
+            // Fetch final submission state from API for complete data
+            trainerSubmissionsApi.get(submission.id).then(resolve).catch(() => resolve(submission))
+          })
+          es.addEventListener('error', () => { clearTimeout(timer); es.close(); resolve(submission) })
+        })
       }
 
       const scan = submission.llm_scan_result ?? {}
@@ -2872,12 +2929,14 @@ export default function CodeEditorPage() {
         addLog(`✓ Security scan passed — ${versionedName} is active.`, 'done')
         setInstallStatus('ok')
         loadActiveTrainers()
+        window.dispatchEvent(new CustomEvent('trainers-refresh'))
 
         // Check if trainer's dataset is empty
         const registeredTrainer = submission.parsed_metadata as Record<string, unknown> | null | undefined
         const dsInfo = (registeredTrainer?.data_source_info as Record<string, unknown>) ?? {}
         const dsType = dsInfo?.type as string | undefined
-        if (dsType === 'dataset') {
+        const dsAllowEmpty = dsInfo?.allow_empty === true
+        if (dsType === 'dataset' && !dsAllowEmpty) {
           const dsSlug = dsInfo?.dataset_slug as string | undefined
           const dsId   = dsInfo?.dataset_id  as string | undefined
           if (dsSlug || dsId) {
@@ -2922,9 +2981,13 @@ export default function CodeEditorPage() {
         addLog(`⚠ Scan timed out — check Trainers page for status.`, 'error')
         setInstallStatus('pending_admin')
       }
-    } catch (err: any) {
-      addLog(`✗ Submission failed: ${err?.response?.data?.detail ?? err?.message ?? 'Unknown error'}`, 'error')
+    } catch (err: unknown) {
+      const e = err as Record<string, unknown>
+      const detail = (e?.response as Record<string, unknown>)?.data as Record<string, unknown>
+      const msg = (detail?.detail as string) ?? (err instanceof Error ? err.message : String(err)) ?? 'Unknown error'
+      addLog(`✗ Submission failed: ${msg}`, 'error')
       setInstallStatus('error')
+      setErrorModal({ title: 'Submission Failed', message: msg })
       setTimeout(() => setInstallStatus('idle'), 3000)
     } finally {
       setInstalling(false)
@@ -2986,6 +3049,40 @@ export default function CodeEditorPage() {
 
   return (
     <div className="flex flex-col flex-1 min-h-0 bg-gray-950 h-full">
+      {/* ── Error modal (save / deploy / submission failures) ─────────────── */}
+      {errorModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-gray-900 border border-red-800/60 rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-800 bg-red-950/30">
+              <AlertCircle size={16} className="text-red-400 flex-shrink-0" />
+              <h2 className="text-sm font-semibold text-red-300 flex-1">{errorModal.title}</h2>
+              <button
+                onClick={() => setErrorModal(null)}
+                className="p-1 text-gray-600 hover:text-gray-300 transition-colors rounded"
+              >
+                <X size={14} />
+              </button>
+            </div>
+            {/* Body */}
+            <div className="px-5 py-4">
+              <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap break-words">
+                {errorModal.message}
+              </p>
+            </div>
+            {/* Footer */}
+            <div className="flex justify-end px-5 pb-4">
+              <button
+                onClick={() => setErrorModal(null)}
+                className="px-4 py-1.5 text-xs bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700 hover:text-white rounded-lg transition-colors"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Quota / wallet bar */}
       <QuotaBar wallet={wallet} />
 
@@ -3150,10 +3247,12 @@ export default function CodeEditorPage() {
                   if (sub) setRejectionModalSub(sub)
                 }
               : handleRun}
-            disabled={running || !activeTabData || (installStatus !== 'ok' && installStatus !== 'rejected')}
+            disabled={running || !activeTabData || (installStatus !== 'ok' && installStatus !== 'pending_admin' && installStatus !== 'rejected')}
             title={
               installStatus === 'rejected'
                 ? 'Trainer rejected — view rejection reason'
+                : installStatus === 'pending_admin'
+                ? 'Trainer submitted — run while awaiting admin approval'
                 : installStatus !== 'ok'
                 ? 'Submit & scan trainer first — run is blocked until scan passes'
                 : 'Run trainer'
@@ -3162,6 +3261,8 @@ export default function CodeEditorPage() {
               'flex items-center gap-1.5 px-4 py-1.5 text-xs border rounded-lg transition-colors disabled:opacity-40 font-medium',
               installStatus === 'rejected'
                 ? 'bg-red-900/40 border-red-700/60 text-red-300 hover:bg-red-800/50'
+                : installStatus === 'pending_admin'
+                ? 'bg-amber-700/50 hover:bg-amber-700/70 text-amber-200 border-amber-600/60'
                 : 'bg-green-700 hover:bg-green-600 text-white border-green-600',
             )}
           >
@@ -3172,6 +3273,7 @@ export default function CodeEditorPage() {
               : <Play size={12} />}
             {running ? 'Running…'
               : installStatus === 'rejected' ? 'Rejected'
+              : installStatus === 'pending_admin' ? 'Run'
               : installStatus !== 'ok' ? 'Run (scan first)'
               : 'Run'}
           </button>
@@ -3927,7 +4029,7 @@ export default function CodeEditorPage() {
                 onClick={handleInstallConfirmed}
                 className="flex-1 py-2 text-xs text-white bg-blue-700 hover:bg-blue-600 border border-blue-600 rounded-xl transition-colors font-medium flex items-center justify-center gap-1.5"
               >
-                <RotateCcw size={12} /> Submit as {upgradeConfirm.nextVersion}
+                <RotateCcw size={12} /> Proceed
               </button>
             </div>
           </div>

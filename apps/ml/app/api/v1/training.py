@@ -1,8 +1,14 @@
 """Training job endpoints."""
-from typing import Optional
+import asyncio
+import json
+from typing import AsyncIterator, Optional
+
+import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
 
+from app.core.config import settings
 from app.dependencies.auth import require_roles, get_current_user
 from app.models.training_job import TrainingJob
 from app.models.trainer_registration import TrainerRegistration
@@ -14,6 +20,70 @@ from app.tasks.train_task import enqueue_training, enqueue_pretrained_deploy
 from app.utils.datetime import utc_now
 
 router = APIRouter(prefix="/training", tags=["training"])
+
+_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+
+
+async def _job_sse_generator(job_id: str, org_id: str) -> AsyncIterator[dict]:
+    """Yield SSE events for a training job.
+    1. Replays all stored log_lines immediately so late clients don't miss history.
+    2. Subscribes to Redis ml:training:{job_id} for live events.
+    3. Closes after terminal status or 2-hour timeout.
+    """
+    job = await TrainingJob.get(job_id)
+    if not job or job.org_id != org_id:
+        yield {"event": "error", "data": json.dumps({"detail": "Not found"})}
+        return
+
+    # Replay stored logs so page-refresh / late-connect shows full history
+    for line in (job.log_lines or []):
+        yield {"event": "log", "data": json.dumps({"line": line})}
+
+    # Emit current status so UI can set initial state immediately
+    yield {"event": "status", "data": json.dumps({
+        "status": job.status,
+        "metrics": job.metrics,
+        "error": job.error,
+        "trainer_name": job.trainer_name,
+    })}
+
+    if job.status in _TERMINAL_STATUSES:
+        yield {"event": "done", "data": json.dumps({"status": job.status})}
+        return
+
+    r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    pubsub = r.pubsub()
+    await pubsub.subscribe(f"ml:training:{job_id}")
+
+    try:
+        deadline = asyncio.get_event_loop().time() + 7200  # 2 hours max
+        while asyncio.get_event_loop().time() < deadline:
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+            if msg and msg["type"] == "message":
+                try:
+                    payload = json.loads(msg["data"])
+                    event_type = payload.get("type", "status")
+                    yield {"event": event_type, "data": json.dumps(payload)}
+                    if event_type == "status" and payload.get("status") in _TERMINAL_STATUSES:
+                        yield {"event": "done", "data": json.dumps({"status": payload["status"]})}
+                        return
+                except Exception:
+                    pass
+            else:
+                yield {"event": "ping", "data": "{}"}
+            await asyncio.sleep(0.05)
+
+        # Timeout — emit current DB state
+        job = await TrainingJob.get(job_id)
+        if job:
+            yield {"event": "status", "data": json.dumps({"status": job.status, "timeout": True})}
+            yield {"event": "done", "data": json.dumps({"status": job.status, "timeout": True})}
+
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await pubsub.unsubscribe(f"ml:training:{job_id}")
+        await r.aclose()
 
 _any_role = Depends(require_roles("viewer", "engineer", "admin"))
 _engineer = Depends(require_roles("engineer", "admin"))
@@ -321,6 +391,27 @@ async def list_jobs(
     items = await query.skip(skip).limit(page_size).to_list()
 
     return {"items": [_job_dict(j) for j in items], "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/jobs/{job_id}/stream")
+async def stream_job(
+    job_id: str,
+    user=Depends(get_current_user),
+):
+    """SSE stream for a training job.
+
+    Connect with EventSource at:
+      /api/v1/training/jobs/{job_id}/stream?token=<jwt>
+
+    Events:
+      log    — { line: string }           (replayed from DB on connect, then live)
+      status — { status, metrics, error } (state transitions)
+      metrics — { metrics }              (evaluation results mid-run)
+      ping   — heartbeat
+      done   — terminal; close the EventSource
+      error  — access error
+    """
+    return EventSourceResponse(_job_sse_generator(job_id, user.org_id or ""))
 
 
 @router.get("/jobs/{job_id}")

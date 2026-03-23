@@ -37,6 +37,7 @@ class TrainingJob(Document):
 
     # Results
     metrics: Dict[str, float] = {}
+    eval_tags: Dict[str, Any] = {}        # tags from EvaluationResult.tags (str/int/float)
     model_uri: Optional[str] = None       # mlflow://models/...
     artifact_path: Optional[str] = None
 

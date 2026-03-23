@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     mfa_session_ttl_seconds: int = 300   # 5 minutes
     mfa_issuer_name: str = "PMS"
 
+    # Disposable email detection (ML inference)
+    disposable_email_check_url: str = ""   # e.g. http://ml:5200/api/v1/inference/<org>/throwaway_email_detector
+    disposable_email_api_key: str = ""
+
     # Voice Agent service (internal)
     voice_agent_url: str = "http://voice-agent:8010"
 

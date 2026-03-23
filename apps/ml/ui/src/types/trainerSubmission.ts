@@ -44,6 +44,7 @@ export interface TrainerSubmission {
   approved_at?: string;
   rejection_reason?: string;
   parsed_metadata: Record<string, string>;
+  fast_path?: boolean;   // true = hash matched previous approval, no LLM scan was run
   submitted_at: string;
   updated_at: string;
 }

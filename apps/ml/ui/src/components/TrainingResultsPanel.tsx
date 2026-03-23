@@ -176,6 +176,17 @@ export default function TrainingResultsPanel({ deployment, allDeployments }: Pro
         </div>
       )}
 
+      {/* Eval tags */}
+      {deployment.eval_tags && Object.keys(deployment.eval_tags).length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {Object.entries(deployment.eval_tags).map(([k, v]) => (
+            <span key={k} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] bg-brand-900/30 border border-brand-800/50 text-brand-300">
+              <span className="text-brand-500">{k}:</span>{v}
+            </span>
+          ))}
+        </div>
+      )}
+
       {empty && (
         <div className="text-center py-16 text-gray-600 text-sm">
           <TrendingUp size={28} className="mx-auto mb-3 opacity-30" />

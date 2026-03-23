@@ -153,6 +153,10 @@ class Settings(BaseSettings):
     POINTS_TO_KES_RATE: float = 0.1            # 1 point = KES 0.10 → 100 pts = KES 10
     MIN_REDEMPTION_POINTS: int = 100
 
+    # Disposable email detection (shared ML inference service)
+    disposable_email_check_url: str = ""
+    disposable_email_api_key: str = ""
+
     def get_device(self) -> str:
         if self.CUDA_DEVICE == "auto":
             try:

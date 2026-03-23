@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext'
 import { authApi } from '../api/auth'
 import { Eye, EyeOff, Loader2, Mail, ArrowRight, Cpu, Zap, BarChart2, Layers } from 'lucide-react'
 import Logo from '@/components/Logo'
+import DisposableEmailModal from '@/components/DisposableEmailModal'
 
 interface Props { onGoHome: () => void; onGoRegister: () => void; onForgotPassword: () => void }
 
@@ -47,25 +48,73 @@ export default function LoginPage({ onGoHome, onGoRegister, onForgotPassword }: 
   const [unverifiedEmail, setUnverifiedEmail] = useState('')
   const [resending, setResending] = useState(false)
   const [resentOk, setResentOk] = useState(false)
+  const [showDisposableModal, setShowDisposableModal] = useState(false)
+  const [disposableAttempts, setDisposableAttempts] = useState(0)
+  // Pending credentials — held while the disposable-email modal is open
+  const [pendingCreds, setPendingCreds] = useState<{ email: string; password: string } | null>(null)
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault()
-    setError('')
-    setUnverifiedEmail('')
-    setResentOk(false)
+  async function doLogin(e_: string, p_: string) {
     setLoading(true)
     try {
-      await login(email, password)
+      await login(e_, p_)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Login failed'
       if (msg.includes('EMAIL_NOT_VERIFIED')) {
-        setUnverifiedEmail(email)
+        setUnverifiedEmail(e_)
       } else {
         setError(msg)
       }
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    setError('')
+    setUnverifiedEmail('')
+    setResentOk(false)
+
+    // Check email first — before login() sets user and unmounts this page
+    setLoading(true)
+    try {
+      const check = await authApi.checkEmail(email)
+      if (check.is_disposable && check.confidence !== 'unavailable') {
+        setDisposableAttempts(0)
+        setPendingCreds({ email, password })
+        setShowDisposableModal(true)
+        setLoading(false)
+        return
+      }
+    } catch { /* unavailable — proceed normally */ }
+    setLoading(false)
+
+    await doLogin(email, password)
+  }
+
+  async function handleUseRealEmail(realEmail: string) {
+    try {
+      const check = await authApi.checkEmail(realEmail)
+      if (check.is_disposable && check.confidence !== 'unavailable') {
+        const next = disposableAttempts + 1
+        setDisposableAttempts(next)
+        return { is_disposable: true, attempts: next }
+      }
+    } catch { /* unavailable — proceed */ }
+    // Clean — proceed with login using original credentials
+    setShowDisposableModal(false)
+    if (pendingCreds) {
+      setPendingCreds(null)
+      await doLogin(pendingCreds.email, pendingCreds.password)
+    }
+    return { is_disposable: false, attempts: 0 }
+  }
+
+  async function handleKeepDisposable() {
+    setShowDisposableModal(false)
+    const creds = pendingCreds
+    setPendingCreds(null)
+    if (creds) await doLogin(creds.email, creds.password)
   }
 
   const handleResend = async () => {
@@ -79,6 +128,15 @@ export default function LoginPage({ onGoHome, onGoRegister, onForgotPassword }: 
 
   return (
     <div className="min-h-screen bg-[#060810] flex flex-col">
+
+      {showDisposableModal && (
+        <DisposableEmailModal
+          suspectedEmail={email}
+          attempts={disposableAttempts}
+          onUseReal={handleUseRealEmail}
+          onKeep={handleKeepDisposable}
+        />
+      )}
 
       {/* ── Beta banner ── */}
       <div className="w-full flex items-center justify-center gap-2.5 bg-amber-950/40 border-b border-amber-800/30 px-4 py-2.5">

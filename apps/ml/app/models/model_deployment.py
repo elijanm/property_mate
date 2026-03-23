@@ -28,6 +28,7 @@ class ModelDeployment(Document):
     status: str = "active"               # active | inactive | archived
     is_default: bool = False             # True = used for inference by default
     metrics: Dict[str, float] = {}
+    eval_tags: Dict[str, Any] = {}        # tags from EvaluationResult.tags (str/int/float)
     tags: Dict[str, str] = {}
     # Describes the inputs this model expects — populated from manifest.json `input_schema`
     input_schema: Dict[str, Any] = {}

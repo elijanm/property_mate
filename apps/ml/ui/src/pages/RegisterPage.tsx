@@ -8,8 +8,10 @@ import {
 import Logo from '@/components/Logo'
 import { annotatorApi } from '@/api/annotator'
 import { adminApi } from '@/api/admin'
+import { authApi } from '@/api/auth'
 import type { MLPlan } from '@/types/plan'
 import clsx from 'clsx'
+import DisposableEmailModal from '@/components/DisposableEmailModal'
 
 interface Props { onGoLogin: () => void; onGoHome?: () => void; initialRole?: 'engineer' | 'annotator' }
 
@@ -62,6 +64,9 @@ export default function RegisterPage({ onGoLogin, onGoHome, initialRole }: Props
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [annotatorSuccess, setAnnotatorSuccess] = useState(false)
+  const [showDisposableModal, setShowDisposableModal] = useState(false)
+  const [disposableAttempts, setDisposableAttempts] = useState(0)
+  const [pendingSubmit, setPendingSubmit] = useState(false)
 
   useEffect(() => {
     adminApi.getPublicPricing().then(data => {
@@ -69,11 +74,7 @@ export default function RegisterPage({ onGoLogin, onGoHome, initialRole }: Props
     }).catch(() => {})
   }, [])
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault()
-    if (password !== confirm) { setError('Passwords do not match'); return }
-    if (password.length < 8) { setError('Password must be at least 8 characters'); return }
-    setError('')
+  async function doRegister() {
     setLoading(true)
     try {
       if (isAnnotatorMode) {
@@ -90,10 +91,79 @@ export default function RegisterPage({ onGoLogin, onGoHome, initialRole }: Props
     }
   }
 
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (password !== confirm) { setError('Passwords do not match'); return }
+    if (password.length < 8) { setError('Password must be at least 8 characters'); return }
+    setError('')
+
+    // Check email before registering
+    setLoading(true)
+    try {
+      const check = await authApi.checkEmail(email)
+      if (check.is_disposable && check.confidence !== 'unavailable') {
+        setDisposableAttempts(0)
+        setPendingSubmit(true)
+        setShowDisposableModal(true)
+        setLoading(false)
+        return
+      }
+    } catch { /* unavailable — proceed */ }
+    setLoading(false)
+
+    await doRegister()
+  }
+
+  async function handleDisposableUseReal(realEmail: string) {
+    try {
+      const check = await authApi.checkEmail(realEmail)
+      if (check.is_disposable && check.confidence !== 'unavailable') {
+        const next = disposableAttempts + 1
+        setDisposableAttempts(next)
+        return { is_disposable: true, attempts: next }
+      }
+    } catch { /* unavailable — proceed */ }
+    setShowDisposableModal(false)
+    setPendingSubmit(false)
+    setEmail(realEmail)
+    // Register with the clean email directly
+    setLoading(true)
+    try {
+      if (isAnnotatorMode) {
+        await annotatorApi.register(realEmail, password, fullName, _URL_REF ?? undefined)
+        setAnnotatorSuccess(true)
+      } else {
+        await register(realEmail, password, fullName)
+      }
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setError(detail ?? (err instanceof Error ? err.message : 'Registration failed'))
+    } finally {
+      setLoading(false)
+    }
+    return { is_disposable: false, attempts: 0 }
+  }
+
+  async function handleDisposableKeep() {
+    setShowDisposableModal(false)
+    setPendingSubmit(false)
+    if (pendingSubmit) await doRegister()
+  }
+
   const perks = isAnnotatorMode ? ANNOTATOR_PERKS : PERK_CARDS
   const accentClasses = isAnnotatorMode
     ? { border: 'border-emerald-500/20', bg: 'bg-emerald-500/5', text: 'text-emerald-400', dot: 'bg-emerald-400', btn: 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-900/30', focus: 'focus:border-emerald-500' }
     : { border: 'border-sky-500/20', bg: 'bg-sky-500/5', text: 'text-sky-400', dot: 'bg-sky-400', btn: 'bg-sky-600 hover:bg-sky-500 shadow-sky-900/30', focus: 'focus:border-sky-500' }
+
+  // ── Disposable email modal (rendered at top level, overlays any step) ───────
+  const disposableModal = showDisposableModal && (
+    <DisposableEmailModal
+      suspectedEmail={email}
+      attempts={disposableAttempts}
+      onUseReal={handleDisposableUseReal}
+      onKeep={handleDisposableKeep}
+    />
+  )
 
   // ── Success screen ──────────────────────────────────────────────────────────
   if (annotatorSuccess) {
@@ -122,6 +192,7 @@ export default function RegisterPage({ onGoLogin, onGoHome, initialRole }: Props
   if (step === 'role') {
     return (
       <div className="min-h-screen bg-[#060810] flex flex-col items-center justify-center p-6">
+        {disposableModal}
         <div className="mb-10">
           <button onClick={onGoHome} className="outline-none">
             <Logo size="md" />
@@ -197,6 +268,7 @@ export default function RegisterPage({ onGoLogin, onGoHome, initialRole }: Props
 
     return (
       <div className="min-h-screen bg-[#060810] flex flex-col items-center justify-start p-6 pt-10 pb-16">
+        {disposableModal}
         {/* Logo + back */}
         <div className="w-full max-w-5xl flex items-center justify-between mb-10">
           <button onClick={onGoHome} className="outline-none">
@@ -334,6 +406,7 @@ export default function RegisterPage({ onGoLogin, onGoHome, initialRole }: Props
   // ── Step 3: Registration form ───────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-[#060810] flex">
+      {disposableModal}
 
       {/* ── Left brand panel ── */}
       <div className="hidden lg:flex lg:w-[52%] flex-col justify-between p-12 bg-[#060d1a] border-r border-white/5 relative overflow-hidden">

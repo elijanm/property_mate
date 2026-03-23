@@ -163,7 +163,7 @@ export default function MarketplacePage() {
     setCloneMsg(null)
     try {
       const res = await marketplaceApi.cloneTrainer(id)
-      setCloneMsg({ ok: true, text: `Cloned as "${res.name}" — available in your Trainers tab.` })
+      setCloneMsg({ ok: true, text: `Cloned as "${res.name}" — available in your Neurals tab.` })
     } catch {
       setCloneMsg({ ok: false, text: 'Clone failed. Please try again.' })
     } finally {
@@ -190,8 +190,8 @@ export default function MarketplacePage() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
         <div>
-          <h1 className="text-lg font-bold text-white">Trainer Marketplace</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Browse and clone public trainer plugins into your workspace</p>
+          <h1 className="text-lg font-bold text-white">Neural Marketplace</h1>
+          <p className="text-xs text-gray-500 mt-0.5">Browse and clone public neurals into your workspace</p>
         </div>
         <button onClick={load} disabled={loading}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 bg-gray-900 hover:bg-gray-800 border border-gray-700 rounded-lg transition-colors disabled:opacity-40">
@@ -225,7 +225,7 @@ export default function MarketplacePage() {
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
-          placeholder="Search trainers, frameworks, tags…"
+          placeholder="Search neurals, frameworks, tags…"
           className="w-full bg-gray-900 border border-gray-800 rounded-xl pl-8 pr-3 py-2 text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-brand-600"
         />
       </div>
@@ -272,9 +272,9 @@ export default function MarketplacePage() {
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
           <Brain size={32} className="mx-auto text-gray-700 mb-3" />
           <p className="text-gray-500 text-sm font-medium">
-            {search ? 'No trainers match your search' : 'No public trainers available yet'}
+            {search ? 'No neurals match your search' : 'No public neurals available yet'}
           </p>
-          <p className="text-gray-600 text-xs mt-1">Upload a trainer with Commercial: public to list it here.</p>
+          <p className="text-gray-600 text-xs mt-1">Upload a neural with Commercial: public to list it here.</p>
         </div>
       )}
     </div>

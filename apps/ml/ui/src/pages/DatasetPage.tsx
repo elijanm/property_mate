@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, Globe, Lock, GitFork, Link2, BarChart2, MapPin, TrendingUp, Award, Video, Film, Share2, ExternalLink, UserMinus, RefreshCw, ThumbsUp, ThumbsDown, Phone, Loader2, Download, CheckCircle2 } from 'lucide-react'
+import { Plus, Database, Users, ImageIcon, FileText, Hash, Trash2, Mail, ChevronDown, ChevronRight, Copy, Check, X, GripVertical, ToggleLeft, ToggleRight, Eye, EyeOff, ShieldCheck, Globe, Lock, GitFork, Link2, BarChart2, MapPin, TrendingUp, Award, Video, Film, Share2, ExternalLink, UserMinus, RefreshCw, ThumbsUp, ThumbsDown, Phone, Loader2, Download, CheckCircle2, List } from 'lucide-react'
 import type { DatasetOverview } from '@/types/dataset'
 import clsx from 'clsx'
 import { datasetsApi } from '@/api/datasets'
@@ -7,7 +7,7 @@ import { modelsApi } from '@/api/models'
 import { annotatorApi } from '@/api/annotator'
 import { walletApi } from '@/api/wallet'
 import type { ModelDeployment } from '@/types/trainer'
-import type { DatasetProfile, DatasetCollector, DatasetField, DatasetEntry, DatasetEntryListResponse, SimilarDatasetEntry, DatasetCreatePayload, FieldType, CaptureMode, DescriptionMode } from '@/types/dataset'
+import type { DatasetProfile, DatasetCollector, DatasetField, DatasetEntry, DatasetEntryListResponse, SimilarDatasetEntry, DatasetCreatePayload, FieldType, CaptureMode, DescriptionMode, UrlDatasetInfo } from '@/types/dataset'
 
 const FIELD_TYPE_ICONS: Record<FieldType, typeof ImageIcon> = {
   image: ImageIcon,
@@ -16,6 +16,7 @@ const FIELD_TYPE_ICONS: Record<FieldType, typeof ImageIcon> = {
   file: FileText,
   text: FileText,
   number: Hash,
+  select: List,
 }
 
 const STATUS_COLOR: Record<string, string> = {
@@ -93,6 +94,7 @@ function FieldRow({
                 <option value="file">File (any)</option>
                 <option value="text">Text</option>
                 <option value="number">Number</option>
+                <option value="select">Select / Dropdown</option>
               </select>
             </div>
           </div>
@@ -994,7 +996,7 @@ function CollectorsPanel({ dataset, onClose, onInvite }: {
 // ── Dataset card ─────────────────────────────────────────────────────────────
 
 function DatasetCard({
-  dataset, onEdit, onDelete, onInvite, onView, onOverview, onVisibilityToggle, onContributors,
+  dataset, onEdit, onDelete, onInvite, onView, onOverview, onVisibilityToggle, onContributors, onUrlFetch,
 }: {
   dataset: DatasetProfile
   onEdit: () => void
@@ -1004,10 +1006,25 @@ function DatasetCard({
   onOverview: () => void
   onVisibilityToggle: (v: 'private' | 'public') => void
   onContributors: () => void
+  onUrlFetch?: () => void
 }) {
   const isRef   = dataset.reference_type === 'reference'
   const isClone = dataset.reference_type === 'clone'
   const [downloading, setDownloading] = useState(false)
+  const [fetching, setFetching] = useState(false)
+  const urlDs = dataset.url_dataset
+
+  const handleFetchNow = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (fetching || urlDs?.status === 'fetching') return
+    setFetching(true)
+    try {
+      await datasetsApi.urlFetch(dataset.id)
+      onUrlFetch?.()
+    } catch { /* error toast handled globally */ } finally {
+      setFetching(false)
+    }
+  }
 
   const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -1108,6 +1125,38 @@ function DatasetCard({
           {dataset.fields.length > 5 && (
             <span className="text-[10px] text-gray-600 px-1">+{dataset.fields.length - 5} more</span>
           )}
+        </div>
+      )}
+
+      {/* URL source strip */}
+      {urlDs && (
+        <div className="mb-3 flex items-center gap-2 bg-gray-700/30 border border-gray-700/50 rounded-lg px-3 py-2">
+          <Link2 size={11} className="text-indigo-400 shrink-0" />
+          <span className="text-[10px] text-gray-400 truncate flex-1" title={urlDs.source_url}>
+            {urlDs.source_url.replace(/^https?:\/\//, '')}
+          </span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold shrink-0 ${
+            urlDs.status === 'ready'    ? 'bg-emerald-900/50 text-emerald-400' :
+            urlDs.status === 'fetching' ? 'bg-blue-900/50 text-blue-400' :
+            urlDs.status === 'error'    ? 'bg-red-900/50 text-red-400' :
+            'bg-gray-700 text-gray-400'
+          }`}>
+            {urlDs.status === 'fetching' ? '⟳ fetching' : urlDs.status}
+          </span>
+          {urlDs.item_count != null && (
+            <span className="text-[10px] text-gray-500 shrink-0">{urlDs.item_count.toLocaleString()} items</span>
+          )}
+          <button
+            onClick={handleFetchNow}
+            disabled={fetching || urlDs.status === 'fetching'}
+            title="Manually re-fetch URL source"
+            className="flex items-center gap-1 px-2 py-1 text-[10px] bg-indigo-700/30 hover:bg-indigo-700/60 border border-indigo-600/40 text-indigo-300 rounded-md transition-colors disabled:opacity-40 shrink-0"
+          >
+            {fetching || urlDs.status === 'fetching'
+              ? <Loader2 size={9} className="animate-spin" />
+              : <RefreshCw size={9} />}
+            Fetch
+          </button>
         </div>
       )}
 
@@ -1667,7 +1716,8 @@ function OverviewPanel({ dataset, onClose }: { dataset: DatasetProfile; onClose:
 
 // ── Dataset Workspace (full-screen AnnotatePage-style) ────────────────────────
 
-function DatasetWorkspace({ dataset, onClose }: { dataset: DatasetProfile; onClose: () => void }) {
+function DatasetWorkspace({ dataset: initialDataset, onClose }: { dataset: DatasetProfile; onClose: () => void }) {
+  const [dataset, setDataset]             = useState(initialDataset)
   const [entries, setEntries]             = useState<DatasetEntry[]>([])
   const [collectors, setCollectors]       = useState<DatasetCollector[]>([])
   const [loading, setLoading]             = useState(true)
@@ -1676,6 +1726,9 @@ function DatasetWorkspace({ dataset, onClose }: { dataset: DatasetProfile; onClo
   const [totalPages, setTotalPages]       = useState(1)
   const [archivedCount, setArchivedCount] = useState(0)
   const PAGE_SIZE = 48
+
+  const [showLogs, setShowLogs]           = useState(false)
+  const [fetchingUrl, setFetchingUrl]     = useState(false)
 
   const [selectedEntry, setSelectedEntry] = useState<DatasetEntry | null>(null)
   const [selectedIds, setSelectedIds]     = useState<Set<string>>(new Set())
@@ -1698,6 +1751,7 @@ function DatasetWorkspace({ dataset, onClose }: { dataset: DatasetProfile; onClo
   const [showUploadPicker, setShowUploadPicker] = useState(false)
   const [uploadPickerField, setUploadPickerField] = useState<DatasetField | null>(null)
   const uploadRef = useRef<HTMLInputElement>(null)
+  const [jsonViewEntry, setJsonViewEntry] = useState<DatasetEntry | null>(null)
 
   const fileFields = dataset.fields.filter(f => ['image', 'video', 'media', 'file'].includes(f.type))
 
@@ -1730,38 +1784,65 @@ function DatasetWorkspace({ dataset, onClose }: { dataset: DatasetProfile; onClo
     if (uploadRef.current) uploadRef.current.value = ''
   }
 
+  const handleUrlFetchNow = async () => {
+    if (fetchingUrl || dataset.url_dataset?.status === 'fetching') return
+    setFetchingUrl(true)
+    try {
+      await datasetsApi.urlFetch(dataset.id)
+      // Refresh dataset to get updated url_dataset status
+      datasetsApi.get(dataset.id).then(setDataset).catch(() => {})
+      // Poll for completion to refresh logs
+      const pollId = setInterval(async () => {
+        try {
+          const updated = await datasetsApi.get(dataset.id)
+          setDataset(updated)
+          if (updated.url_dataset?.status !== 'fetching') {
+            clearInterval(pollId)
+            if (showLogs) load()
+          }
+        } catch { clearInterval(pollId) }
+      }, 3000)
+    } catch { /* global toast */ } finally {
+      setFetchingUrl(false)
+    }
+  }
+
   const load = useCallback(() => {
     setLoading(true)
     datasetsApi.getEntries(dataset.id, {
-      field_id: filterField || undefined,
-      collector_id: filterCollector || undefined,
-      date_from: filterDateFrom || undefined,
-      date_to: filterDateTo || undefined,
-      quality: filterQuality || undefined,
-      review_status: filterReview || undefined,
+      field_id: showLogs ? 'fetch_log' : (filterField || undefined),
+      collector_id: showLogs ? undefined : (filterCollector || undefined),
+      date_from: showLogs ? undefined : (filterDateFrom || undefined),
+      date_to: showLogs ? undefined : (filterDateTo || undefined),
+      quality: showLogs ? undefined : (filterQuality || undefined),
+      review_status: showLogs ? undefined : (filterReview || undefined),
       include_archived: showArchived,
       page,
-      page_size: PAGE_SIZE,
+      page_size: showLogs ? 100 : PAGE_SIZE,
     }).then(r => {
       setEntries(r.items)
       setTotal(r.total)
       setTotalPages(r.total_pages)
       setArchivedCount(r.archived_count)
-      // keep selected entry in sync
       setSelectedEntry(prev => prev ? (r.items.find(e => e.id === prev.id) ?? prev) : null)
     }).finally(() => setLoading(false))
-  }, [dataset.id, filterField, filterCollector, filterDateFrom, filterDateTo,
+  }, [dataset.id, showLogs, filterField, filterCollector, filterDateFrom, filterDateTo,
       filterQuality, filterReview, showArchived, page])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => { setPage(1) }, [filterField, filterCollector, filterDateFrom, filterDateTo, filterQuality, filterReview, showArchived])
+  useEffect(() => { setPage(1) }, [showLogs, filterField, filterCollector, filterDateFrom, filterDateTo, filterQuality, filterReview, showArchived])
   useEffect(() => {
     datasetsApi.listCollectors(dataset.id).then(setCollectors).catch(() => {})
   }, [dataset.id])
 
-  const fieldName  = (id: string) => dataset.fields.find(f => f.id === id)?.label ?? `Field (${id.slice(0, 8)}…)`
+  const fieldName  = (id: string) => {
+    if (id === 'fetch_log') return 'Fetch Log'
+    if (id === 'source_data') return 'Source Data'
+    return dataset.fields.find(f => f.id === id)?.label ?? `Field (${id.slice(0, 8)}…)`
+  }
   const collectorName = (id: string) => {
     if (id === '__admin__') return 'Admin'
+    if (id === '__url_fetch__') return 'URL Fetch'
     const c = collectors.find(c => c.id === id)
     return c?.name || c?.email || `Contributor (${id.slice(0, 8)}…)`
   }
@@ -1836,6 +1917,27 @@ function DatasetWorkspace({ dataset, onClose }: { dataset: DatasetProfile; onClo
     }
   }
 
+  const doBulkDelete = async () => {
+    if (!confirm(`Delete ${selectedIds.size} entr${selectedIds.size === 1 ? 'y' : 'ies'}? This cannot be undone.`)) return
+    const ids = Array.from(selectedIds)
+    for (const id of ids) {
+      try { await datasetsApi.deleteEntry(dataset.id, id) } catch { /* skip */ }
+    }
+    setSelectedIds(new Set())
+    setSelectedEntry(prev => prev && selectedIds.has(prev.id) ? null : prev)
+    load()
+  }
+
+  const downloadAsJson = (entriesToDownload: DatasetEntry[]) => {
+    const blob = new Blob([JSON.stringify(entriesToDownload, null, 2)], { type: 'application/json' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href     = url
+    a.download = `${dataset.name.replace(/\s+/g, '_')}_${entriesToDownload.length === 1 ? 'entry' : 'entries'}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   const QUALITY_FILTERS = [
     { value: '', label: 'All quality' },
     { value: 'good', label: 'Good' },
@@ -1862,6 +1964,37 @@ function DatasetWorkspace({ dataset, onClose }: { dataset: DatasetProfile; onClo
             {archivedCount > 0 && ` · ${archivedCount} archived`}
           </span>
         </div>
+        {/* URL dataset controls */}
+        {dataset.url_dataset && (
+          <>
+            <span className={`text-[10px] px-2 py-1 rounded-lg font-semibold border ${
+              dataset.url_dataset.status === 'ready'    ? 'bg-emerald-900/40 border-emerald-700/50 text-emerald-400' :
+              dataset.url_dataset.status === 'fetching' ? 'bg-blue-900/40 border-blue-700/50 text-blue-400' :
+              dataset.url_dataset.status === 'error'    ? 'bg-red-900/40 border-red-700/50 text-red-400' :
+              'bg-gray-800 border-gray-700 text-gray-400'
+            }`}>
+              {dataset.url_dataset.status === 'fetching' ? '⟳ fetching…' : `URL · ${dataset.url_dataset.status}`}
+              {dataset.url_dataset.item_count != null && dataset.url_dataset.status === 'ready' && (
+                <span className="ml-1 opacity-70">· {dataset.url_dataset.item_count.toLocaleString()}</span>
+              )}
+            </span>
+            <button
+              onClick={handleUrlFetchNow}
+              disabled={fetchingUrl || dataset.url_dataset.status === 'fetching'}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-700/30 hover:bg-indigo-700/60 border border-indigo-600/40 text-indigo-300 text-xs font-medium transition-colors disabled:opacity-40">
+              {fetchingUrl ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+              Fetch Now
+            </button>
+            <button
+              onClick={() => { setShowLogs(s => !s); setPage(1) }}
+              className={clsx('flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border',
+                showLogs
+                  ? 'bg-amber-900/40 border-amber-700/50 text-amber-300'
+                  : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white')}>
+              <List size={12} /> Fetch Logs
+            </button>
+          </>
+        )}
         <button
           onClick={() => setShowArchived(s => !s)}
           className={clsx('px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border',
@@ -1871,10 +2004,22 @@ function DatasetWorkspace({ dataset, onClose }: { dataset: DatasetProfile; onClo
           📦 {showArchived ? 'Archived' : `Archive (${archivedCount})`}
         </button>
         {selectedIds.size > 0 && (
-          <button onClick={() => setExportModal(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-colors">
-            <ExternalLink size={13} /> Export {selectedIds.size} to Annotation
-          </button>
+          <>
+            <span className="text-xs text-indigo-300 font-medium shrink-0">{selectedIds.size} selected</span>
+            <button
+              onClick={() => downloadAsJson(entries.filter(e => selectedIds.has(e.id)))}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 text-xs font-medium transition-colors">
+              <Download size={13} /> JSON
+            </button>
+            <button onClick={() => setExportModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-colors">
+              <ExternalLink size={13} /> Annotate
+            </button>
+            <button onClick={doBulkDelete}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-900/40 hover:bg-red-800/60 border border-red-700/50 text-red-400 text-xs font-medium transition-colors">
+              <Trash2 size={13} /> Delete
+            </button>
+          </>
         )}
         {selectedIds.size === 0 && (
           <button onClick={() => setExportModal(true)}
@@ -1966,6 +2111,8 @@ function DatasetWorkspace({ dataset, onClose }: { dataset: DatasetProfile; onClo
               onDelete={doDelete}
               onFindSimilar={doFindSimilar}
               onLightbox={() => setLightbox(selectedEntry)}
+              onViewJson={() => setJsonViewEntry(selectedEntry)}
+              onDownload={() => downloadAsJson([selectedEntry])}
             />
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center text-center p-6">
@@ -1976,10 +2123,41 @@ function DatasetWorkspace({ dataset, onClose }: { dataset: DatasetProfile; onClo
           )}
         </div>
 
-        {/* Center: entry grid */}
+        {/* Center: entry grid or log view */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
           <div className="flex-1 overflow-y-auto p-4">
-            {loading ? (
+            {/* ── Fetch Logs view ── */}
+            {showLogs ? (
+              loading ? (
+                <div className="flex items-center justify-center h-full">
+                  <Loader2 size={24} className="text-indigo-400 animate-spin" />
+                </div>
+              ) : entries.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full text-center">
+                  <List size={32} className="text-gray-700 mb-3" />
+                  <p className="text-sm text-gray-400 font-medium">No fetch logs yet</p>
+                  <p className="text-xs text-gray-600 mt-1">Click "Fetch Now" to trigger the first fetch</p>
+                </div>
+              ) : (
+                <div className="space-y-1 font-mono">
+                  {[...entries].reverse().map(e => (
+                    <div key={e.id} className={clsx(
+                      'flex items-start gap-3 px-3 py-2 rounded-lg text-xs border',
+                      e.text_value?.includes('ERROR')
+                        ? 'bg-red-900/20 border-red-800/30 text-red-300'
+                        : e.text_value?.includes('content changed')
+                          ? 'bg-amber-900/20 border-amber-800/30 text-amber-300'
+                          : 'bg-gray-800/50 border-gray-700/40 text-gray-300',
+                    )}>
+                      <span className="shrink-0 mt-0.5">
+                        {e.text_value?.includes('ERROR') ? '✗' : e.text_value?.includes('content changed') ? '↑' : '✓'}
+                      </span>
+                      <span className="flex-1 break-all">{e.text_value}</span>
+                    </div>
+                  ))}
+                </div>
+              )
+            ) : loading ? (
               <div className="flex items-center justify-center h-full">
                 <Loader2 size={24} className="text-indigo-400 animate-spin" />
               </div>
@@ -2239,6 +2417,18 @@ function DatasetWorkspace({ dataset, onClose }: { dataset: DatasetProfile; onClo
         </div>
       )}
 
+      {/* ── JSON view modal ── */}
+      {jsonViewEntry && (
+        <JsonViewModal
+          entry={jsonViewEntry}
+          fieldName={fieldName}
+          collectorName={collectorName}
+          resolveFileUrl={resolveFileUrl}
+          onDownload={() => downloadAsJson([jsonViewEntry])}
+          onClose={() => setJsonViewEntry(null)}
+        />
+      )}
+
       {exportModal && (
         <ExportToAnnotationModal
           dataset={dataset}
@@ -2262,6 +2452,7 @@ function maskEmail(email: string): string {
 function EntryInfoPanel({
   entry, dataset, collectors, fieldName, collectorName, resolveFileUrl,
   actingId, onReview, onArchive, onDelete, onFindSimilar, onLightbox,
+  onViewJson, onDownload,
 }: {
   entry: DatasetEntry
   dataset: DatasetProfile
@@ -2275,8 +2466,12 @@ function EntryInfoPanel({
   onDelete: (entry: DatasetEntry) => void
   onFindSimilar: (entry: DatasetEntry) => void
   onLightbox: () => void
+  onViewJson: () => void
+  onDownload: () => void
 }) {
-  const [tab, setTab] = useState<'details' | 'quality'>('details')
+  const isUrlEntry  = entry.collector_id === '__url_fetch__'
+  const [tab, setTab]     = useState<'details' | 'quality' | 'runinfo'>('details')
+  const [menuOpen, setMenuOpen] = useState(false)
   const busy = actingId === entry.id
   const furl = resolveFileUrl(entry.file_url)
   const isImage = entry.file_mime?.startsWith('image/')
@@ -2308,42 +2503,69 @@ function EntryInfoPanel({
       </div>
 
       {/* Actions */}
-      <div className="shrink-0 flex gap-1.5 px-3 py-2.5 border-b border-gray-800 flex-wrap">
+      <div className="shrink-0 flex items-center gap-1.5 px-3 py-2 border-b border-gray-800">
         <button onClick={() => onReview(entry, 'approved')}
           disabled={busy || entry.review_status === 'approved'}
-          className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 rounded-lg bg-emerald-800/50 hover:bg-emerald-700/60 text-emerald-300 text-[11px] font-medium disabled:opacity-40 transition-colors">
+          className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg bg-emerald-800/50 hover:bg-emerald-700/60 text-emerald-300 text-[11px] font-medium disabled:opacity-40 transition-colors">
           <ThumbsUp size={11} /> Approve
         </button>
         <button onClick={() => onReview(entry, 'rejected')}
           disabled={busy || entry.review_status === 'rejected'}
-          className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 rounded-lg bg-red-900/40 hover:bg-red-800/50 text-red-400 text-[11px] font-medium disabled:opacity-40 transition-colors">
+          className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg bg-red-900/40 hover:bg-red-800/50 text-red-400 text-[11px] font-medium disabled:opacity-40 transition-colors">
           <ThumbsDown size={11} /> Reject
         </button>
-        <button onClick={() => onFindSimilar(entry)}
-          className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 rounded-lg bg-sky-900/40 hover:bg-sky-800/50 text-sky-300 text-[11px] font-medium transition-colors">
-          🔍 Similar
-        </button>
-        <button onClick={() => onArchive(entry, !entry.archived)}
-          disabled={busy}
-          className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 rounded-lg bg-amber-900/30 hover:bg-amber-900/50 text-amber-300 text-[11px] font-medium disabled:opacity-40 transition-colors">
-          {entry.archived ? '📤 Unarchive' : '📦 Archive'}
-        </button>
-        <button onClick={() => onDelete(entry)}
-          disabled={busy}
-          className="flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-red-900/40 text-gray-400 hover:text-red-400 text-[11px] font-medium disabled:opacity-40 transition-colors">
-          <Trash2 size={11} />
-        </button>
+
+        {/* ⋮ context menu */}
+        <div className="relative">
+          <button
+            onClick={() => setMenuOpen(o => !o)}
+            className="flex items-center justify-center w-7 h-7 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors">
+            <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+              <circle cx="8" cy="3" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="8" cy="13" r="1.2"/>
+            </svg>
+          </button>
+          {menuOpen && (
+            <>
+              <div className="fixed inset-0 z-[79]" onClick={() => setMenuOpen(false)} />
+              <div className="absolute right-0 top-full mt-1 z-[80] w-44 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl overflow-hidden">
+                <button onClick={() => { onFindSimilar(entry); setMenuOpen(false) }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-gray-300 hover:bg-gray-800 hover:text-white transition-colors">
+                  <Eye size={12} className="text-sky-400 shrink-0" /> Find Similar
+                </button>
+                <button onClick={() => { onArchive(entry, !entry.archived); setMenuOpen(false) }}
+                  disabled={busy}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-gray-300 hover:bg-gray-800 hover:text-white transition-colors disabled:opacity-40">
+                  <Download size={12} className="text-amber-400 shrink-0" />
+                  {entry.archived ? 'Unarchive' : 'Archive'}
+                </button>
+                <button onClick={() => { onViewJson(); setMenuOpen(false) }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-gray-300 hover:bg-gray-800 hover:text-white transition-colors">
+                  <FileText size={12} className="text-indigo-400 shrink-0" /> View / Download
+                </button>
+                <div className="border-t border-gray-800 my-0.5" />
+                <button onClick={() => { onDelete(entry); setMenuOpen(false) }}
+                  disabled={busy}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-red-400 hover:bg-red-900/30 transition-colors disabled:opacity-40">
+                  <Trash2 size={12} className="shrink-0" /> Delete
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Tabs */}
       <div className="shrink-0 flex border-b border-gray-800">
-        {(['details', 'quality'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
+        {(isUrlEntry
+          ? (['details', 'runinfo'] as const)
+          : (['details', 'quality'] as const)
+        ).map(t => (
+          <button key={t} onClick={() => setTab(t as typeof tab)}
             className={clsx('flex-1 py-2 text-[11px] font-medium transition-colors',
               tab === t
                 ? 'text-indigo-400 border-b-2 border-indigo-500 -mb-px'
                 : 'text-gray-500 hover:text-gray-300')}>
-            {t === 'details' ? 'Details' : 'Quality'}
+            {t === 'details' ? 'Details' : t === 'runinfo' ? 'Run Info' : 'Quality'}
             {t === 'quality' && hasQuality && entry.quality_score != null && (
               <span className={clsx('ml-1.5 text-[9px] font-bold px-1 py-0.5 rounded',
                 entry.quality_score >= 70 ? 'bg-emerald-900/60 text-emerald-400'
@@ -2442,7 +2664,7 @@ function EntryInfoPanel({
               </div>
             )}
           </>
-        ) : (
+        ) : tab === 'quality' ? (
           <>
             {hasQuality ? (
               <>
@@ -2590,7 +2812,155 @@ function EntryInfoPanel({
               </div>
             )}
           </>
-        )}
+        ) : tab === 'runinfo' ? (
+          /* ── Run Info tab (URL dataset entries only) ── */
+          <div className="space-y-3">
+            <div className="rounded-xl bg-gray-800/50 border border-gray-700/50 divide-y divide-gray-700/50">
+              {([
+                { label: 'Last Fetched', value: entry.captured_at ? new Date(entry.captured_at).toLocaleString() : '—' },
+                { label: 'File Size',    value: entry.file_size_bytes ? `${(entry.file_size_bytes / 1024).toFixed(1)} KB` : '—' },
+                { label: 'File Type',    value: entry.file_mime || '—' },
+                { label: 'S3 Key',       value: entry.file_key || '—', mono: true },
+              ] as { label: string; value: string; mono?: boolean }[]).map(row => (
+                <div key={row.label} className="flex items-start justify-between px-3 py-2 gap-3">
+                  <span className="text-[10px] text-gray-500 font-semibold shrink-0">{row.label}</span>
+                  <span className={clsx('text-[10px] text-right break-all', row.mono ? 'text-gray-500 font-mono' : 'text-gray-300')}>
+                    {row.value}
+                  </span>
+                </div>
+              ))}
+              {entry.description && (
+                <div className="flex items-start justify-between px-3 py-2 gap-3">
+                  <span className="text-[10px] text-gray-500 font-semibold shrink-0">Summary</span>
+                  <span className="text-[10px] text-emerald-400 text-right">{entry.description}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+// ── JSON View modal ────────────────────────────────────────────────────────────
+
+function JsonViewModal({ entry, fieldName, collectorName, onDownload, onClose, resolveFileUrl }: {
+  entry: DatasetEntry
+  fieldName: (id: string) => string
+  collectorName: (id: string) => string
+  onDownload: () => void
+  onClose: () => void
+  resolveFileUrl: (url?: string | null) => string | null
+}) {
+  const [copied, setCopied]       = useState(false)
+  const [fileContent, setFileContent] = useState<string | null>(null)
+  const [loadingFile, setLoadingFile] = useState(false)
+  const [fileError, setFileError]     = useState<string | null>(null)
+
+  // If entry points to an S3 file, load its content instead of showing entry JSON
+  const isFileEntry = !!entry.file_key && !!entry.file_url
+  const isJsonFile  = entry.file_mime?.includes('json') || entry.file_key?.endsWith('.json') || entry.file_key?.endsWith('.csv') || entry.file_mime?.includes('csv') || entry.file_mime?.includes('text')
+
+  useEffect(() => {
+    if (!isFileEntry || !isJsonFile) return
+    const url = resolveFileUrl(entry.file_url)
+    if (!url) return
+    setLoadingFile(true)
+    fetch(url)
+      .then(r => r.text())
+      .then(text => {
+        // Pretty-print JSON if it parses
+        try { setFileContent(JSON.stringify(JSON.parse(text), null, 2)) }
+        catch { setFileContent(text) }
+      })
+      .catch(e => setFileError(String(e)))
+      .finally(() => setLoadingFile(false))
+  }, [entry.id])
+
+  const displayText = isFileEntry && isJsonFile ? (fileContent ?? '') : JSON.stringify(entry, null, 2)
+  const displayLabel = isFileEntry ? (entry.file_key?.split('/').pop() ?? 'file') : 'entry.json'
+
+  const copy = () => {
+    navigator.clipboard.writeText(displayText).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+
+  const downloadFile = () => {
+    if (isFileEntry && entry.file_url) {
+      const url = resolveFileUrl(entry.file_url)
+      if (url) { const a = document.createElement('a'); a.href = url; a.download = displayLabel; a.click(); return }
+    }
+    onDownload()
+  }
+
+  return (
+    <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/80 p-4"
+      onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[88vh] flex flex-col"
+        onClick={e => e.stopPropagation()}>
+        <div className="shrink-0 flex items-center justify-between px-5 py-3.5 border-b border-gray-800">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-white truncate">{fieldName(entry.field_id)}</p>
+            <p className="text-[11px] text-gray-500 truncate">
+              {isFileEntry
+                ? <span className="text-indigo-400 font-mono">{displayLabel}</span>
+                : <>{collectorName(entry.collector_id)} · {new Date(entry.captured_at).toLocaleString()}</>
+              }
+            </p>
+          </div>
+          <div className="flex items-center gap-2 ml-4 shrink-0">
+            <button onClick={copy} disabled={loadingFile}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-medium transition-colors disabled:opacity-40">
+              {copied ? <><Check size={12} className="text-emerald-400" /> Copied</> : <><Copy size={12} /> Copy</>}
+            </button>
+            <button onClick={downloadFile}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-medium transition-colors">
+              <Download size={12} /> Download
+            </button>
+            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-400 transition-colors">
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-auto p-4">
+          {loadingFile ? (
+            <div className="flex items-center justify-center h-full gap-2">
+              <Loader2 size={18} className="text-indigo-400 animate-spin" />
+              <span className="text-xs text-gray-400">Loading {displayLabel}…</span>
+            </div>
+          ) : fileError ? (
+            <div className="text-red-400 text-xs p-4">{fileError}</div>
+          ) : isFileEntry && !isJsonFile ? (
+            <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
+              <FileText size={32} className="text-gray-600" />
+              <p className="text-sm text-gray-400">{displayLabel}</p>
+              <p className="text-xs text-gray-600">{entry.file_mime}</p>
+              <button onClick={downloadFile}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white text-xs font-medium transition-colors">
+                <Download size={13} /> Download File
+              </button>
+            </div>
+          ) : (
+            <pre className="text-[11px] font-mono text-gray-300 whitespace-pre leading-relaxed">
+              {displayText.split('\n').map((line, i) => {
+                const coloured = line
+                  .replace(/("[\w_@./-]+")\s*:/g, '<span class="text-indigo-400">$1</span>:')
+                  .replace(/:\s*(".*?")/g, ': <span class="text-emerald-400">$1</span>')
+                  .replace(/:\s*(-?\d+\.?\d*)/g, ': <span class="text-amber-400">$1</span>')
+                  .replace(/:\s*(true|false|null)/g, ': <span class="text-sky-400">$1</span>')
+                return (
+                  <div key={i} className="flex gap-3 hover:bg-white/5 rounded">
+                    <span className="select-none text-gray-700 w-8 text-right shrink-0 tabular-nums">{i + 1}</span>
+                    <span dangerouslySetInnerHTML={{ __html: coloured }} />
+                  </div>
+                )
+              })}
+            </pre>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -2917,6 +3287,11 @@ export default function DatasetPage() {
                 onOverview={() => setOverviewTarget(d)}
                 onVisibilityToggle={v => handleVisibilityToggle(d.id, v)}
                 onContributors={() => setContributorsTarget(d)}
+                onUrlFetch={() => {
+                  datasetsApi.get(d.id).then(updated =>
+                    setDatasets(ds => ds.map(x => x.id === d.id ? updated : x))
+                  ).catch(() => {})
+                }}
               />
             ))}
           </div>

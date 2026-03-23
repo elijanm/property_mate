@@ -28,6 +28,10 @@ class MLUser(Document):
     is_onboarded: bool = False        # False until user completes workspace-setup wizard
     created_at: datetime = Field(default_factory=utc_now)
     last_login_at: Optional[datetime] = None
+    # Disposable email tracking
+    disposable_email_used: bool = False
+    disposable_email_ignored: bool = False
+    disposable_email_attempts: int = 0
 
     class Settings:
         name = "ml_users"

@@ -7,7 +7,8 @@ import type { Wallet } from '@/types/wallet'
 import type { DatasetProfile } from '@/types/dataset'
 import DatasetUploadModal from './DatasetUploadModal'
 import JobsPanel from './JobsPanel'
-import { Play, Upload, Loader2, CheckCircle2, AlertCircle, ChevronRight, X, Search, Zap, Cpu, ShieldCheck, Database, Download, RefreshCw } from 'lucide-react'
+import { useTrainingJob } from '@/hooks/useTrainingJob'
+import { Play, Upload, Loader2, CheckCircle2, AlertCircle, ChevronRight, X, Search, Zap, Cpu, ShieldCheck, Database, Download, RefreshCw, Terminal, ArrowDownToLine, Minimize2 } from 'lucide-react'
 import clsx from 'clsx'
 
 const PRESETS = [
@@ -407,10 +408,13 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
   const [configOverrides, setConfigOverrides] = useState('')
   const [file, setFile]                 = useState<File | null>(null)
   const [loading, setLoading]           = useState(false)
-  const [result, setResult]             = useState<string | null>(null)
-  const [error, setError]               = useState<string | null>(null)
+  const [submitError, setSubmitError]   = useState<string | null>(null)
   const [jobsKey, setJobsKey]           = useState(0)
   const fileRef = useRef<HTMLInputElement>(null)
+  const logsEndRef = useRef<HTMLDivElement>(null)
+
+  // Live training job tracking via SSE
+  const job = useTrainingJob(selected || '__none__')
 
   const [compute, setCompute]           = useState<'local' | 'cloud_gpu'>('local')
   const [gpuTypeId, setGpuTypeId]       = useState<string>('')
@@ -503,9 +507,22 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
   const insufficientBalance = compute === 'cloud_gpu' && wallet != null && wallet.balance < cloudReservation
   const localInsufficient   = compute === 'local' && !localInfo?.is_free && wallet != null && wallet.balance < localPriceOverride * 1.5
 
+  // Auto-scroll logs to bottom
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [job.state.logs])
+
+  // Fire onJobCompleted when job finishes
+  useEffect(() => {
+    if (job.state.status === 'completed' && job.state.trainerName) {
+      onJobCompleted?.(job.state.trainerName)
+      setJobsKey(k => k + 1)
+    }
+  }, [job.state.status]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const submit = async () => {
     if (!selected) return
-    setLoading(true); setError(null); setResult(null)
+    setLoading(true); setSubmitError(null)
     try {
       let overrides: Record<string, unknown> | undefined
       if (configOverrides.trim()) {
@@ -529,10 +546,10 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
           datasetOverrideSlug ?? undefined,
         )
       }
-      setResult(res.job_id)
+      job.startTracking(res.job_id)
       setJobsKey(k => k + 1)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e))
+      setSubmitError(e instanceof Error ? e.message : String(e))
     } finally { setLoading(false) }
   }
 
@@ -984,7 +1001,8 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
 
           {/* Submit */}
           {(() => {
-            const datasetEmpty = isDatasetSource && (dsEntryCount === 0 || (dsLoading && dsEntryCount === null))
+            const dsAllowEmpty = dsInfo?.allow_empty === true
+            const datasetEmpty = isDatasetSource && !dsAllowEmpty && (dsEntryCount === 0 || (dsLoading && dsEntryCount === null))
             const datasetNotFound = isDatasetSource && !!dsError
             const isDisabled =
               loading
@@ -1029,16 +1047,117 @@ export default function TrainingPage({ onJobCompleted, initialTrainer }: Props) 
             )
           })()}
 
-          {result && (
-            <div className="bg-emerald-950/40 border border-emerald-800 rounded-xl p-3 flex items-center gap-2 text-sm text-emerald-300">
-              <CheckCircle2 size={15} />
-              Job queued{compute === 'cloud_gpu' && selectedGpu ? ` · ⚡ ${selectedGpu.name}` : compute === 'local' && localInfo ? ` · 🖥 ${localInfo.gpu_name} (Standard)` : ''} ·
-              <code className="font-mono text-xs text-emerald-500">{result}</code>
+          {/* Submit error */}
+          {submitError && (
+            <div className="bg-red-950/40 border border-red-800 rounded-xl p-3 flex items-center gap-2 text-sm text-red-400">
+              <AlertCircle size={15} /> {submitError}
             </div>
           )}
-          {error && (
-            <div className="bg-red-950/40 border border-red-800 rounded-xl p-3 flex items-center gap-2 text-sm text-red-400">
-              <AlertCircle size={15} /> {error}
+
+          {/* ── Live training logs panel ──────────────────────────────────── */}
+          {job.state.jobId && !job.isBackground && (
+            <div className="border border-gray-700/60 rounded-xl overflow-hidden bg-gray-950">
+              {/* Header */}
+              <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-700/60 bg-gray-900/60">
+                <Terminal size={13} className="text-gray-500" />
+                <span className="text-xs font-mono text-gray-400 flex-1">
+                  {job.state.trainerName ?? selected}
+                  {' '}
+                  <span className={clsx('font-semibold', {
+                    'text-blue-400': job.state.status === 'queued',
+                    'text-amber-400 animate-pulse': job.state.status === 'running',
+                    'text-emerald-400': job.state.status === 'completed',
+                    'text-red-400': job.state.status === 'failed',
+                  })}>
+                    [{job.state.status ?? 'connecting…'}]
+                  </span>
+                </span>
+
+                {/* Metrics inline */}
+                {Object.entries(job.state.metrics).slice(0, 3).map(([k, v]) => (
+                  <span key={k} className="text-[10px] text-gray-600 font-mono">
+                    {k}: <span className="text-gray-400">{typeof v === 'number' ? v.toFixed(4) : v}</span>
+                  </span>
+                ))}
+
+                <div className="flex items-center gap-1.5">
+                  {/* Run in background */}
+                  {job.state.status === 'running' && (
+                    <button
+                      onClick={job.runInBackground}
+                      title="Run in background — you'll get a notification when done"
+                      className="flex items-center gap-1 px-2 py-1 text-[10px] text-gray-500 hover:text-gray-300 border border-gray-700 rounded-lg transition-colors"
+                    >
+                      <Minimize2 size={10} /> Background
+                    </button>
+                  )}
+                  {/* Reconnect when SSE is disconnected */}
+                  {!job.state.status?.match(/running|queued/) && (
+                    <button onClick={job.reconnect} className="p-1 text-gray-600 hover:text-gray-300 transition-colors" title="Reconnect">
+                      <RefreshCw size={11} />
+                    </button>
+                  )}
+                  {/* Dismiss */}
+                  <button onClick={job.dismiss} className="p-1 text-gray-700 hover:text-gray-400 transition-colors" title="Dismiss">
+                    <X size={11} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Log lines */}
+              <div className="h-56 overflow-y-auto p-3 space-y-0.5 font-mono text-[11px]">
+                {job.state.logs.length === 0 && (
+                  <p className="text-gray-700">Waiting for logs…</p>
+                )}
+                {job.state.logs.map((line, i) => (
+                  <div key={i} className={clsx('leading-relaxed', {
+                    'text-red-400': line.includes('[error]') || line.includes('Error') || line.includes('✗'),
+                    'text-emerald-400': line.includes('✓') || line.includes('complete'),
+                    'text-amber-300': line.includes('Metrics:'),
+                    'text-gray-500': !line.includes('[error]') && !line.includes('✓') && !line.includes('Metrics:'),
+                  })}>
+                    {line}
+                  </div>
+                ))}
+                <div ref={logsEndRef} />
+              </div>
+
+              {/* Error */}
+              {job.state.error && (
+                <div className="border-t border-red-800/40 px-4 py-2 bg-red-950/20 text-xs text-red-400">
+                  {job.state.error}
+                </div>
+              )}
+
+              {/* Completed CTA */}
+              {job.state.status === 'completed' && (
+                <div className="border-t border-emerald-800/40 px-4 py-2.5 bg-emerald-950/20 flex items-center gap-3">
+                  <CheckCircle2 size={13} className="text-emerald-400" />
+                  <span className="text-xs text-emerald-300 flex-1">Training complete — model deployed</span>
+                  <button
+                    onClick={job.dismiss}
+                    className="flex items-center gap-1 px-2.5 py-1 text-xs bg-emerald-900/50 border border-emerald-700 text-emerald-400 rounded-lg hover:bg-emerald-800/50 transition-colors"
+                  >
+                    <ArrowDownToLine size={11} /> View in Jobs
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Background job banner */}
+          {job.state.jobId && job.isBackground && (
+            <div className="flex items-center gap-3 px-4 py-2.5 bg-amber-950/30 border border-amber-800/40 rounded-xl">
+              <Loader2 size={13} className="text-amber-400 animate-spin flex-shrink-0" />
+              <span className="text-xs text-amber-300 flex-1">
+                Training running in background — you'll get a notification when done
+              </span>
+              <button
+                onClick={job.reconnect}
+                className="text-xs text-amber-400 hover:text-amber-200 underline"
+              >
+                Show logs
+              </button>
             </div>
           )}
         </div>

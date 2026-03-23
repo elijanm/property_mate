@@ -1,5 +1,5 @@
 import client from './client'
-import type { DatasetProfile, DatasetCollector, DatasetEntry, DatasetEntryListResponse, SimilarDatasetEntry, DatasetCreatePayload, CollectFormDefinition, DatasetOverview } from '@/types/dataset'
+import type { DatasetProfile, DatasetCollector, DatasetEntry, DatasetEntryListResponse, SimilarDatasetEntry, DatasetCreatePayload, CollectFormDefinition, DatasetOverview, UrlDatasetInfo } from '@/types/dataset'
 
 export const datasetsApi = {
   list: () =>
@@ -100,6 +100,9 @@ export const datasetsApi = {
 
   reference: (id: string) =>
     client.post<DatasetProfile>(`/datasets/${id}/reference`).then(r => r.data),
+
+  urlFetch: (id: string) =>
+    client.post<{ ok: boolean; status: string }>(`/datasets/${id}/url-fetch`).then(r => r.data),
 }
 
 // ── Public collect API (no auth) ────────────────────────────────────────────
