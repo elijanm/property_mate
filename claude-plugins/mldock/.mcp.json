@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mldock": {
+      "command": "python",
+      "args": ["-m", "mcp_server.server"],
+      "env": {
+        "MLDOCK_BASE_URL": "https://www.mldock.io"
+      }
+    }
+  }
+}

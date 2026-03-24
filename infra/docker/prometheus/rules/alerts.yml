@@ -1,0 +1,247 @@
+groups:
+  - name: host
+    rules:
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance)(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is {{ $value | printf \"%.1f\" }}% (threshold 85%)"
+
+      - alert: CriticalCPUUsage
+        expr: 100 - (avg by(instance)(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is {{ $value | printf \"%.1f\" }}% (threshold 95%)"
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is {{ $value | printf \"%.1f\" }}%"
+
+      - alert: CriticalMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 95
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical memory usage on {{ $labels.instance }}"
+          description: "Memory usage is {{ $value | printf \"%.1f\" }}%"
+
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}) * 100 < 15
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }} ({{ $labels.mountpoint }})"
+          description: "Only {{ $value | printf \"%.1f\" }}% disk space remaining"
+
+      - alert: DiskSpaceCritical
+        expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}) * 100 < 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical disk space on {{ $labels.instance }} ({{ $labels.mountpoint }})"
+          description: "Only {{ $value | printf \"%.1f\" }}% disk space remaining"
+
+      - alert: HighDiskIOWait
+        expr: rate(node_disk_io_time_seconds_total[5m]) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High disk I/O wait on {{ $labels.instance }}"
+
+      - alert: HighNetworkErrors
+        expr: rate(node_network_receive_errs_total[5m]) + rate(node_network_transmit_errs_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High network errors on {{ $labels.instance }}"
+
+  - name: containers
+    rules:
+      - alert: ContainerHighMemory
+        expr: >
+          (container_memory_usage_bytes{name!="",container_spec_memory_limit_bytes!="0"}
+          / container_spec_memory_limit_bytes{name!="",container_spec_memory_limit_bytes!="0"}) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} memory above 90%"
+          description: "Memory usage: {{ $value | printf \"%.1f\" }}"
+
+      - alert: ContainerRestarting
+        expr: increase(container_start_time_seconds{name!=""}[15m]) > 2
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} restarting frequently"
+
+  - name: services
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "Prometheus cannot scrape {{ $labels.job }} at {{ $labels.instance }}"
+
+      - alert: HighHTTPErrorRate
+        expr: >
+          rate(pms_http_requests_total{status_code=~"5.."}[5m])
+          / rate(pms_http_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP 5xx error rate on {{ $labels.job }}"
+          description: "Error rate: {{ $value | printf \"%.2f\" }}"
+
+      - alert: HighHTTPLatency
+        expr: histogram_quantile(0.95, rate(pms_http_request_duration_seconds_bucket[5m])) > 2.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP latency (p95) on {{ $labels.job }}"
+          description: "p95 latency: {{ $value | printf \"%.2f\" }}s"
+
+  - name: redis
+    rules:
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is down"
+
+      - alert: RedisHighMemory
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis memory usage above 85%"
+          description: "Memory: {{ $value | printf \"%.1f\" }}"
+
+      - alert: RedisHighConnections
+        expr: redis_connected_clients > 200
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis has {{ $value }} connected clients"
+
+      - alert: RedisEvictions
+        expr: increase(redis_evicted_keys_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis is evicting keys"
+
+  - name: mongodb
+    rules:
+      - alert: MongoDBDown
+        expr: mongodb_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MongoDB is down"
+
+      - alert: MongoDBHighConnections
+        expr: mongodb_connections{state="current"} > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MongoDB has {{ $value }} connections"
+
+  - name: rabbitmq
+    rules:
+      - alert: RabbitMQDown
+        expr: rabbitmq_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQ is down"
+
+      - alert: RabbitMQHighQueueDepth
+        expr: rabbitmq_queue_messages > 5000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RabbitMQ queue {{ $labels.queue }} has {{ $value }} messages"
+
+      - alert: RabbitMQUnackedMessages
+        expr: rabbitmq_queue_messages_unacknowledged > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RabbitMQ queue {{ $labels.queue }} has {{ $value }} unacked messages"
+
+      - alert: RabbitMQNoConsumers
+        expr: rabbitmq_queue_consumers == 0 and rabbitmq_queue_messages > 100
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQ queue {{ $labels.queue }} has messages but no consumers"
+
+  - name: ml
+    rules:
+      - alert: MLTrainingJobFailed
+        expr: increase(ml_training_jobs_total{status="failed"}[15m]) > 3
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Multiple ML training job failures in last 15 minutes"
+
+      - alert: MLHighInferenceLatency
+        expr: histogram_quantile(0.95, rate(ml_inference_latency_seconds_bucket[5m])) > 5.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ML inference p95 latency above 5s for {{ $labels.trainer_name }}"
+
+      - alert: MLSandboxQueueBacklog
+        expr: ml_sandbox_queue_depth > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ML sandbox queue {{ $labels.tier }} has {{ $value }} pending jobs"
+
+      - alert: MLHighInferenceErrorRate
+        expr: >
+          rate(ml_inference_requests_total{status="error"}[5m])
+          / rate(ml_inference_requests_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High ML inference error rate for {{ $labels.trainer_name }}"

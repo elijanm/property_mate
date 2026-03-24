@@ -1,0 +1,26 @@
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: PMS Email Alerts
+    group_by: [grafana_folder, alertname, severity]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+    routes:
+      # Critical alerts: fire immediately, repeat every hour
+      - receiver: PMS Email Alerts
+        matchers:
+          - severity = critical
+        group_wait: 0s
+        group_interval: 1m
+        repeat_interval: 1h
+        continue: true   # also send to default receiver
+
+      # Warning alerts: wait 1m before first notification, repeat every 4h
+      - receiver: PMS Email Alerts
+        matchers:
+          - severity = warning
+        group_wait: 1m
+        group_interval: 5m
+        repeat_interval: 4h

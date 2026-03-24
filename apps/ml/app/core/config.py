@@ -131,6 +131,14 @@ class Settings(BaseSettings):
     MODAL_TOKEN_SECRET: str = ""
     MODAL_APP_ID: str = ""          # pre-created Modal app containing a "train" function
 
+    # OAuth — Google
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+
+    # OAuth — GitHub
+    GITHUB_CLIENT_ID: str = ""
+    GITHUB_CLIENT_SECRET: str = ""
+
     # Email (Resend)
     RESEND_API_KEY: str = ""
     EMAIL_FROM: str = "MLDock.io <noreply@mldock.io>"
@@ -156,6 +164,50 @@ class Settings(BaseSettings):
     # Disposable email detection (shared ML inference service)
     disposable_email_check_url: str = ""
     disposable_email_api_key: str = ""
+
+    # ── Split sandbox mode ─────────────────────────────────────────────────────
+    # SANDBOX_SPLIT_MODE=false (default) → existing TRAINER_SANDBOX behaviour unchanged
+    # SANDBOX_SPLIT_MODE=true            → editor test runs go to sandbox-test cluster;
+    #                                      production training goes to sandbox-prod-cpu cluster;
+    #                                      GPU training is unchanged (cloud dispatch)
+    SANDBOX_SPLIT_MODE: bool = False
+
+    # Test sandbox — fixture data, short timeout, always free, ephemeral models
+    SANDBOX_TEST_IMAGE: str = "pms-ml-sandbox:latest"
+    SANDBOX_TEST_MEMORY: str = "512m"
+    SANDBOX_TEST_CPUS: str = "1"
+    SANDBOX_TEST_PIDS: int = 64
+    SANDBOX_TEST_TIMEOUT: int = 60          # hard kill after N seconds
+    SANDBOX_TEST_MAX_CONCURRENT: int = 5    # per-container job concurrency
+
+    # Production CPU sandbox — real data, full resources, model artifacts persisted
+    SANDBOX_PROD_CPU_IMAGE: str = "pms-ml-sandbox:latest"
+    SANDBOX_PROD_CPU_MEMORY: str = "4g"
+    SANDBOX_PROD_CPU_CPUS: str = "4"
+    SANDBOX_PROD_CPU_PIDS: int = 256
+    SANDBOX_PROD_CPU_TIMEOUT: int = 28800   # 8 hours
+    SANDBOX_PROD_CPU_MAX_CONCURRENT: int = 2
+
+    # Production GPU sandbox — charged at GPU_RATE_PER_HOUR from general_balance
+    SANDBOX_PROD_GPU_IMAGE: str = "pms-ml-sandbox-gpu:latest"
+    SANDBOX_PROD_GPU_MEMORY: str = "16g"
+    SANDBOX_PROD_GPU_CPUS: str = "8"
+    SANDBOX_PROD_GPU_TIMEOUT: int = 28800
+    SANDBOX_PROD_GPU_MAX_CONCURRENT: int = 1
+    SANDBOX_GPU_RATE_PER_HOUR: float = 2.40   # USD per hour charged from general_balance
+
+    # ── Test-sandbox API key ───────────────────────────────────────────────────
+    # A single, isolated API key injected into config.api_key for test runs only.
+    # Trainers access it as config.api_key — never via os.environ.
+    # Set this to a restricted/rate-limited key; production credentials are NOT forwarded.
+    SANDBOX_TEST_API_KEY: str = ""
+    SANDBOX_TEST_API_BASE_URL: str = ""   # e.g. https://api.openai.com/v1
+    SANDBOX_TEST_API_MODEL: str = ""      # e.g. gpt-4o-mini
+
+    # Redis queue names (one queue per tier — containers only pop from their own queue)
+    SANDBOX_TEST_QUEUE: str = "sandbox:test:jobs"
+    SANDBOX_PROD_CPU_QUEUE: str = "sandbox:prod:cpu:jobs"
+    SANDBOX_PROD_GPU_QUEUE: str = "sandbox:prod:gpu:jobs"
 
     def get_device(self) -> str:
         if self.CUDA_DEVICE == "auto":

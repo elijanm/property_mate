@@ -184,6 +184,12 @@
     <li><a href="#example-pytorch">Example: PyTorch</a></li>
     <li><a href="#train-api">Training API</a></li>
   </ul>
+  <div class="section-label">Developer Utilities</div>
+  <ul>
+    <li><a href="#requirements">Package Requirements</a></li>
+    <li><a href="#trainer-logger">self.log — Structured Logging</a></li>
+    <li><a href="#plot-context">self.plot_context() — Plot Capture</a></li>
+  </ul>
   <div class="section-label">Auto-Training API</div>
   <ul>
     <li><a href="#auto-train-tabular">auto_train_tabular</a></li>
@@ -1893,6 +1899,221 @@ curl -X POST https://api.mldock.io/api/v1/training/jobs/{job_id}/rerun</code></p
     <pre><code>curl -X POST https://api.mldock.io/api/v1/inference/rent-predictor \
   -H <span class="st">'Content-Type: application/json'</span> \
   -d <span class="st">'{"inputs": {"bedrooms": 2, "bathrooms": 1, "sq_ft": 850, "floor": 3}}'</span></code></pre>
+  </section>
+
+  <hr>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!--           DEVELOPER UTILITIES               -->
+  <!-- ═══════════════════════════════════════════ -->
+
+  <section id="requirements">
+    <h2>Package Requirements</h2>
+    <p>
+      Declare extra pip packages your trainer needs. The sandbox installs them automatically
+      before executing your code — <strong>no manual Docker rebuild required</strong>.
+      Two equivalent ways to declare requirements:
+    </p>
+
+    <h3>Option A — class attribute <code class="inline">requirements</code></h3>
+    <p>Set a list on the class body. Preferred for longer lists and when the AI editor generates the trainer.</p>
+    <pre><code><span class="kw">class</span> <span class="cl">TimeSeriesForecaster</span>(<span class="cl">BaseTrainer</span>):
+    name    = <span class="st">"time_series_forecaster"</span>
+    version = <span class="st">"1.0.0"</span>
+
+    <span class="cm"># Packages installed before your train() / predict() are called</span>
+    requirements = [
+        <span class="st">"statsmodels"</span>,
+        <span class="st">"prophet"</span>,
+        <span class="st">"xgboost&gt;=1.7"</span>,
+    ]
+
+    <span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed, config):
+        <span class="kw">from</span> statsmodels.tsa.holtwinters <span class="kw">import</span> ExponentialSmoothing
+        ...</code></pre>
+
+    <h3>Option B — comment header <code class="inline"># Requirements:</code></h3>
+    <p>Useful for quick one-liner declarations at the top of the file.</p>
+    <pre><code><span class="cm"># Requirements: statsmodels, prophet, xgboost&gt;=1.7</span>
+<span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> BaseTrainer
+
+<span class="kw">class</span> <span class="cl">TimeSeriesForecaster</span>(<span class="cl">BaseTrainer</span>):
+    ...</code></pre>
+
+    <div class="callout info">
+      <strong>How it works</strong>
+      The platform parses both formats using Python's <code class="inline">ast</code> module — <em>without importing the file</em>.
+      This means packages are installed <strong>before</strong> your code is imported, so import-time
+      errors like <code class="inline">ModuleNotFoundError: No module named 'statsmodels'</code> are avoided.
+      Packages are cached for the lifetime of the sandbox container to avoid redundant installs.
+    </div>
+
+    <div class="callout warn">
+      <strong>Sandbox vs Production</strong>
+      In the sandbox (Test / Run buttons in ML Studio) packages are installed into <code class="inline">/tmp/pip_user_pkgs</code> and cleaned up when the container restarts.
+      In production training jobs the Docker image must already contain the package — add it to <code class="inline">apps/ml/requirements.txt</code> and rebuild.
+    </div>
+  </section>
+
+  <hr>
+
+  <section id="trainer-logger">
+    <h2>self.log — Structured Logging</h2>
+    <p>
+      Every trainer gets a built-in structured logger via <code class="inline">self.log</code>.
+      Log lines are emitted as JSON to stdout, forwarded through the sandbox in real time, and shown
+      in the <strong>Console</strong> tab of ML Studio. In production they appear in the server logs.
+    </p>
+
+    <h3>API</h3>
+    <table>
+      <thead><tr><th>Method</th><th>Use for</th><th>SSE event</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">self.log.info(msg, **kwargs)</code></td><td>Progress, epoch summaries, status messages</td><td><code class="inline">log</code></td></tr>
+        <tr><td><code class="inline">self.log.warning(msg, **kwargs)</code></td><td>Non-fatal issues (high loss, data quality)</td><td><code class="inline">log</code></td></tr>
+        <tr><td><code class="inline">self.log.error(msg, **kwargs)</code></td><td>Caught exceptions you handle gracefully</td><td><code class="inline">log</code></td></tr>
+        <tr><td><code class="inline">self.log.metric(name, value, **tags)</code></td><td>Numeric metrics — appear in the Metrics tab</td><td><code class="inline">metric</code></td></tr>
+      </tbody>
+    </table>
+
+    <h3>Example</h3>
+    <pre><code><span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed, config):
+    <span class="kw">import</span> numpy <span class="kw">as</span> np
+
+    X_train, X_test, y_train, y_test = <span class="dt">self</span>.<span class="fn">split_data</span>(preprocessed[<span class="st">'features'</span>],
+                                                           preprocessed[<span class="st">'labels'</span>], config)
+
+    <span class="dt">self</span>.log.<span class="fn">info</span>(<span class="st">"training_start"</span>, samples=<span class="fn">len</span>(X_train), features=X_train.shape[<span class="nu">1</span>])
+
+    <span class="kw">from</span> sklearn.ensemble <span class="kw">import</span> RandomForestClassifier
+    clf = RandomForestClassifier(n_estimators=<span class="nu">200</span>, random_state=config.random_seed)
+    clf.fit(X_train, y_train)
+
+    acc = <span class="fn">float</span>(clf.<span class="fn">score</span>(X_test, y_test))
+    <span class="dt">self</span>.log.<span class="fn">metric</span>(<span class="st">"accuracy"</span>, acc)                 <span class="cm"># → Metrics tab</span>
+    <span class="dt">self</span>.log.<span class="fn">metric</span>(<span class="st">"test_samples"</span>, <span class="fn">len</span>(X_test))
+    <span class="dt">self</span>.log.<span class="fn">info</span>(<span class="st">"training_done"</span>, accuracy=<span class="fn">round</span>(acc, <span class="nu">4</span>))
+
+    <span class="kw">return</span> clf, (X_test, y_test)
+
+
+<span class="kw">def</span> <span class="fn">evaluate</span>(<span class="dt">self</span>, model, test_data):
+    X_test, y_test = test_data
+    preds = model.<span class="fn">predict</span>(X_test)
+    acc   = <span class="fn">float</span>((preds == y_test).<span class="fn">mean</span>())
+
+    <span class="kw">from</span> sklearn.metrics <span class="kw">import</span> classification_report
+    report = classification_report(y_test, preds, output_dict=<span class="kw">True</span>)
+    f1 = <span class="fn">float</span>(report[<span class="st">'weighted avg'</span>][<span class="st">'f1-score'</span>])
+
+    <span class="dt">self</span>.log.<span class="fn">metric</span>(<span class="st">"f1_weighted"</span>, f1)
+    <span class="dt">self</span>.log.<span class="fn">info</span>(<span class="st">"eval_done"</span>, accuracy=<span class="fn">round</span>(acc, <span class="nu">4</span>), f1=<span class="fn">round</span>(f1, <span class="nu">4</span>))
+
+    <span class="kw">from</span> app.abstract.base_trainer <span class="kw">import</span> EvaluationResult
+    <span class="kw">return</span> EvaluationResult(accuracy=acc, f1=f1)</code></pre>
+
+    <div class="callout tip">
+      <strong>Keyword arguments become structured fields</strong>
+      Any keyword arguments you pass are included in the JSON event alongside the message —
+      e.g. <code class="inline">self.log.info("epoch", epoch=5, loss=0.021)</code> renders as
+      <code class="inline">{"level":"info","msg":"epoch","epoch":5,"loss":0.021}</code> in the console.
+    </div>
+  </section>
+
+  <hr>
+
+  <section id="plot-context">
+    <h2>self.plot_context() — Plot Capture</h2>
+    <p>
+      <code class="inline">self.plot_context()</code> returns a context manager that intercepts every
+      <code class="inline">plt.show()</code> call inside its block, captures the figure as a PNG, and
+      streams it to the <strong>Artifacts tab</strong> in ML Studio.
+    </p>
+    <p>
+      In <strong>test / sandbox mode</strong> plots are streamed live as base64 data over SSE.
+      In <strong>production mode</strong> they are saved to MLflow as run artifacts under the
+      <code class="inline">plots/</code> directory.
+    </p>
+    <p>You do <strong>not</strong> need to change how you write matplotlib code — just wrap your figure block in the context manager.</p>
+
+    <h3>Basic usage</h3>
+    <pre><code><span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed, config):
+    losses = []
+
+    <span class="cm"># ... training loop that populates losses ...</span>
+
+    <span class="cm"># Wrap any plt block — plt.show() is intercepted, nothing is displayed</span>
+    <span class="kw">with</span> <span class="dt">self</span>.<span class="fn">plot_context</span>(<span class="st">"loss_curve"</span>):
+        <span class="kw">import</span> matplotlib.pyplot <span class="kw">as</span> plt
+        plt.<span class="fn">figure</span>(figsize=(<span class="nu">10</span>, <span class="nu">4</span>))
+        plt.<span class="fn">plot</span>(losses, label=<span class="st">'Train loss'</span>)
+        plt.<span class="fn">title</span>(<span class="st">'Loss curve'</span>)
+        plt.<span class="fn">xlabel</span>(<span class="st">'Epoch'</span>)
+        plt.<span class="fn">ylabel</span>(<span class="st">'Loss'</span>)
+        plt.<span class="fn">legend</span>()
+        plt.<span class="fn">grid</span>(alpha=<span class="nu">0.3</span>)
+        plt.<span class="fn">show</span>()   <span class="cm"># ← captured as "loss_curve_0.png"</span>
+
+    <span class="kw">return</span> model, (X_test, y_test)</code></pre>
+
+    <h3>Multiple plots in one block</h3>
+    <pre><code><span class="kw">with</span> <span class="dt">self</span>.<span class="fn">plot_context</span>(<span class="st">"diagnostics"</span>):
+    <span class="cm"># First call to plt.show() → diagnostics_0.png</span>
+    plt.<span class="fn">figure</span>(figsize=(<span class="nu">8</span>, <span class="nu">4</span>))
+    plt.<span class="fn">plot</span>(train_loss, label=<span class="st">'Train'</span>)
+    plt.<span class="fn">plot</span>(val_loss,   label=<span class="st">'Val'</span>)
+    plt.<span class="fn">legend</span>()
+    plt.<span class="fn">show</span>()
+
+    <span class="cm"># Second call → diagnostics_1.png</span>
+    plt.<span class="fn">figure</span>(figsize=(<span class="nu">6</span>, <span class="nu">6</span>))
+    <span class="kw">from</span> sklearn.metrics <span class="kw">import</span> ConfusionMatrixDisplay
+    ConfusionMatrixDisplay.<span class="fn">from_predictions</span>(y_true, y_pred)
+    plt.<span class="fn">show</span>()</code></pre>
+
+    <h3>Combined with self.log</h3>
+    <pre><code><span class="kw">def</span> <span class="fn">train</span>(<span class="dt">self</span>, preprocessed, config):
+    <span class="kw">import</span> numpy <span class="kw">as</span> np, matplotlib.pyplot <span class="kw">as</span> plt
+    <span class="kw">from</span> statsmodels.tsa.holtwinters <span class="kw">import</span> ExponentialSmoothing
+
+    series = preprocessed[<span class="st">'values'</span>]
+    <span class="dt">self</span>.log.<span class="fn">info</span>(<span class="st">"fitting_ets"</span>, series_len=<span class="fn">len</span>(series))
+
+    model = ExponentialSmoothing(series, trend=<span class="st">'add'</span>, seasonal=<span class="st">'add'</span>, seasonal_periods=<span class="nu">12</span>)
+    result = model.<span class="fn">fit</span>()
+    forecast = result.<span class="fn">forecast</span>(<span class="nu">12</span>)
+
+    rmse = <span class="fn">float</span>(np.<span class="fn">sqrt</span>(np.<span class="fn">mean</span>((result.fittedvalues - series) ** <span class="nu">2</span>)))
+    <span class="dt">self</span>.log.<span class="fn">metric</span>(<span class="st">"rmse"</span>, rmse)
+    <span class="dt">self</span>.log.<span class="fn">info</span>(<span class="st">"done"</span>, rmse=<span class="fn">round</span>(rmse, <span class="nu">4</span>))
+
+    <span class="kw">with</span> <span class="dt">self</span>.<span class="fn">plot_context</span>(<span class="st">"forecast"</span>):
+        plt.<span class="fn">figure</span>(figsize=(<span class="nu">12</span>, <span class="nu">4</span>))
+        plt.<span class="fn">plot</span>(series, label=<span class="st">'Actual'</span>)
+        plt.<span class="fn">plot</span>(result.fittedvalues, label=<span class="st">'Fitted'</span>, linestyle=<span class="st">'--'</span>)
+        plt.<span class="fn">plot</span>(<span class="fn">range</span>(<span class="fn">len</span>(series), <span class="fn">len</span>(series)+<span class="nu">12</span>), forecast, label=<span class="st">'Forecast'</span>, color=<span class="st">'red'</span>)
+        plt.<span class="fn">title</span>(<span class="st">'ETS Forecast'</span>)
+        plt.<span class="fn">legend</span>()
+        plt.<span class="fn">tight_layout</span>()
+        plt.<span class="fn">show</span>()   <span class="cm"># → Artifacts tab as "forecast_0.png"</span>
+
+    <span class="kw">return</span> result</code></pre>
+
+    <div class="callout tip">
+      <strong>Prefix names the file</strong>
+      The string passed to <code class="inline">plot_context(prefix)</code> becomes the file name prefix.
+      The first <code class="inline">plt.show()</code> produces <code class="inline">prefix_0.png</code>,
+      the second produces <code class="inline">prefix_1.png</code>, and so on.
+      Use descriptive prefixes like <code class="inline">"confusion_matrix"</code>,
+      <code class="inline">"feature_importance"</code>, <code class="inline">"residuals"</code>.
+    </div>
+
+    <div class="callout info">
+      <strong>Production behaviour</strong>
+      In production (real data mode) plots are logged to the active MLflow run via
+      <code class="inline">mlflow.log_artifact()</code> under the <code class="inline">plots/</code>
+      artifact path. If no MLflow run is active the plot falls back to the console stream.
+    </div>
   </section>
 
   <hr>

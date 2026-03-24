@@ -3,6 +3,9 @@
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 #
+# For split-sandbox GPU services:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile split-sandbox up -d
+#
 # Requirements:
 #   - NVIDIA GPU + drivers
 #   - nvidia-container-toolkit installed
@@ -11,6 +14,7 @@
 # Not needed on macOS or Windows (no NVIDIA GPU passthrough support in Docker Desktop).
 
 services:
+  # ── ML service: GPU passthrough ──────────────────────────────────────────
   ml-service:
     deploy:
       resources:
@@ -19,3 +23,94 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+  # ── Split sandbox: GPU test tier ─────────────────────────────────────────
+  # Editor test runs against GPU — fixture data, short timeout.
+  sandbox-test-gpu:
+    build:
+      context: ../../apps/ml
+      dockerfile: Dockerfile.sandbox-gpu
+    restart: unless-stopped
+    user: "0"
+    environment:
+      SANDBOX_TIER: test_gpu
+      SANDBOX_TIER_QUEUE: sandbox:test:gpu:jobs
+      SANDBOX_REDIS_URL: redis://redis:6379
+      SANDBOX_DATA_MODE: fixture
+      SANDBOX_TIER_TIMEOUT: ${SANDBOX_TEST_TIMEOUT:-60}
+      SANDBOX_TIER_MAX_CONCURRENT: ${SANDBOX_TEST_MAX_CONCURRENT:-5}
+      TRAINER_SANDBOX_WORKSPACE: /sandbox_workspace
+      PYTHONUNBUFFERED: "1"
+      # No secrets — test sandbox intentionally receives no credentials
+    volumes:
+      - ml_sandbox_workspace:/sandbox_workspace
+    networks:
+      - pms_sandbox_net   # Redis access
+      - pms_pip_net       # internet egress for dynamic pip install of trainer requirements
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles:
+      - split-sandbox
+
+  # ── Split sandbox: production GPU tier ───────────────────────────────────
+  # Real data, full GPU resources, model artifacts persisted.
+  # Charged at SANDBOX_GPU_RATE_PER_HOUR from user's general_balance.
+  sandbox-prod-gpu:
+    build:
+      context: ../../apps/ml
+      dockerfile: Dockerfile.sandbox-gpu
+    restart: unless-stopped
+    user: "0"
+    environment:
+      SANDBOX_TIER: prod_gpu
+      SANDBOX_TIER_QUEUE: sandbox:prod:gpu:jobs
+      SANDBOX_REDIS_URL: redis://redis:6379
+      SANDBOX_DATA_MODE: real
+      SANDBOX_TIER_TIMEOUT: ${SANDBOX_PROD_GPU_TIMEOUT:-28800}
+      SANDBOX_TIER_MAX_CONCURRENT: ${SANDBOX_PROD_GPU_MAX_CONCURRENT:-1}
+      TRAINER_SANDBOX_WORKSPACE: /sandbox_workspace
+      PYTHONUNBUFFERED: "1"
+      # Read-only data credentials (no write access to infra)
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_BUCKET: pms-ml
+      S3_REGION: us-east-1
+      TRAINING_WORKERS: "8"
+      TRAINING_BATCH_SIZE: "64"
+      TRAINING_MAX_EPOCHS: "100"
+      TRAINING_FP16: "true"
+      MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING: "false"
+    volumes:
+      - ml_sandbox_workspace:/sandbox_workspace
+      - ml_trainer_plugins:/app/trainers:ro   # read-only — trainers loaded by runner.py
+    networks:
+      - pms_sandbox_net   # Redis + MLflow access
+      - pms_pip_net       # internet egress for dynamic pip install of trainer requirements
+    depends_on:
+      redis:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "${SANDBOX_PROD_GPU_CPUS:-8}"
+          memory: "${SANDBOX_PROD_GPU_MEMORY:-16g}"
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles:
+      - split-sandbox

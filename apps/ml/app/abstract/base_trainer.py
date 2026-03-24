@@ -120,6 +120,26 @@ class TrainingConfig:
     # ── Trainer-specific overrides (freeform) ─────────────────────────────────
     extra: Dict[str, Any] = field(default_factory=dict)
 
+    # ── Sandbox-injected API credentials (test runs only) ──────────────────────
+    # Set by the runner — never read from os.environ in trainer code.
+    # Use these to make API calls (LLM, external services) during testing.
+    #   import openai
+    #   client = openai.OpenAI(api_key=config.api_key, base_url=config.api_base_url or None)
+    api_key: str = ""
+    api_base_url: str = ""   # e.g. https://api.openai.com/v1
+    api_model: str = ""      # e.g. gpt-4o-mini
+
+    # ── Sandbox-injected S3 credentials (org-restricted, 1-hour temp creds) ───
+    # Generated per job via MinIO STS AssumeRole, scoped to s3:GetObject on
+    # {org_id}/* only.  Use self._read_field(row["field"]) in preprocess() —
+    # never access these directly.
+    s3_endpoint: str = ""
+    s3_bucket: str = ""
+    s3_region: str = "us-east-1"
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    s3_session_token: str = ""
+
 
 @dataclass
 class OutputFieldSpec:
@@ -399,6 +419,10 @@ class BaseTrainer(ABC):
     framework: str = "custom"           # sklearn | pytorch | tensorflow | custom
     tags: Dict[str, str] = {}
     requirements: List[str] = []       # pip packages needed; registry warns if any are missing
+    # API key for self.service_client() — generate at Settings → API Keys.
+    # Set this once at class level; all methods (preprocess, train, evaluate, predict)
+    # can then call self.service_client() with no arguments.
+    service_api_key: str = ""
     # UI rendering schemas — see UI docs for field type options
     input_schema: Dict[str, Any] = {}   # describes inputs: {field: {type, label, ...}}
     output_schema: Dict[str, Any] = {}  # describes outputs: {field: {type, label, editable, ...}}
@@ -412,6 +436,128 @@ class BaseTrainer(ABC):
     @classmethod
     def get_output_display(cls) -> List["OutputFieldSpec"]:
         return cls.output_display
+
+    # ── Instance initialisation ───────────────────────────────────────────────
+
+    def __init__(self) -> None:
+        self._trainer_logger: Optional["TrainerLogger"] = None
+        self._service_client: Optional["ServiceClient"] = None
+        # Injected by the runner before preprocess() is called.
+        # Gives preprocess() access to S3 temp creds via self._read_field().
+        self.config: Optional["TrainingConfig"] = None
+
+    @property
+    def log(self) -> "TrainerLogger":
+        """Structured logger — emits JSON lines to stdout for the console panel."""
+        if self._trainer_logger is None:
+            self._trainer_logger = TrainerLogger(
+                getattr(self.__class__, "name", self.__class__.__name__)
+            )
+        return self._trainer_logger
+
+    def service_client(self) -> "ServiceClient":
+        """
+        Return the :class:`ServiceClient` for this trainer.
+
+        The API key is read from the ``service_api_key`` class attribute — set it
+        once at class definition level and every method can call
+        ``self.service_client()`` without arguments.
+
+        The service URL is taken from the ``ML_SERVICE_URL`` environment variable
+        (default: ``http://ml-service:8030/api/v1``); trainers never need to know it.
+
+        Example::
+
+            class SalesForecaster(BaseTrainer):
+                name = "sales_forecaster"
+                service_api_key = "sk_live_xxxx..."   # generated in Settings → API Keys
+
+                def preprocess(self, raw):
+                    payload = self.service_client().get_dataset("sales-2024")
+                    return pd.DataFrame(payload["rows"])
+
+                def train(self, data, config):
+                    ...
+        """
+        if self._service_client is None:
+            key = self.service_api_key
+            if not key:
+                raise RuntimeError(
+                    "service_client() called but service_api_key is not set. "
+                    "Add service_api_key = 'sk_live_...' to your trainer class."
+                )
+            import os as _os
+            base_url = _os.environ.get("ML_SERVICE_URL", "http://ml-service:8030/api/v1")
+            self._service_client = ServiceClient(key, base_url)
+        return self._service_client
+
+    def plot_context(self, prefix: str = "plot") -> "PlotContext":
+        """
+        Return a PlotContext that intercepts plt.show() inside its ``with`` block.
+
+        Example::
+
+            with self.plot_context("loss_curve"):
+                plt.figure(figsize=(10, 4))
+                plt.plot(train_loss, label="train")
+                plt.plot(val_loss, label="val")
+                plt.legend()
+                plt.show()   # captured as artifact
+        """
+        return PlotContext(prefix=prefix)
+
+    # ── S3 field helpers (sandbox dataset access) ─────────────────────────────
+
+    def _s3_client(self) -> Any:
+        """
+        Return a boto3 S3 client using the org-scoped temp credentials in self.config.
+        Credentials are valid for 1 hour and grant s3:GetObject on org_id/* only.
+        """
+        import boto3
+        cfg = self.config
+        return boto3.client(
+            "s3",
+            endpoint_url=getattr(cfg, "s3_endpoint", None) or None,
+            aws_access_key_id=getattr(cfg, "s3_access_key", ""),
+            aws_secret_access_key=getattr(cfg, "s3_secret_key", ""),
+            aws_session_token=getattr(cfg, "s3_session_token", None) or None,
+            region_name=getattr(cfg, "s3_region", "us-east-1"),
+        )
+
+    def _read_field(self, field: dict) -> bytes:
+        """
+        Load a dataset field's content using org-restricted temp S3 credentials.
+
+        Call from ``preprocess()`` to fetch file/image/audio fields from S3.
+        ``self.config`` is injected by the runner before ``preprocess()`` runs.
+
+        Field shapes in ``raw["rows"]``:
+          - text  : ``{"type": "text",  "value": "some string"}``
+          - image : ``{"type": "image", "s3_key": "org_id/...", "mime": "image/jpeg"}``
+          - file  : ``{"type": "file",  "s3_key": "org_id/...", "mime": "..."}``
+          - inline: ``{"_bytes": b"..."}``  — fixture / test mode, no S3 call needed
+
+        Example::
+
+            def preprocess(self, raw):
+                for row in raw["rows"]:
+                    img   = self._read_field(row["photo"])     # bytes
+                    label = self._read_field(row["label"]).decode()
+                    ...
+        """
+        if field.get("type") == "text":
+            return (field.get("value") or "").encode()
+        inline = field.get("_bytes")
+        if inline is not None:
+            return inline if isinstance(inline, bytes) else bytes(inline)
+        s3_key = field.get("s3_key")
+        if s3_key and self.config:
+            bucket = getattr(self.config, "s3_bucket", "") or "pms-ml"
+            obj = self._s3_client().get_object(Bucket=bucket, Key=s3_key)
+            return obj["Body"].read()
+        raise ValueError(
+            f"Cannot read field — no inline bytes (fixture) and no s3_key+config: {field}"
+        )
 
     # ── Abstract methods ──────────────────────────────────────────────────────
 
@@ -1133,6 +1279,278 @@ class BaseTrainer(ABC):
             "output_display": [s.to_dict() for s in getattr(cls, "output_display", [])],
             "derived_metrics": [m.to_dict() for m in getattr(cls, "derived_metrics", [])],
         }
+
+
+# ── TrainerLogger ──────────────────────────────────────────────────────────────
+
+class TrainerLogger:
+    """
+    Structured logger for trainers.  Outputs JSON lines to stdout so
+    tier_runner.py and editor.py can parse and forward them as SSE events.
+
+    Usage inside train() / predict() / evaluate():
+        self.log.info("epoch_done", epoch=5, loss=0.023)
+        self.log.metric("accuracy", 0.94, epoch=5)
+        self.log.warning("high_loss", value=2.5)
+        self.log.error("nan_detected", layer="fc1")
+    """
+
+    def __init__(self, trainer_name: str) -> None:
+        self._name = trainer_name
+
+    def _emit(self, level: str, msg: str, **kwargs: Any) -> None:
+        import json as _json
+        import sys as _sys
+        record: Dict[str, Any] = {"level": level, "trainer": self._name, "msg": msg}
+        record.update(kwargs)
+        # Wrap as a "log" event so tier_runner forwards it automatically
+        line = _json.dumps({"event": "log", "line": _json.dumps(record)})
+        print(line, flush=True, file=_sys.stdout)
+
+    def info(self, msg: str, **kwargs: Any) -> None:
+        self._emit("info", msg, **kwargs)
+
+    def warning(self, msg: str, **kwargs: Any) -> None:
+        self._emit("warning", msg, **kwargs)
+
+    def error(self, msg: str, **kwargs: Any) -> None:
+        self._emit("error", msg, **kwargs)
+
+    def metric(self, name: str, value: float, **tags: Any) -> None:
+        """Emit a named metric that appears in the Metrics tab of the console."""
+        import json as _json
+        import sys as _sys
+        record: Dict[str, Any] = {"metric": {name: value}, "trainer": self._name}
+        record.update(tags)
+        print(_json.dumps(record), flush=True, file=_sys.stdout)
+
+
+# ── PlotContext ─────────────────────────────────────────────────────────────────
+
+class PlotContext:
+    """
+    Context manager that intercepts ``plt.show()`` calls made inside the
+    ``with`` block, captures each figure as a PNG, and emits it as an
+    artifact — either to stdout (test/sandbox) or MLflow (production).
+
+    Usage:
+        with self.plot_context("learning_curve"):
+            plt.figure(figsize=(10, 4))
+            plt.plot(losses, label="train loss")
+            plt.title("Learning Curve")
+            plt.legend()
+            plt.show()      # ← captured, nothing displayed
+
+        # Or as a one-liner:
+        with self.plot_context():
+            plt.plot(...)
+            plt.show()
+
+    In *test* mode (``SANDBOX_DATA_MODE=fixture`` or
+    ``SANDBOX_DATA_MODE`` not set) each captured figure is emitted as a
+    JSON line::
+
+        {"event": "artifact", "name": "plot_0.png", "mime": "image/png", "data_b64": "..."}
+
+    In *production* mode (``SANDBOX_DATA_MODE=real`` or env var absent but
+    MLflow tracking URI set) the PNG is logged via ``mlflow.log_figure`` /
+    ``mlflow.log_artifact`` when an active run exists.
+    """
+
+    def __init__(self, prefix: str = "plot") -> None:
+        self._prefix = prefix
+        self._counter = 0
+        self._original_show: Optional[Any] = None
+        self._data_mode: str = __import__("os").environ.get("SANDBOX_DATA_MODE", "fixture")
+
+    def __enter__(self) -> "PlotContext":
+        try:
+            import matplotlib
+            # Force Agg (non-GUI, headless) backend BEFORE patching plt.show.
+            # If we patch first, matplotlib's switch_backend() will try to set
+            # __signature__ on plt.show (our bound method), causing AttributeError.
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            plt.switch_backend("agg")   # ensure backend is fully initialised now
+            self._plt = plt
+            self._original_show = plt.show
+            plt.show = self._capture  # type: ignore[method-assign]
+        except ImportError:
+            self._plt = None
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        # Restore original plt.show
+        if self._plt is not None and self._original_show is not None:
+            self._plt.show = self._original_show  # type: ignore[method-assign]
+
+    def _capture(self, *_args: Any, **_kwargs: Any) -> None:
+        """Replacement for plt.show(): saves the current figure."""
+        if self._plt is None:
+            return
+        import io as _io
+        fig = self._plt.gcf()
+        buf = _io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight", dpi=72)
+        self._plt.close(fig)
+        png_bytes = buf.getvalue()
+        name = f"{self._prefix}_{self._counter}.png"
+        self._counter += 1
+
+        if self._data_mode == "real":
+            self._save_mlflow(name, png_bytes)
+        else:
+            self._emit_stdout(name, png_bytes)
+
+    def _emit_stdout(self, name: str, png_bytes: bytes) -> None:
+        import json as _json
+        import sys as _sys
+        url = self._upload_to_s3(name, png_bytes)
+        if url:
+            record: dict = {"event": "artifact", "name": name, "mime": "image/png", "url": url}
+        else:
+            import base64 as _b64
+            record = {
+                "event": "artifact",
+                "name": name,
+                "mime": "image/png",
+                "data_b64": _b64.b64encode(png_bytes).decode("ascii"),
+            }
+        print(_json.dumps(record), flush=True, file=_sys.stdout)
+
+    def _upload_to_s3(self, name: str, png_bytes: bytes) -> Optional[str]:
+        """Upload PNG to S3 and return a presigned URL, or None on failure."""
+        try:
+            import uuid as _uuid
+            import boto3 as _boto3  # type: ignore[import]
+            from app.core.config import settings as _s
+            if not (_s.S3_ENDPOINT_URL and _s.S3_ACCESS_KEY and _s.S3_SECRET_KEY and _s.S3_BUCKET):
+                return None
+            s3_key = f"sandbox/artifacts/editor/{_uuid.uuid4().hex}/{name}"
+            client = _boto3.client(
+                "s3",
+                endpoint_url=_s.S3_ENDPOINT_URL,
+                aws_access_key_id=_s.S3_ACCESS_KEY,
+                aws_secret_access_key=_s.S3_SECRET_KEY,
+                region_name=_s.S3_REGION,
+            )
+            client.put_object(Bucket=_s.S3_BUCKET, Key=s3_key, Body=png_bytes, ContentType="image/png")
+            url: str = client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": _s.S3_BUCKET, "Key": s3_key},
+                ExpiresIn=3600,
+            )
+            # Replace internal endpoint with public if configured
+            if _s.S3_PUBLIC_ENDPOINT_URL and _s.S3_ENDPOINT_URL in url:
+                url = url.replace(_s.S3_ENDPOINT_URL, _s.S3_PUBLIC_ENDPOINT_URL, 1)
+            return url
+        except Exception:
+            return None
+
+    def _save_mlflow(self, name: str, png_bytes: bytes) -> None:
+        try:
+            import mlflow  # type: ignore[import]
+            import tempfile as _tmp
+            import os as _os
+            if mlflow.active_run() is None:
+                self._emit_stdout(name, png_bytes)
+                return
+            with _tmp.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                f.write(png_bytes)
+                tmp_path = f.name
+            try:
+                mlflow.log_artifact(tmp_path, artifact_path="plots")
+            finally:
+                _os.unlink(tmp_path)
+        except Exception:
+            # Fallback: emit to stdout so the console still shows it
+            self._emit_stdout(name, png_bytes)
+
+
+# ── ServiceClient ─────────────────────────────────────────────────────────────
+
+class ServiceClient:
+    """
+    HTTP client that gives trainer code controlled access to the ML service API.
+
+    Trainers must NOT import requests/httpx/urllib — those are blocked.
+    Use this instead via ``self.service_client("sk_...")``.
+
+    Usage::
+
+        def train(self, data, config):
+            client = self.service_client("sk_live_xxxx")
+
+            # Download a dataset (returns dict with 'rows' or 'file_url')
+            payload  = client.get_dataset("my-slug")
+            df       = pd.DataFrame(payload["rows"])
+
+            # Run inference on another deployed model
+            result   = client.run_inference("churn_predictor", {"feature_a": 1.2})
+
+            # List available models
+            models   = client.list_models()
+
+    The API key you pass must be generated from the ML platform
+    (Settings → API Keys → Generate Key).  It is scoped to your org and
+    has read-only access to datasets and models.
+    """
+
+    def __init__(self, api_key: str, base_url: str) -> None:
+        self._api_key = api_key.strip()
+        self._base_url = base_url.rstrip("/")
+
+    def _request(self, method: str, path: str, body: Optional[Dict[str, Any]] = None) -> Any:
+        import urllib.request as _req
+        import urllib.error as _err
+        import json as _json
+
+        url = f"{self._base_url}{path}"
+        data = _json.dumps(body).encode() if body is not None else None
+        req = _req.Request(
+            url,
+            data=data,
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method=method,
+        )
+        try:
+            with _req.urlopen(req, timeout=60) as resp:
+                return _json.loads(resp.read())
+        except _err.HTTPError as exc:
+            body_text = exc.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(
+                f"ML service API error {exc.code} on {method} {path}: {body_text}"
+            ) from exc
+
+    # ── Convenience methods ────────────────────────────────────────────────────
+
+    def whoami(self) -> Dict[str, Any]:
+        """Return key metadata — useful to confirm the key is valid."""
+        return self._request("GET", "/trainer-api/me")
+
+    def list_datasets(self) -> List[Dict[str, Any]]:
+        """List datasets available to this org."""
+        return self._request("GET", "/trainer-api/datasets")
+
+    def get_dataset(self, slug: str) -> Dict[str, Any]:
+        """
+        Download a dataset.
+        Returns ``{"rows": [...]}`` for tabular datasets or
+        ``{"file_url": "..."}`` for file-backed datasets.
+        """
+        return self._request("GET", f"/trainer-api/datasets/{slug}/download")
+
+    def list_models(self) -> List[Dict[str, Any]]:
+        """List trained models available to this org."""
+        return self._request("GET", "/trainer-api/models")
+
+    def run_inference(self, trainer_name: str, inputs: Dict[str, Any]) -> Any:
+        """Run inference on a deployed model and return its prediction."""
+        return self._request("POST", f"/trainer-api/inference/{trainer_name}", {"inputs": inputs})
 
 
 # ── Null GradScaler (no-op for CPU / non-fp16 training) ───────────────────────

@@ -6,6 +6,7 @@ import {
   CloudLightning, BarChart2, ArrowLeft,
 } from 'lucide-react'
 import Logo from '@/components/Logo'
+import OAuthButtons from '@/components/OAuthButtons'
 import { annotatorApi } from '@/api/annotator'
 import { adminApi } from '@/api/admin'
 import { authApi } from '@/api/auth'
@@ -531,6 +532,17 @@ export default function RegisterPage({ onGoLogin, onGoHome, initialRole }: Props
               </>
             )}
           </div>
+
+          {!_IS_ANNOTATOR_MODE && (
+            <>
+              <OAuthButtons mode="signup" />
+              <div className="flex items-center gap-3 my-1">
+                <div className="flex-1 h-px bg-white/8" />
+                <span className="text-[11px] text-gray-600">or sign up with email</span>
+                <div className="flex-1 h-px bg-white/8" />
+              </div>
+            </>
+          )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
             {error && (

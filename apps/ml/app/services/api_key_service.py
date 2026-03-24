@@ -16,13 +16,14 @@ def _hash_key(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
 
-async def create_key(name: str, owner_email: str, rate_limit: int = 60, expires_at: Optional[datetime] = None) -> tuple[ApiKey, str]:
+async def create_key(name: str, owner_email: str, rate_limit: int = 60, expires_at: Optional[datetime] = None, org_id: Optional[str] = None) -> tuple[ApiKey, str]:
     raw_key = "sk_" + secrets.token_urlsafe(32)
     record = ApiKey(
         name=name,
         key_prefix=raw_key[:12],
         key_hash=_hash_key(raw_key),
         owner_email=owner_email,
+        org_id=org_id,
         rate_limit_per_min=rate_limit,
         expires_at=expires_at,
     )

@@ -34,6 +34,11 @@ export interface TrainerRegistration {
   owner_email?: string
   approval_status?: 'approved' | 'pending_review' | 'pending_admin' | 'flagged' | 'rejected'
   visibility?: 'public' | 'private'
+  // Fine-grained visibility / downloadability flags
+  trainer_visible?: boolean
+  trainer_source_downloadable?: boolean
+  trainer_model_visible?: boolean
+  trainer_model_downloadable?: boolean
   version_num?: number          // legacy; prefer plugin_version
   // Versioning
   plugin_version?: number       // 0 = base file, 1 = _v1, 2 = _v2, …
@@ -72,7 +77,10 @@ export interface ModelDeployment {
   version_full: string           // "v{plugin_version}.0.0.{training_patch}" — stored at creation
   is_current_default?: boolean   // only in /with-versions response
   versions?: Array<ModelDeployment & { is_current_default: boolean; version_full: string }>
-  created_at: string
+  created_at: string             // may be absent; prefer deployed_at
+  deployed_at?: string           // actual creation timestamp from backend
+  model_size_bytes?: number | null
+  trainer_model_downloadable?: boolean
 }
 
 export interface SchemaField {

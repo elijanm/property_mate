@@ -1,4 +1,5 @@
 import asyncio
+import prometheus_client
 from app.core.logging import configure_logging, get_logger
 from app.core.rabbitmq import connect, disconnect, declare_queues, get_channel
 from app.core.database import connect_db, disconnect_db
@@ -33,6 +34,9 @@ async def start_consumers(channel) -> None:
 
 async def main() -> None:
     configure_logging()
+
+    # Start Prometheus metrics HTTP server on port 9091
+    prometheus_client.start_http_server(9091)
 
     await connect_db()
     await connect_redis()

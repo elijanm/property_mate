@@ -14,11 +14,12 @@ Models are versioned in MLflow, artifacts stored in MinIO, metadata in MongoDB.
 4. [TrainingConfig Reference](#4-trainingconfig-reference)
 5. [Data Sources](#5-data-sources)
 6. [Utility Methods](#6-utility-methods)
-7. [ZIP Deploy (pre-trained models)](#7-zip-deploy-pre-trained-models)
-8. [API Reference](#8-api-reference)
-9. [Sample Trainers](#9-sample-trainers)
-10. [Schema-Driven UI](#10-schema-driven-ui)
-11. [GPU Optimization](#11-gpu-optimization)
+7. [Developer Utilities — Logging, Plots & Requirements](#7-developer-utilities)
+8. [ZIP Deploy (pre-trained models)](#8-zip-deploy-pre-trained-models)
+9. [API Reference](#9-api-reference)
+10. [Sample Trainers](#10-sample-trainers)
+11. [Schema-Driven UI](#11-schema-driven-ui)
+12. [GPU Optimization](#12-gpu-optimization)
 
 ---
 
@@ -132,6 +133,7 @@ class MyClassifier(BaseTrainer):
 | `output_schema` | `dict` | No | Drives result rendering in UI |
 | `category` | `dict` | No | `{"key": "ocr", "label": "OCR & Vision"}` — grid filter chip |
 | `tags` | `dict` | No | Arbitrary MLflow tags |
+| `requirements` | `List[str]` | No | Extra pip packages — installed automatically in the sandbox before your code runs |
 
 ### Methods to implement
 
@@ -374,7 +376,105 @@ result = self.normalize_output(raw_prediction)
 
 ---
 
-## 7. ZIP Deploy (pre-trained models)
+## 7. Developer Utilities
+
+Three built-in utilities are available in every trainer via `self.*`. No imports needed.
+
+### 7.1 Package Requirements
+
+Declare extra pip packages your trainer needs. The sandbox installs them **before** importing your file — no `ModuleNotFoundError` on startup.
+
+**Option A — class attribute (preferred)**
+```python
+class TimeSeriesForecaster(BaseTrainer):
+    name    = "ts_forecaster"
+    requirements = [
+        "statsmodels",
+        "prophet",
+        "xgboost>=1.7",
+    ]
+
+    def train(self, preprocessed, config):
+        from statsmodels.tsa.holtwinters import ExponentialSmoothing
+        ...
+```
+
+**Option B — comment header**
+```python
+# Requirements: statsmodels, prophet, xgboost>=1.7
+from app.abstract.base_trainer import BaseTrainer
+...
+```
+
+> **Note:** In the sandbox packages are installed into `/tmp/pip_user_pkgs` and cached for the container lifetime. In production (real training jobs) add packages to `apps/ml/requirements.txt` and rebuild the Docker image.
+
+---
+
+### 7.2 Structured Logging — `self.log`
+
+Every trainer gets a built-in logger that emits JSON lines to stdout. Lines are forwarded in real time to the **Console** tab in ML Studio. `self.log.metric()` calls also populate the **Metrics** tab.
+
+| Method | Use for |
+|---|---|
+| `self.log.info(msg, **kwargs)` | Progress, epoch summaries |
+| `self.log.warning(msg, **kwargs)` | Non-fatal issues |
+| `self.log.error(msg, **kwargs)` | Caught exceptions |
+| `self.log.metric(name, value, **tags)` | Numeric metrics → Metrics tab |
+
+```python
+def train(self, preprocessed, config):
+    X_train, _, X_test, y_train, _, y_test = self.split_data(
+        preprocessed["features"], preprocessed["labels"], config
+    )
+    self.log.info("training_start", samples=len(X_train))
+
+    from sklearn.ensemble import RandomForestClassifier
+    clf = RandomForestClassifier(n_estimators=200, random_state=config.random_seed)
+    clf.fit(X_train, y_train)
+
+    acc = float(clf.score(X_test, y_test))
+    self.log.metric("accuracy", acc)           # → Metrics tab
+    self.log.info("done", accuracy=round(acc, 4))
+    return clf, (X_test, y_test)
+```
+
+---
+
+### 7.3 Plot Capture — `self.plot_context()`
+
+Intercepts every `plt.show()` call inside the `with` block, captures the figure as a PNG, and streams it to the **Artifacts** tab in ML Studio. Nothing is displayed on screen.
+
+- **Test/sandbox mode**: streamed live as base64 over SSE to the Artifacts tab
+- **Production mode**: saved to MLflow as run artifacts under `plots/`
+
+```python
+def train(self, preprocessed, config):
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    series = preprocessed["values"]
+    # ... fit model ...
+
+    # Wrap any plt block — plt.show() is intercepted
+    with self.plot_context("forecast"):
+        plt.figure(figsize=(12, 4))
+        plt.plot(series, label="Actual")
+        plt.plot(fitted, label="Fitted", linestyle="--")
+        plt.plot(range(len(series), len(series) + 12), forecast,
+                 label="Forecast", color="red")
+        plt.title("ETS Forecast")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()   # → captured as "forecast_0.png" in Artifacts tab
+
+    return model
+```
+
+Multiple `plt.show()` calls in the same block produce sequentially-named files (`forecast_0.png`, `forecast_1.png`, …). The prefix string names the files — use descriptive names like `"confusion_matrix"`, `"feature_importance"`, `"residuals"`.
+
+---
+
+## 8. ZIP Deploy (pre-trained models)
 
 Deploy any pre-trained model without a training run. No Python class needed — just a ZIP.
 
@@ -473,7 +573,7 @@ sklearn, PyTorch, ONNX, HuggingFace, YOLO, and Keras.
 
 ---
 
-## 8. API Reference
+## 9. API Reference
 
 ### Training
 
@@ -515,7 +615,7 @@ sklearn, PyTorch, ONNX, HuggingFace, YOLO, and Keras.
 
 ---
 
-## 9. Sample Trainers
+## 10. Sample Trainers
 
 | File | Name | Task | Demonstrates |
 |---|---|---|---|
@@ -536,7 +636,7 @@ done
 
 ---
 
-## 10. Schema-Driven UI
+## 11. Schema-Driven UI
 
 Define `input_schema` and `output_schema` on your trainer (or in `manifest.json` for ZIP models) to get a dynamic inference form in ML Studio — no frontend code needed.
 
@@ -614,7 +714,7 @@ category = {"key": "custom",         "label": "Custom Model"}
 
 ---
 
-## 11. GPU Optimization
+## 12. GPU Optimization
 
 The service automatically selects CUDA when `CUDA_DEVICE=auto` (default). All helpers account for CPU / CUDA / MPS (Apple Silicon) transparently.
 

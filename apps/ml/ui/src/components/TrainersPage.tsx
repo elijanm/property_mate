@@ -260,6 +260,64 @@ function DataSourceRow({
   )
 }
 
+// ─── Visibility flags panel ────────────────────────────────────────────────
+
+function VisibilityFlagsPanel({
+  trainer,
+  onUpdate,
+}: {
+  trainer: TrainerRegistration
+  onUpdate: (updated: Partial<TrainerRegistration>) => void
+}) {
+  const [saving, setSaving] = useState(false)
+
+  const toggle = async (
+    field: 'trainer_visible' | 'trainer_source_downloadable' | 'trainer_model_visible' | 'trainer_model_downloadable'
+  ) => {
+    const newVal = !(trainer[field] ?? (field === 'trainer_visible' || field === 'trainer_model_visible'))
+    setSaving(true)
+    try {
+      await trainersApi.setTrainerFlags(trainer.name, { [field]: newVal })
+      onUpdate({ [field]: newVal })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const flags: { key: 'trainer_visible' | 'trainer_source_downloadable' | 'trainer_model_visible' | 'trainer_model_downloadable'; label: string; default: boolean; description: string }[] = [
+    { key: 'trainer_visible', label: 'Trainer visible', default: true, description: 'Show trainer in marketplace listings' },
+    { key: 'trainer_source_downloadable', label: 'Source downloadable', default: false, description: 'Allow .py source code download' },
+    { key: 'trainer_model_visible', label: 'Model visible', default: true, description: 'Show deployed model in inference catalog' },
+    { key: 'trainer_model_downloadable', label: 'Model downloadable', default: false, description: 'Allow model artifact download' },
+  ]
+
+  return (
+    <div className="mt-3 p-3 bg-gray-900/40 border border-gray-700/40 rounded-lg">
+      <p className="text-[11px] text-gray-500 font-medium uppercase tracking-wide mb-2">Visibility & Access</p>
+      <div className="space-y-2">
+        {flags.map(f => {
+          const value = trainer[f.key] ?? f.default
+          return (
+            <label key={f.key} className="flex items-center justify-between gap-3 cursor-pointer group">
+              <div>
+                <p className="text-xs text-gray-300 group-hover:text-white transition-colors">{f.label}</p>
+                <p className="text-[10px] text-gray-600">{f.description}</p>
+              </div>
+              <button
+                onClick={() => toggle(f.key)}
+                disabled={saving}
+                className={`relative w-9 h-5 rounded-full transition-colors flex-shrink-0 ${value ? 'bg-indigo-600' : 'bg-gray-700'} disabled:opacity-50`}
+              >
+                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${value ? 'translate-x-4' : 'translate-x-0'}`} />
+              </button>
+            </label>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ─── Main page ─────────────────────────────────────────────────────────────
 
 export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
@@ -804,6 +862,16 @@ export default function TrainersPage({ onStartTraining, onGoDatasets }: Props) {
                                         <span key={tag} className="text-[10px] bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full border border-gray-700">{tag}</span>
                                       ))}
                                     </div>
+                                  )}
+
+                                  {/* ── Visibility flags (private trainers only) ── */}
+                                  {scope === 'private' && (
+                                    <VisibilityFlagsPanel
+                                      trainer={t}
+                                      onUpdate={(updated) => {
+                                        setTrainers(prev => prev.map(tr => tr.name === t.name ? { ...tr, ...updated } : tr))
+                                      }}
+                                    />
                                   )}
 
                                   {/* ── Previous versions collapsible ──── */}

@@ -43,7 +43,7 @@ from app.core.rabbitmq import init_rabbitmq, close_rabbitmq
 from app.core.opensearch import init_opensearch, close_opensearch
 from app.core.logging import configure_logging
 from app.core.exceptions import add_exception_handlers
-from app.core.middleware import RequestIDMiddleware, TimingMiddleware
+from app.core.middleware import RequestIDMiddleware, TimingMiddleware, MetricsMiddleware
 from app.core.metrics import setup_metrics
 from app.core.s3 import ensure_bucket_exists
 from app.api.v1.router import api_router
@@ -89,6 +89,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(MetricsMiddleware)
     app.add_middleware(TimingMiddleware)
     app.add_middleware(RequestIDMiddleware)
 

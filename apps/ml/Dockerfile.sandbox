@@ -1,0 +1,29 @@
+# Sandbox tier runner image.
+# Used by sandbox-test and sandbox-prod-cpu services.
+# Contains ONLY the ML dependencies and sandbox scripts — no app source, no infra credentials.
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install ML dependencies (same as main image so user trainers can import them)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install redis client for tier_runner pub/sub
+RUN pip install --no-cache-dir "redis[asyncio]>=5.0"
+
+# Copy only the sandbox scripts — no app/ source, no secrets
+COPY sandbox/ ./sandbox/
+
+RUN mkdir -p /sandbox_workspace /tmp && \
+    chmod 1777 /sandbox_workspace
+
+# Run as nobody — no root privileges
+USER 65534
+
+CMD ["python", "/app/sandbox/tier_runner.py"]

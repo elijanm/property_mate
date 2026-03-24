@@ -1009,7 +1009,18 @@ interface AiChatMsg {
   csvPreview?: { columns: string[]; rows: string[][] }
   dataInspection?: DataInspection
   attachedFile?: AttachedFile
-  debug?: { tokens: { input: number; output: number; total: number }; cost_usd: number; model: string }
+  debug?: {
+    tokens: { input: number; output: number; total: number }
+    cost_usd: number
+    model: string
+    provider?: string
+    num_ctx?: number | null
+    extraction_pass?: string
+    continuation_count?: number
+    repair_ran?: boolean
+    final_line_count?: number
+    missing_methods_final?: string[]
+  }
 }
 
 interface AiSession {
@@ -1155,14 +1166,47 @@ function ChatBubble({
 
         {/* Token / cost debug badge */}
         {showCostDebug && msg.debug && msg.role === 'assistant' && (
-          <div className="flex items-center gap-2 mt-1.5 px-2 py-1 bg-gray-900/60 border border-gray-700/50 rounded-lg w-fit">
-            <span className="text-[10px] text-gray-500 font-mono">
-              ↑{msg.debug.tokens.input.toLocaleString()} ↓{msg.debug.tokens.output.toLocaleString()} tok
-            </span>
-            <span className="text-gray-700">·</span>
-            <span className="text-[10px] text-gray-500 font-mono">${msg.debug.cost_usd.toFixed(5)}</span>
-            <span className="text-gray-700">·</span>
-            <span className="text-[10px] text-gray-600">{msg.debug.model}</span>
+          <div className="flex flex-col gap-1 mt-1.5">
+            <div className="flex items-center gap-2 px-2 py-1 bg-gray-900/60 border border-gray-700/50 rounded-lg w-fit">
+              <span className="text-[10px] text-gray-500 font-mono">
+                ↑{msg.debug.tokens.input.toLocaleString()} ↓{msg.debug.tokens.output.toLocaleString()} tok
+              </span>
+              <span className="text-gray-700">·</span>
+              <span className="text-[10px] text-gray-500 font-mono">${msg.debug.cost_usd.toFixed(5)}</span>
+              <span className="text-gray-700">·</span>
+              <span className="text-[10px] text-gray-600">{msg.debug.model}</span>
+              {msg.debug.num_ctx != null && (
+                <>
+                  <span className="text-gray-700">·</span>
+                  <span className="text-[10px] text-gray-600">ctx={msg.debug.num_ctx.toLocaleString()}</span>
+                </>
+              )}
+            </div>
+            {(msg.debug.extraction_pass || msg.debug.continuation_count != null || msg.debug.repair_ran || (msg.debug.missing_methods_final?.length ?? 0) > 0) && (
+              <div className="flex flex-wrap items-center gap-1.5 px-2 py-1 bg-gray-900/40 border border-gray-800/50 rounded-lg w-fit">
+                {msg.debug.extraction_pass && (
+                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${msg.debug.extraction_pass === 'pass1' ? 'bg-green-900/50 text-green-400' : 'bg-amber-900/50 text-amber-400'}`}>
+                    {msg.debug.extraction_pass}
+                  </span>
+                )}
+                {(msg.debug.continuation_count ?? 0) > 0 && (
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-900/50 text-blue-400">
+                    +{msg.debug.continuation_count} cont
+                  </span>
+                )}
+                {msg.debug.repair_ran && (
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-orange-900/50 text-orange-400">repaired</span>
+                )}
+                {(msg.debug.missing_methods_final?.length ?? 0) > 0 && (
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-red-900/50 text-red-400">
+                    missing: {msg.debug.missing_methods_final!.join(', ')}
+                  </span>
+                )}
+                {msg.debug.final_line_count != null && (
+                  <span className="text-[10px] text-gray-600">{msg.debug.final_line_count} lines</span>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -2233,10 +2277,15 @@ export default function CodeEditorPage() {
 
   // Run / logs
   const [running, setRunning] = useState(false)
+  const [testRunning, setTestRunning] = useState(false)
+  const [sandboxTier, setSandboxTier] = useState<'test' | 'prod' | null>(null)
   const [insufficientBalance, setInsufficientBalance] = useState<string | null>(null)
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
   const [logs, setLogs] = useState<LogLine[]>([])
   const [logOpen, setLogOpen] = useState(false)
+  const [consoleTab, setConsoleTab] = useState<'console' | 'metrics' | 'artifacts'>('console')
+  const [runMetrics, setRunMetrics] = useState<Record<string, number | string>>({})
+  const [runArtifacts, setRunArtifacts] = useState<{ name: string; mime: string; url?: string; data_b64?: string }[]>([])
   const [errorsExpanded, setErrorsExpanded] = useState(false)
   const logIdRef = useRef(0)
   const logBottomRef = useRef<HTMLDivElement>(null)
@@ -2548,6 +2597,110 @@ export default function CodeEditorPage() {
     setLogs(prev => [...prev, { id: ++logIdRef.current, text, type }])
   }
 
+  // ── Test Run (isolated sandbox, fixture data, no scan required) ───────────
+
+  const handleTestRun = async () => {
+    if (!activeTabData) return
+    if (activeTabData.dirty) await handleSave()
+
+    setTestRunning(true)
+    setSandboxTier('test')
+    setLogOpen(true)
+    setLogs([])
+    setRunMetrics({})
+    setRunArtifacts([])
+    setConsoleTab('console')
+    setErrorsExpanded(false)
+
+    addLog('● Validating…', 'connected')
+    let trainerName: string
+    try {
+      const check = await editorApi.validateFile(activeTabData.path, activeTabData.content)
+      if (!check.valid) { addLog(`✗ ${check.error}`, 'error'); setTestRunning(false); return }
+      trainerName = check.trainers[0] ?? activeTabData.name.replace(/\.py$/, '')
+    } catch {
+      trainerName = activeTabData.name.replace(/\.py$/, '')
+    }
+
+    addLog(`▶ Test run: ${trainerName} (fixture data)`, 'connected')
+
+    try {
+      const { job_id, sandbox } = await editorApi.runTrainer(
+        trainerName, activeTabData.content, activeTabData.path, { _sandbox_mode: 'test' }
+      ) as { job_id: string; status: string; sandbox?: string }
+      setActiveJobId(job_id)
+      // Keep 'test' tier set above; only override if backend explicitly returns 'prod'
+      if (sandbox === 'prod') setSandboxTier('prod')
+      addLog(`✓ Job queued: ${job_id}`, 'info')
+
+      const token = localStorage.getItem('ml_token') || ''
+      const url = editorApi.logStreamUrl(job_id, token)
+      const sse = new EventSource(url)
+      sseRef.current = sse
+
+      sse.addEventListener('log', e => {
+        const data = JSON.parse((e as MessageEvent).data)
+        addLog(data.line as string, 'info')
+      })
+      sse.addEventListener('metric', e => {
+        const raw = JSON.parse((e as MessageEvent).data)
+        if (!raw || typeof raw !== 'object') return
+        // TrainerLogger emits {"metric": {"key": value}, "trainer": "..."}
+        // Legacy trainers may emit a flat {"key": value} dict directly
+        const src = (raw.metric && typeof raw.metric === 'object' && !Array.isArray(raw.metric))
+          ? raw.metric as Record<string, unknown>
+          : raw
+        const flat: Record<string, number | string> = {}
+        for (const [k, v] of Object.entries(src)) {
+          if (typeof v === 'number' || typeof v === 'string') flat[k] = v
+        }
+        if (Object.keys(flat).length > 0) {
+          setRunMetrics(prev => ({ ...prev, ...flat }))
+          setConsoleTab('metrics')
+        }
+      })
+      sse.addEventListener('artifact', e => {
+        const data = JSON.parse((e as MessageEvent).data)
+        if (data?.url || data?.data_b64) {
+          setRunArtifacts(prev => [...prev, {
+            name: data.name || 'plot.png',
+            mime: data.mime || 'image/png',
+            url: data.url,
+            data_b64: data.data_b64,
+          }])
+          setConsoleTab('artifacts')
+        }
+      })
+      sse.addEventListener('done', e => {
+        const data = JSON.parse((e as MessageEvent).data)
+        const ok = data.status === 'completed' || data.status === 'success'
+        if (ok) {
+          if (data.metrics && Object.keys(data.metrics).length > 0) {
+            setRunMetrics(prev => ({ ...prev, ...(data.metrics as Record<string, number>) }))
+            setConsoleTab('metrics')
+          }
+          addLog(`✓ Test complete`, 'done')
+        } else {
+          addLog(`✗ ${data.error || data.status}`, 'error')
+        }
+        setTestRunning(false)
+        setSandboxTier(null)
+        sse.close()
+      })
+      sse.onerror = () => {
+        addLog('✗ Stream disconnected', 'error')
+        setTestRunning(false)
+        setSandboxTier(null)
+        sse.close()
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      addLog(`✗ ${msg}`, 'error')
+      setTestRunning(false)
+      setSandboxTier(null)
+    }
+  }
+
   const handleRun = async () => {
     if (!activeTabData) return
 
@@ -2561,6 +2714,9 @@ export default function CodeEditorPage() {
     setRunning(true)
     setLogOpen(true)
     setLogs([])
+    setRunMetrics({})
+    setRunArtifacts([])
+    setConsoleTab('console')
     setErrorsExpanded(false)
 
     // Validate: check syntax + detect trainer name from `name = "..."` attribute
@@ -2677,10 +2833,43 @@ export default function CodeEditorPage() {
           addLog(`✓ Free compute (standard tier)`, 'info')
         }
       })
+      sse.addEventListener('metric', e => {
+        const raw = JSON.parse((e as MessageEvent).data)
+        if (!raw || typeof raw !== 'object') return
+        // TrainerLogger emits {"metric": {"key": value}, "trainer": "..."}
+        // Legacy trainers may emit a flat {"key": value} dict directly
+        const src = (raw.metric && typeof raw.metric === 'object' && !Array.isArray(raw.metric))
+          ? raw.metric as Record<string, unknown>
+          : raw
+        const flat: Record<string, number | string> = {}
+        for (const [k, v] of Object.entries(src)) {
+          if (typeof v === 'number' || typeof v === 'string') flat[k] = v
+        }
+        if (Object.keys(flat).length > 0) {
+          setRunMetrics(prev => ({ ...prev, ...flat }))
+          setConsoleTab('metrics')
+        }
+      })
+      sse.addEventListener('artifact', e => {
+        const data = JSON.parse((e as MessageEvent).data)
+        if (data?.url || data?.data_b64) {
+          setRunArtifacts(prev => [...prev, {
+            name: data.name || 'plot.png',
+            mime: data.mime || 'image/png',
+            url: data.url,
+            data_b64: data.data_b64,
+          }])
+          setConsoleTab('artifacts')
+        }
+      })
       sse.addEventListener('done', e => {
         const data = JSON.parse((e as MessageEvent).data)
-        if (data.status === 'completed') {
-          addLog(`✓ Training completed. Metrics: ${JSON.stringify(data.metrics)}`, 'done')
+        if (data.status === 'completed' || data.status === 'success') {
+          if (data.metrics && Object.keys(data.metrics).length > 0) {
+            setRunMetrics(prev => ({ ...prev, ...(data.metrics as Record<string, number>) }))
+            setConsoleTab('metrics')
+          }
+          addLog('✓ Training completed', 'done')
           loadActiveTrainers()
           // Notify TrainersPage to refresh so the newly registered trainer appears
           window.dispatchEvent(new CustomEvent('trainers-refresh'))
@@ -3237,6 +3426,20 @@ export default function CodeEditorPage() {
           </button>
         )}
 
+        {/* Test — run in isolated sandbox with fixture data, no scan required */}
+        {!isViewer && activeTabData && (
+          <button
+            onClick={handleTestRun}
+            disabled={testRunning || running || !activeTabData}
+            title="Run in test sandbox with fixture data — no install or scan required"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs border rounded-lg transition-colors disabled:opacity-40 font-medium bg-indigo-800/60 hover:bg-indigo-700/70 text-indigo-200 border-indigo-600/60"
+          >
+            {testRunning
+              ? <><Loader2 size={12} className="animate-spin" /> Testing…</>
+              : <><Play size={12} /> Test</>}
+          </button>
+        )}
+
         {/* Run — only available after scan is approved */}
         {!isViewer && (
           <button
@@ -3780,141 +3983,251 @@ export default function CodeEditorPage() {
             </div>
           )}
 
-          {/* Log panel */}
+          {/* Console panel */}
           <div
             className={clsx(
               'border-t border-gray-800 flex flex-col bg-gray-950 transition-all flex-shrink-0',
-              logOpen ? 'h-52' : 'h-8',
+              logOpen ? 'h-56' : 'h-8',
             )}
           >
-            {/* Log header */}
-            <button
-              onClick={() => setLogOpen(v => !v)}
-              className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-gray-400 hover:text-gray-200 border-b border-gray-800 w-full text-left flex-shrink-0"
-            >
-              <Terminal size={12} />
-              <span className="font-medium">Output</span>
-              {running && <Loader2 size={11} className="animate-spin text-green-400 ml-1" />}
-              {activeJobId && <span className="text-gray-600">job: {activeJobId.slice(0, 8)}…</span>}
-              {logs.length > 0 && (
-                <span className="ml-auto text-gray-600">{logs.length} lines</span>
-              )}
-              <ChevronDown size={11} className={clsx('transition-transform ml-1', !logOpen && '-rotate-90')} />
-            </button>
+            {/* Panel header row */}
+            <div className="flex items-center border-b border-gray-800 flex-shrink-0 h-8">
+              {/* Collapse toggle */}
+              <button
+                onClick={() => setLogOpen(v => !v)}
+                className="flex items-center gap-1.5 px-3 h-full text-[11px] text-gray-400 hover:text-gray-200 border-r border-gray-800"
+              >
+                <Terminal size={12} />
+                <ChevronDown size={11} className={clsx('transition-transform', !logOpen && '-rotate-90')} />
+              </button>
 
-            {/* Log content */}
+              {/* Tabs — only shown when open */}
+              {logOpen && (
+                <>
+                  {(['console', 'metrics', 'artifacts'] as const).map(tab => (
+                    <button
+                      key={tab}
+                      onClick={() => setConsoleTab(tab)}
+                      className={clsx(
+                        'px-3 h-full text-[11px] font-medium border-r border-gray-800 transition-colors relative',
+                        consoleTab === tab
+                          ? 'text-white bg-gray-900'
+                          : 'text-gray-500 hover:text-gray-300',
+                      )}
+                    >
+                      {tab === 'console' ? 'Console' : tab === 'metrics' ? 'Metrics' : 'Artifacts'}
+                      {tab === 'metrics' && Object.keys(runMetrics).length > 0 && (
+                        <span className="ml-1.5 text-[9px] font-mono bg-indigo-700/60 text-indigo-300 px-1 rounded">
+                          {Object.keys(runMetrics).length}
+                        </span>
+                      )}
+                      {tab === 'artifacts' && runArtifacts.length > 0 && (
+                        <span className="ml-1.5 text-[9px] font-mono bg-emerald-700/60 text-emerald-300 px-1 rounded">
+                          {runArtifacts.length}
+                        </span>
+                      )}
+                      {tab === 'console' && logs.filter(l => l.type === 'error').length > 0 && (
+                        <span className="ml-1.5 text-[9px] font-mono bg-red-700/60 text-red-300 px-1 rounded">
+                          {logs.filter(l => l.type === 'error').length}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </>
+              )}
+
+              {/* Right side: status indicators */}
+              <div className="flex items-center gap-2 ml-auto px-3 text-[10px]">
+                {sandboxTier && (
+                  <span className={`font-mono px-2 py-0.5 rounded-full ${sandboxTier === 'test' ? 'bg-indigo-900/60 text-indigo-300 border border-indigo-700/50' : 'bg-green-900/60 text-green-300 border border-green-700/50'}`}>
+                    {sandboxTier === 'test' ? 'Test Sandbox' : 'Production'}
+                  </span>
+                )}
+                {(running || testRunning) && <Loader2 size={11} className="animate-spin text-green-400" />}
+                {activeJobId && <span className="text-gray-700 font-mono">{activeJobId.slice(0, 8)}…</span>}
+              </div>
+            </div>
+
+            {/* Panel content */}
             {logOpen && (
-              <div className="flex-1 overflow-y-auto px-3 py-2 font-mono text-[11px] space-y-0.5">
-                {logs.length === 0 ? (
-                  <span className="text-gray-600">Run a trainer to see output here.</span>
-                ) : (() => {
-                  const errorLines = logs.filter(l => l.type === 'error')
-                  const otherLines = logs.filter(l => l.type !== 'error')
-                  return (
-                    <>
-                      {otherLines.map(line => (
-                        <div key={line.id} className={clsx(
-                          'whitespace-pre-wrap break-all leading-relaxed',
-                          line.type === 'done' ? 'text-green-400' :
-                          line.type === 'connected' ? 'text-brand-400' :
-                          'text-gray-300',
-                        )}>
-                          {line.text}
-                        </div>
-                      ))}
-                      {errorLines.length > 0 && (
-                        <div className="mt-1 border border-red-800/50 rounded-lg overflow-hidden">
-                          <button
-                            onClick={() => setErrorsExpanded(v => !v)}
-                            className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-red-950/40 hover:bg-red-900/40 text-left transition-colors"
-                          >
-                            <AlertCircle size={10} className="text-red-400 flex-shrink-0" />
-                            <span className="text-red-400 flex-1">{errorLines.length} error{errorLines.length !== 1 ? 's' : ''}</span>
-                            <ChevronDown size={10} className={clsx('text-red-500 transition-transform', errorsExpanded && 'rotate-180')} />
-                          </button>
-                          {errorsExpanded && (
-                            <div className="px-2.5 py-2 space-y-0.5 bg-red-950/20">
-                              {errorLines.map(line => (
-                                <div key={line.id} className="whitespace-pre-wrap break-all leading-relaxed text-red-400">
-                                  {line.text}
+              <>
+                {/* Console tab */}
+                {consoleTab === 'console' && (
+                  <div className="flex-1 overflow-y-auto px-3 py-2 font-mono text-[11px] space-y-0.5">
+                    {logs.length === 0 ? (
+                      <span className="text-gray-600">Run a trainer to see output here.</span>
+                    ) : (() => {
+                      const errorLines = logs.filter(l => l.type === 'error')
+                      const otherLines = logs.filter(l => l.type !== 'error')
+                      return (
+                        <>
+                          {otherLines.map(line => (
+                            <div key={line.id} className={clsx(
+                              'whitespace-pre-wrap break-all leading-relaxed',
+                              line.type === 'done' ? 'text-green-400' :
+                              line.type === 'connected' ? 'text-brand-400' :
+                              'text-gray-300',
+                            )}>
+                              {line.text}
+                            </div>
+                          ))}
+                          {errorLines.length > 0 && (
+                            <div className="mt-1 border border-red-800/50 rounded-lg overflow-hidden">
+                              <button
+                                onClick={() => setErrorsExpanded(v => !v)}
+                                className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-red-950/40 hover:bg-red-900/40 text-left transition-colors"
+                              >
+                                <AlertCircle size={10} className="text-red-400 flex-shrink-0" />
+                                <span className="text-red-400 flex-1">{errorLines.length} error{errorLines.length !== 1 ? 's' : ''}</span>
+                                <ChevronDown size={10} className={clsx('text-red-500 transition-transform', errorsExpanded && 'rotate-180')} />
+                              </button>
+                              {errorsExpanded && (
+                                <div className="px-2.5 py-2 space-y-0.5 bg-red-950/20">
+                                  {errorLines.map(line => (
+                                    <div key={line.id} className="whitespace-pre-wrap break-all leading-relaxed text-red-400">
+                                      {line.text}
+                                    </div>
+                                  ))}
                                 </div>
-                              ))}
+                              )}
                             </div>
                           )}
+                        </>
+                      )
+                    })()}
+                    {/* Empty dataset prompt */}
+                    {emptyDatasetSlugRef.current && !running && !emptyDataset && (
+                      <div className="mt-2 flex items-center gap-2 px-3 py-2 bg-amber-950/40 border border-amber-800/50 rounded-lg font-sans">
+                        <Loader2 size={11} className="animate-spin text-amber-400 flex-shrink-0" />
+                        <span className="text-amber-300 text-[11px]">Loading dataset…</span>
+                      </div>
+                    )}
+                    {emptyDataset && !running && (
+                      <div className="mt-2 flex items-center gap-3 px-3 py-2.5 bg-amber-950/40 border border-amber-800/50 rounded-lg font-sans">
+                        <AlertCircle size={14} className="text-amber-400 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-amber-200 text-[11px] font-medium">Dataset is empty — training needs data</p>
+                          <p className="text-amber-400/70 text-[10px] mt-0.5">Upload a CSV/Excel file to <span className="font-medium">{emptyDataset.name}</span> then re-run.</p>
                         </div>
-                      )}
-                    </>
-                  )
-                })()}
-                {/* Empty dataset prompt */}
-                {emptyDatasetSlugRef.current && !running && !emptyDataset && (
-                  <div className="mt-2 flex items-center gap-2 px-3 py-2 bg-amber-950/40 border border-amber-800/50 rounded-lg font-sans">
-                    <Loader2 size={11} className="animate-spin text-amber-400 flex-shrink-0" />
-                    <span className="text-amber-300 text-[11px]">Loading dataset…</span>
+                        <button
+                          onClick={() => setShowUploadModal(true)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-medium rounded-lg transition-colors flex-shrink-0"
+                        >
+                          <Upload size={11} /> Upload Data
+                        </button>
+                      </div>
+                    )}
+                    {/* Fix with AI */}
+                    {!running && logs.some(l => l.type === 'error') && activeTabData && !isViewer && (
+                      <div className="mt-2 flex items-center gap-3 px-3 py-2 bg-red-950/30 border border-red-800/40 rounded-lg font-sans">
+                        <AlertCircle size={12} className="text-red-400 flex-shrink-0" />
+                        <span className="text-red-300 text-[11px] flex-1">Errors detected — send to AI for diagnosis</span>
+                        <button
+                          onClick={() => {
+                            const errorText = logs.filter(l => l.type === 'error').map(l => l.text).join('\n')
+                            const errMsg = `I ran the trainer and got these errors:\n\`\`\`\n${errorText}\n\`\`\`\nPlease diagnose and fix the issue.`
+                            if (lastAiSession) {
+                              const patchedSession: SavedAiSession = {
+                                ...lastAiSession,
+                                session: {
+                                  ...lastAiSession.session,
+                                  existingCode: activeTabData?.content ?? lastAiSession.session.existingCode,
+                                  existingFilename: activeTabData?.name ?? lastAiSession.session.existingFilename,
+                                  initialUserMessage: errMsg,
+                                },
+                              }
+                              setRestoreAiSession(patchedSession)
+                              setAiWorkshopKey(k => k + 1)
+                            } else {
+                              setRestoreAiSession(undefined)
+                              setAiWorkshopKey(k => k + 1)
+                              setAiSession({
+                                prompt: '',
+                                dsType: 'dataset',
+                                framework: 'auto',
+                                className: '',
+                                csvSchema: null,
+                                existingCode: activeTabData?.content,
+                                existingFilename: activeTabData?.name,
+                                initialUserMessage: errMsg,
+                              })
+                            }
+                            setAiMode(true)
+                          }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white text-[11px] font-medium rounded-lg transition-colors flex-shrink-0"
+                        >
+                          <Sparkles size={11} /> Fix with AI
+                        </button>
+                      </div>
+                    )}
+                    <div ref={logBottomRef} />
                   </div>
                 )}
-                {emptyDataset && !running && (
-                  <div className="mt-2 flex items-center gap-3 px-3 py-2.5 bg-amber-950/40 border border-amber-800/50 rounded-lg font-sans">
-                    <AlertCircle size={14} className="text-amber-400 flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-amber-200 text-[11px] font-medium">Dataset is empty — training needs data</p>
-                      <p className="text-amber-400/70 text-[10px] mt-0.5">Upload a CSV/Excel file to <span className="font-medium">{emptyDataset.name}</span> then re-run.</p>
-                    </div>
-                    <button
-                      onClick={() => setShowUploadModal(true)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-medium rounded-lg transition-colors flex-shrink-0"
-                    >
-                      <Upload size={11} /> Upload Data
-                    </button>
+
+                {/* Metrics tab */}
+                {consoleTab === 'metrics' && (
+                  <div className="flex-1 overflow-y-auto px-3 py-2">
+                    {Object.keys(runMetrics).length === 0 ? (
+                      <span className="text-gray-600 text-[11px] font-mono">
+                        {running || testRunning ? 'Waiting for metrics…' : 'No metrics recorded yet.'}
+                      </span>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {Object.entries(runMetrics).map(([key, value]) => (
+                          <div key={key} className="flex items-center justify-between px-2.5 py-1.5 bg-gray-900/60 border border-gray-800/60 rounded-lg">
+                            <span className="text-[10px] text-gray-400 font-mono truncate mr-2">{key}</span>
+                            <span className="text-[11px] text-white font-mono font-medium flex-shrink-0">
+                              {typeof value === 'number'
+                                ? (value < 0.01 || value >= 1000 ? value.toExponential(3) : value.toFixed(4))
+                                : String(value)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
-                {/* Fix with AI — shown when errors present after run */}
-                {!running && logs.some(l => l.type === 'error') && activeTabData && !isViewer && (
-                  <div className="mt-2 flex items-center gap-3 px-3 py-2 bg-red-950/30 border border-red-800/40 rounded-lg font-sans">
-                    <AlertCircle size={12} className="text-red-400 flex-shrink-0" />
-                    <span className="text-red-300 text-[11px] flex-1">Errors detected — send to AI for diagnosis</span>
-                    <button
-                      onClick={() => {
-                        const errorText = logs.filter(l => l.type === 'error').map(l => l.text).join('\n')
-                        const errMsg = `I ran the trainer and got these errors:\n\`\`\`\n${errorText}\n\`\`\`\nPlease diagnose and fix the issue.`
-                        if (lastAiSession) {
-                          // Continue the existing session — inject the error as the next user message
-                          const patchedSession: SavedAiSession = {
-                            ...lastAiSession,
-                            session: {
-                              ...lastAiSession.session,
-                              existingCode: activeTabData?.content ?? lastAiSession.session.existingCode,
-                              existingFilename: activeTabData?.name ?? lastAiSession.session.existingFilename,
-                              initialUserMessage: errMsg,
-                            },
-                          }
-                          setRestoreAiSession(patchedSession)
-                          setAiWorkshopKey(k => k + 1)
-                        } else {
-                          // No prior session — start fresh with error context
-                          setRestoreAiSession(undefined)
-                          setAiWorkshopKey(k => k + 1)
-                          setAiSession({
-                            prompt: '',
-                            dsType: 'dataset',
-                            framework: 'auto',
-                            className: '',
-                            csvSchema: null,
-                            existingCode: activeTabData?.content,
-                            existingFilename: activeTabData?.name,
-                            initialUserMessage: errMsg,
-                          })
-                        }
-                        setAiMode(true)
-                      }}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white text-[11px] font-medium rounded-lg transition-colors flex-shrink-0"
-                    >
-                      <Sparkles size={11} /> Fix with AI
-                    </button>
+
+                {/* Artifacts tab */}
+                {consoleTab === 'artifacts' && (
+                  <div className="flex-1 overflow-y-auto px-3 py-2">
+                    {runArtifacts.length === 0 ? (
+                      <span className="text-gray-600 text-[11px] font-mono">
+                        {running || testRunning
+                          ? 'Waiting for plots… use self.plot_context() in train()'
+                          : 'No artifacts captured. Use self.plot_context() in train() to capture plt.show() calls.'}
+                      </span>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-2">
+                        {runArtifacts.map((art, i) => {
+                          const imgSrc = art.url ?? (art.data_b64 ? `data:${art.mime};base64,${art.data_b64}` : '')
+                          return (
+                          <div key={i} className="rounded-lg overflow-hidden border border-gray-800/60 bg-gray-900/40">
+                            <img
+                              src={imgSrc}
+                              alt={art.name}
+                              className="w-full object-contain max-h-40"
+                            />
+                            <div className="flex items-center justify-between px-2 py-1 border-t border-gray-800/40">
+                              <span className="text-[10px] text-gray-500 font-mono truncate">{art.name}</span>
+                              <a
+                                href={imgSrc}
+                                download={art.name}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-[10px] text-indigo-400 hover:text-indigo-300 ml-2 flex-shrink-0"
+                              >
+                                ↓
+                              </a>
+                            </div>
+                          </div>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
-                <div ref={logBottomRef} />
-              </div>
+              </>
             )}
           </div>
         </div>

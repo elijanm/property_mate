@@ -11,6 +11,7 @@ from app.api.v1 import trainer_submissions, marketplace, clients
 from app.api.v1 import org_config
 from app.api.v1 import mlflow_proxy
 from app.api.v1 import url_datasets
+from app.api.v1 import trainer_api
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(editor.router)
@@ -50,3 +51,4 @@ api_router.include_router(clients.router)
 api_router.include_router(org_config.router)
 api_router.include_router(mlflow_proxy.router)
 api_router.include_router(url_datasets.router)
+api_router.include_router(trainer_api.router)

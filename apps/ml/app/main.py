@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import init_db
+from app.core.metrics import setup_metrics
 from app.api.router import api_router
 from app.services.registry_service import scan_and_register_plugins
 from app.services.scheduler_service import start_scheduler, stop_scheduler
@@ -59,6 +60,32 @@ app = FastAPI(
     description="PMS ML/AI Inference Service — pluggable trainers, MLflow tracking, scheduled training.",
     lifespan=lifespan,
 )
+
+# Prometheus metrics endpoint
+setup_metrics(app)
+
+import time as _time
+import re as _re
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as _Request
+
+
+class _MetricsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: _Request, call_next):
+        from app.core.metrics import HTTP_REQUESTS_TOTAL, HTTP_REQUEST_DURATION_SECONDS
+        start = _time.perf_counter()
+        response = await call_next(request)
+        duration = _time.perf_counter() - start
+        path = request.url.path
+        # Normalize paths with IDs to reduce cardinality
+        path = _re.sub(r'/[0-9a-f]{24}', '/{id}', path)
+        path = _re.sub(r'/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '/{id}', path)
+        HTTP_REQUESTS_TOTAL.labels(request.method, path, str(response.status_code)).inc()
+        HTTP_REQUEST_DURATION_SECONDS.labels(request.method, path).observe(duration)
+        return response
+
+
+app.add_middleware(_MetricsMiddleware)
 
 # Security middleware runs first (outermost) — logs all requests and gates on IP bans
 app.add_middleware(RequestLoggerMiddleware)

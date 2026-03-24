@@ -1,5 +1,6 @@
 """Model deployment management."""
 import asyncio
+import structlog
 from typing import AsyncIterator, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -15,6 +16,8 @@ from app.services.zip_deploy_service import ZipManifestError, deploy_from_zip
 from app.tasks.train_task import enqueue_pretrained_deploy
 from app.utils.datetime import utc_now
 from app.utils.serialization import doc_to_dict
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/models", tags=["models"])
 
@@ -492,7 +495,13 @@ async def get_training_artifacts(deployment_id: str):
         def _scan(path: Optional[str] = None) -> None:
             try:
                 entries = client.list_artifacts(run_id, path)
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "list_artifacts_failed",
+                    run_id=run_id,
+                    path=path,
+                    error=str(e),
+                )
                 return
             for entry in entries:
                 if entry.is_dir:
@@ -534,6 +543,94 @@ async def get_training_artifacts(deployment_id: str):
         artifacts = []
 
     return {"artifacts": artifacts}
+
+
+@router.get("/{deployment_id}/run-params", dependencies=[_any_role])
+async def get_run_params(deployment_id: str):
+    """Return MLflow run params and tags for the training run associated with a deployment."""
+    dep = await ModelDeployment.get(deployment_id)
+    if not dep:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+
+    run_id: Optional[str] = getattr(dep, "run_id", None)
+    if not run_id:
+        return {"params": {}, "tags": {}}
+
+    def _fetch() -> dict:
+        client = MlflowClient(tracking_uri=settings.MLFLOW_TRACKING_URI)
+        run = client.get_run(run_id)
+        # Exclude internal mlflow. prefixed tags
+        tags = {k: v for k, v in run.data.tags.items() if not k.startswith("mlflow.")}
+        return {"params": run.data.params, "tags": tags}
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, _fetch)
+    except Exception as exc:
+        logger.warning("get_run_params_failed", run_id=run_id, error=str(exc))
+        result = {"params": {}, "tags": {}}
+
+    return result
+
+
+@router.get("/{deployment_id}/download-url", dependencies=[_any_role])
+async def get_model_download_url(deployment_id: str, user=Depends(get_current_user)):
+    """Return a presigned download URL for the model artifact if the trainer allows downloads."""
+    dep = await ModelDeployment.get(deployment_id)
+    if not dep:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+
+    # Look up trainer registration to check download permission
+    from app.models.trainer_registration import TrainerRegistration
+    reg = await TrainerRegistration.find_one(TrainerRegistration.name == dep.trainer_name)
+    allowed = getattr(reg, "trainer_model_downloadable", False) if reg else False
+
+    if not allowed:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "MODEL_DOWNLOAD_RESTRICTED",
+                "message": "This model is not available for download. The trainer owner has not enabled model downloads.",
+            },
+        )
+
+    if not dep.run_id:
+        raise HTTPException(status_code=404, detail="No MLflow run associated with this deployment.")
+
+    def _get_url() -> str:
+        import tempfile, zipfile, os
+        from pathlib import Path as _P
+        from mlflow.tracking import MlflowClient as _MLC
+        client = _MLC(tracking_uri=settings.MLFLOW_TRACKING_URI)
+        # Download the model artifact directory into a temp dir
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local = client.download_artifacts(dep.run_id, "model", tmpdir)
+            # Zip it up
+            zip_path = _P(tmpdir) / "model.zip"
+            with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
+                src = _P(local)
+                if src.is_dir():
+                    for f in src.rglob("*"):
+                        if f.is_file():
+                            zf.write(f, f.relative_to(src.parent))
+                else:
+                    zf.write(src, src.name)
+            return zip_path.read_bytes()
+
+    loop = asyncio.get_event_loop()
+    try:
+        zip_bytes = await loop.run_in_executor(None, _get_url)
+    except Exception as exc:
+        logger.warning("model_download_failed", deployment_id=deployment_id, error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Failed to package model: {exc}")
+
+    from fastapi.responses import Response as _Resp
+    filename = f"{dep.trainer_name}_v{dep.training_patch}.zip"
+    return _Resp(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.delete("/{deployment_id}", dependencies=[_engineer])

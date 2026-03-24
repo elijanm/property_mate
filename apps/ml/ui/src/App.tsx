@@ -35,6 +35,7 @@ import AnnotatePage from './pages/AnnotatePage'
 import CodeEditorPage from './pages/CodeEditorPage'
 import CollectPage from './pages/CollectPage'
 import ConsentSignPage from './pages/ConsentSignPage'
+import CLILoginPage from './pages/CLILoginPage'
 import StaffPage from './pages/StaffPage'
 import ClientsPage from './pages/ClientsPage'
 import MarketplacePage from './pages/MarketplacePage'
@@ -48,6 +49,7 @@ import { useAuth } from './context/AuthContext'
 import { OrgConfigProvider } from './context/OrgConfigContext'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
+import OAuthCallbackPage from './pages/OAuthCallbackPage'
 import ForgotPasswordPage from './pages/ForgotPasswordPage'
 import ResetPasswordPage from './pages/ResetPasswordPage'
 import VerifyEmailPage from './pages/VerifyEmailPage'
@@ -77,6 +79,7 @@ const _params = new URLSearchParams(window.location.search)
 const _RESET_TOKEN_FROM_URL  = _params.get('reset_token')
 const _VERIFY_TOKEN_FROM_URL = _params.get('token') ?? _params.get('verify_token')
 const _INVITE_TOKEN_FROM_URL = _params.get('invite')
+const _CLI_LOGIN_CODE = window.location.pathname === '/cli-login' ? _params.get('code') : null
 // Store invite token for the register flow to pick up
 if (_INVITE_TOKEN_FROM_URL) {
   sessionStorage.setItem('pending_invite_token', _INVITE_TOKEN_FROM_URL)
@@ -242,9 +245,9 @@ export default function App() {
   const [linkVerifying, setLinkVerifying] = useState(false)
   const [linkEmail, setLinkEmail] = useState('')
 
-  // Clean URL of any token params on mount
+  // Clean URL of any token params on mount (skip on /cli-login — it needs the ?code= param)
   useEffect(() => {
-    if (window.location.search) {
+    if (window.location.search && window.location.pathname !== '/cli-login') {
       window.history.replaceState({}, '', window.location.pathname)
     }
   }, [])
@@ -361,6 +364,15 @@ export default function App() {
     return m ? m[1] : null
   })()
   if (consentSignToken) return <ConsentSignPage emailToken={consentSignToken} />
+
+  // CLI device login — /cli-login?code=<device_code>
+  if (_CLI_LOGIN_CODE) return <CLILoginPage deviceCode={_CLI_LOGIN_CODE} />
+
+  // OAuth callback — /oauth/callback/google or /oauth/callback/github
+  const oauthCallbackMatch = window.location.pathname.match(/\/oauth\/callback\/(google|github)/)
+  if (oauthCallbackMatch) {
+    return <OAuthCallbackPage provider={oauthCallbackMatch[1] as 'google' | 'github'} />
+  }
 
   // Claim account page — /claim/<collector_token>
   const claimToken = (() => {

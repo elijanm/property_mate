@@ -40,6 +40,11 @@ class TrainerRegistration(Document):
     activation_cost_usd: float = 0.0    # wallet deduction required to clone/activate (0 = free)
     downloadable: bool = False
     protect_model: bool = False
+    # Fine-grained visibility / downloadability controls (replaces downloadable + protect_model)
+    trainer_visible: bool = True          # show trainer card in marketplace/listings
+    trainer_source_downloadable: bool = False  # allow .py source code download
+    trainer_model_visible: bool = True    # show deployed model in inference catalog
+    trainer_model_downloadable: bool = False   # allow model artifact (.pkl) download
     icon_url: str = ""
     license: str = ""
 

@@ -35,8 +35,197 @@ from types import SimpleNamespace
 # We inject a minimal stub so the import doesn't fail.
 
 def _inject_base_trainer_shim() -> None:
+
+    class _TrainerLogger:
+        def __init__(self, trainer_name: str = "") -> None:
+            self._name = trainer_name
+
+        def _emit(self, level: str, msg: str, **kwargs: object) -> None:
+            import json as _json
+            record = {"level": level, "trainer": self._name, "msg": msg}
+            record.update(kwargs)
+            print(_json.dumps({"event": "log", "line": _json.dumps(record)}), flush=True)
+
+        def info(self, msg: str, **kwargs: object) -> None:
+            self._emit("info", msg, **kwargs)
+
+        def warning(self, msg: str, **kwargs: object) -> None:
+            self._emit("warning", msg, **kwargs)
+
+        def error(self, msg: str, **kwargs: object) -> None:
+            self._emit("error", msg, **kwargs)
+
+        def metric(self, name: str, value: float, **tags: object) -> None:
+            import json as _json
+            record: dict = {"metric": {name: value}, "trainer": self._name}
+            record.update(tags)
+            print(_json.dumps(record), flush=True)
+
+    class _PlotContext:
+        def __init__(self, prefix: str = "plot") -> None:
+            self._prefix = prefix
+            self._counter = 0
+            self._original_show = None
+            self._plt = None
+            import os as _os
+            self._data_mode = _os.environ.get("SANDBOX_DATA_MODE", "fixture")
+
+        def __enter__(self) -> "_PlotContext":
+            try:
+                import matplotlib
+                # Force Agg backend BEFORE patching plt.show to prevent
+                # switch_backend() from failing on __signature__ assignment.
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
+                plt.switch_backend("agg")
+                self._plt = plt
+                self._original_show = plt.show
+                plt.show = self._capture  # type: ignore[method-assign]
+            except ImportError:
+                pass
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            if self._plt is not None and self._original_show is not None:
+                self._plt.show = self._original_show  # type: ignore[method-assign]
+
+        def _capture(self, *_args: object, **_kwargs: object) -> None:
+            if self._plt is None:
+                return
+            import io as _io, json as _json, os as _os
+            from pathlib import Path as _Path
+            fig = self._plt.gcf()
+            buf = _io.BytesIO()
+            fig.savefig(buf, format="png", bbox_inches="tight", dpi=72)
+            self._plt.close(fig)
+            png_bytes = buf.getvalue()
+            name = f"{self._prefix}_{self._counter}.png"
+            self._counter += 1
+            # Write PNG to workspace output/plots dir; tier_runner uploads to S3
+            job_id = _os.environ.get("SANDBOX_JOB_ID", "unknown")
+            plots_dir = _Path("/sandbox_workspace") / job_id / "output" / "plots"
+            try:
+                plots_dir.mkdir(parents=True, exist_ok=True)
+                plot_path = plots_dir / name
+                plot_path.write_bytes(png_bytes)
+                print(_json.dumps({
+                    "event": "artifact_file",
+                    "name": name,
+                    "mime": "image/png",
+                    "path": str(plot_path),
+                }), flush=True)
+            except Exception:
+                # Fallback: emit base64 inline if filesystem write fails
+                import base64 as _b64
+                print(_json.dumps({
+                    "event": "artifact",
+                    "name": name,
+                    "mime": "image/png",
+                    "data_b64": _b64.b64encode(png_bytes).decode("ascii"),
+                }), flush=True)
+
+    class _ServiceClient:
+        """Minimal ServiceClient shim for the sandbox — uses urllib (no third-party deps)."""
+        def __init__(self, api_key: str, base_url: str) -> None:
+            self._api_key = api_key.strip()
+            self._base_url = base_url.rstrip("/")
+
+        def _request(self, method: str, path: str, body: object = None) -> object:
+            import urllib.request as _req
+            import urllib.error as _err
+            import json as _json
+            url = f"{self._base_url}{path}"
+            data = _json.dumps(body).encode() if body is not None else None
+            req = _req.Request(
+                url, data=data,
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                method=method,
+            )
+            try:
+                with _req.urlopen(req, timeout=60) as resp:
+                    return _json.loads(resp.read())
+            except _err.HTTPError as exc:
+                err_body = exc.read().decode("utf-8", errors="replace")[:500]
+                raise RuntimeError(f"ML service API {exc.code} on {method} {path}: {err_body}") from exc
+
+        def whoami(self) -> object:
+            return self._request("GET", "/trainer-api/me")
+
+        def list_datasets(self) -> object:
+            return self._request("GET", "/trainer-api/datasets")
+
+        def get_dataset(self, slug: str) -> object:
+            return self._request("GET", f"/trainer-api/datasets/{slug}/download")
+
+        def list_models(self) -> object:
+            return self._request("GET", "/trainer-api/models")
+
+        def run_inference(self, trainer_name: str, inputs: object) -> object:
+            return self._request("POST", f"/trainer-api/inference/{trainer_name}", {"inputs": inputs})
+
     class _BaseTrainer:
-        pass
+        service_api_key: str = ""
+
+        def __init__(self) -> None:
+            self._trainer_logger: _TrainerLogger | None = None
+            self._service_client: _ServiceClient | None = None
+            self.config: object = None  # injected by runner before preprocess()
+
+        @property
+        def log(self) -> _TrainerLogger:
+            if self._trainer_logger is None:
+                self._trainer_logger = _TrainerLogger(
+                    getattr(self.__class__, "name", self.__class__.__name__)
+                )
+            return self._trainer_logger
+
+        def _s3_client(self) -> object:
+            import boto3 as _boto3
+            cfg = self.config
+            return _boto3.client(
+                "s3",
+                endpoint_url=getattr(cfg, "s3_endpoint", None) or None,
+                aws_access_key_id=getattr(cfg, "s3_access_key", ""),
+                aws_secret_access_key=getattr(cfg, "s3_secret_key", ""),
+                aws_session_token=getattr(cfg, "s3_session_token", None) or None,
+                region_name=getattr(cfg, "s3_region", "us-east-1"),
+            )
+
+        def _read_field(self, field: dict) -> bytes:
+            """Load a dataset field using org-scoped temp S3 creds in self.config."""
+            if field.get("type") == "text":
+                return (field.get("value") or "").encode()
+            inline = field.get("_bytes")
+            if inline is not None:
+                return inline if isinstance(inline, bytes) else bytes(inline)
+            s3_key = field.get("s3_key")
+            if s3_key and self.config:
+                bucket = getattr(self.config, "s3_bucket", "") or "pms-ml"
+                obj = self._s3_client().get_object(Bucket=bucket, Key=s3_key)
+                return obj["Body"].read()
+            raise ValueError(
+                f"Cannot read field — no inline bytes (fixture) and no s3_key+config: {field}"
+            )
+
+        def plot_context(self, prefix: str = "plot") -> _PlotContext:
+            return _PlotContext(prefix=prefix)
+
+        def service_client(self) -> _ServiceClient:
+            if self._service_client is None:
+                key = getattr(self, "service_api_key", "") or ""
+                if not key:
+                    raise RuntimeError(
+                        "service_client() called but service_api_key is not set. "
+                        "Add service_api_key = 'sk_live_...' to your trainer class."
+                    )
+                import os as _os
+                base_url = _os.environ.get("ML_SERVICE_URL", "http://ml-service:8030/api/v1")
+                self._service_client = _ServiceClient(key, base_url)
+            return self._service_client
 
     class _TrainingConfig:
         def __init__(self, **kwargs: object) -> None:
@@ -48,22 +237,190 @@ def _inject_base_trainer_shim() -> None:
             pass
 
     class _TrainerBundle:
-        def __init__(self, model: object = None, extra: dict | None = None) -> None:
+        def __init__(
+            self,
+            model: object = None,
+            scaler: object = None,
+            encoder: object = None,
+            vectorizer: object = None,
+            feature_names: list | None = None,
+            label_map: dict | None = None,
+            threshold: float | None = None,
+            extra: dict | None = None,
+        ) -> None:
             self.model = model
-            self.extra = extra or {}
+            self.scaler = scaler
+            self.encoder = encoder
+            self.vectorizer = vectorizer
+            self.feature_names: list = feature_names or []
+            self.label_map: dict = label_map or {}
+            self.threshold = threshold
+            self.extra: dict = extra or {}
+
+        def predict(self, X: object) -> object:
+            X_in = X
+            if self.scaler is not None:
+                try:
+                    X_in = self.scaler.transform(X_in)
+                except Exception:
+                    pass
+            return self.model.predict(X_in)  # type: ignore[union-attr]
+
+        def predict_proba(self, X: object) -> object:
+            X_in = X
+            if self.scaler is not None:
+                try:
+                    X_in = self.scaler.transform(X_in)
+                except Exception:
+                    pass
+            if hasattr(self.model, "predict_proba"):
+                return self.model.predict_proba(X_in)  # type: ignore[union-attr]
+            raise AttributeError("model does not support predict_proba")
+
+    class _EvaluationResult:
+        def __init__(
+            self,
+            accuracy: float | None = None,
+            precision: float | None = None,
+            recall: float | None = None,
+            f1: float | None = None,
+            roc_auc: float | None = None,
+            mse: float | None = None,
+            mae: float | None = None,
+            r2: float | None = None,
+            y_true: list | None = None,
+            y_pred: list | None = None,
+            extra_metrics: dict | None = None,
+            tags: dict | None = None,
+        ) -> None:
+            self.accuracy = accuracy
+            self.precision = precision
+            self.recall = recall
+            self.f1 = f1
+            self.roc_auc = roc_auc
+            self.mse = mse
+            self.mae = mae
+            self.r2 = r2
+            self.y_true = y_true
+            self.y_pred = y_pred
+            self.extra_metrics: dict = extra_metrics or {}
+            self.tags: dict = tags or {}
+
+    class _DerivedMetricSpec:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    # ── Data source shims (sandbox never fetches — data is pre-loaded to data.pkl) ─
+
+    class _DataSource:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+        async def load(self, **kwargs: object) -> object:
+            return []
+
+    class _DatasetDataSource(_DataSource):
+        slug: str = ""
+        org_id: str | None = None
+        auto_create_spec: dict | None = None
+        allow_empty: bool = False
+
+    class _UploadedFileDataSource(_DataSource):
+        def inject(self, data: bytes) -> None:
+            self._data = data
+
+    # ── Register shim modules ──────────────────────────────────────────────────
 
     bt_mod = types.ModuleType("app.abstract.base_trainer")
-    bt_mod.BaseTrainer    = _BaseTrainer        # type: ignore[attr-defined]
-    bt_mod.TrainingConfig = _TrainingConfig     # type: ignore[attr-defined]
-    bt_mod.OutputFieldSpec = _OutputFieldSpec   # type: ignore[attr-defined]
-    bt_mod.TrainerBundle  = _TrainerBundle      # type: ignore[attr-defined]
+    bt_mod.BaseTrainer       = _BaseTrainer         # type: ignore[attr-defined]
+    bt_mod.TrainingConfig    = _TrainingConfig      # type: ignore[attr-defined]
+    bt_mod.OutputFieldSpec   = _OutputFieldSpec     # type: ignore[attr-defined]
+    bt_mod.DerivedMetricSpec = _DerivedMetricSpec   # type: ignore[attr-defined]
+    bt_mod.TrainerBundle     = _TrainerBundle       # type: ignore[attr-defined]
+    bt_mod.EvaluationResult  = _EvaluationResult   # type: ignore[attr-defined]
+    bt_mod.TrainerLogger     = _TrainerLogger       # type: ignore[attr-defined]
+    bt_mod.PlotContext       = _PlotContext         # type: ignore[attr-defined]
+    bt_mod.ServiceClient     = _ServiceClient      # type: ignore[attr-defined]
 
+    ds_mod = types.ModuleType("app.abstract.data_source")
+    ds_mod.DataSource            = _DataSource             # type: ignore[attr-defined]
+    ds_mod.DatasetDataSource     = _DatasetDataSource      # type: ignore[attr-defined]
+    ds_mod.UploadedFileDataSource = _UploadedFileDataSource # type: ignore[attr-defined]
+    # All other data source types alias to the generic stub
+    for _ds_name in (
+        "S3DataSource", "URLDataSource", "MongoDBDataSource",
+        "HuggingFaceDataSource", "InMemoryDataSource", "UrlDatasetDataSource",
+    ):
+        setattr(ds_mod, _ds_name, _DataSource)             # type: ignore[arg-type]
+
+    # app and app.abstract must be packages (have __path__) so Python can
+    # resolve submodules like app.services.*, app.core.*, app.models.*, etc.
     app_mod      = types.ModuleType("app")
+    app_mod.__path__    = []  # type: ignore[attr-defined]
+    app_mod.__package__ = "app"
+
     abstract_mod = types.ModuleType("app.abstract")
+    abstract_mod.__path__    = []  # type: ignore[attr-defined]
+    abstract_mod.__package__ = "app.abstract"
 
     sys.modules.setdefault("app", app_mod)
     sys.modules.setdefault("app.abstract", abstract_mod)
     sys.modules["app.abstract.base_trainer"] = bt_mod
+    sys.modules["app.abstract.data_source"]  = ds_mod
+
+    # ── Catch-all stub finder for any remaining app.* imports ─────────────────
+    # AI-generated trainers may import from app.services.*, app.core.*, etc.
+    # Those modules don't exist in the sandbox, so we provide empty stubs that
+    # return None for any attribute access instead of crashing with ImportError.
+
+    import importlib.abc
+    import importlib.machinery
+
+    class _StubCallable:
+        """
+        Chainable no-op stub returned for any attribute on an _AppStubModule.
+        - Callable: won't raise TypeError when invoked.
+        - Returns b"" so file-loading stubs don't crash callers expecting bytes.
+        - Attribute access returns another _StubCallable so chains like
+          `obj.method().attr` don't crash.
+        """
+        def __call__(self, *args: object, **kwargs: object) -> bytes:
+            return b""
+
+        def __getattr__(self, name: str) -> "_StubCallable":
+            return _StubCallable()
+
+        def __bool__(self) -> bool:
+            return False
+
+        def __repr__(self) -> str:
+            return "<sandbox stub>"
+
+    class _AppStubModule(types.ModuleType):
+        """A module stub whose attributes are _StubCallable no-ops."""
+        def __getattr__(self, name: str) -> "_StubCallable":  # type: ignore[override]
+            return _StubCallable()
+
+    class _AppStubFinder(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname: str, path: object, target: object = None) -> object:
+            if fullname == "app" or fullname.startswith("app."):
+                if fullname in sys.modules:
+                    return None  # Already shimmed — let Python use it directly
+                spec = importlib.machinery.ModuleSpec(fullname, self, is_package=True)  # type: ignore[arg-type]
+                return spec
+            return None
+
+        def create_module(self, spec: object) -> "_AppStubModule":
+            mod = _AppStubModule(spec.name)  # type: ignore[union-attr]
+            mod.__path__ = []  # type: ignore[attr-defined]
+            mod.__package__ = spec.name  # type: ignore[union-attr]
+            return mod
+
+        def exec_module(self, module: object) -> None:
+            pass  # stub — nothing to execute
+
+    sys.meta_path.append(_AppStubFinder())
 
 
 _inject_base_trainer_shim()
@@ -85,12 +442,26 @@ def _load_trainer(trainer_path: Path) -> object:
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)  # type: ignore[union-attr]
 
-    # Find the first class that looks like a trainer
+    # Find the trainer class — must be defined in this file (not imported)
+    # and must have train() or predict().
+    # Checking __module__ filters out imported classes like ARIMA, Pipeline, etc.
+    # that happen to have a predict() method.
+    _base = sys.modules.get("app.abstract.base_trainer")
+    _BaseClass = getattr(_base, "BaseTrainer", None) if _base else None
+
     for name in dir(mod):
         if name.startswith("_"):
             continue
         obj = getattr(mod, name)
-        if isinstance(obj, type) and (hasattr(obj, "train") or hasattr(obj, "predict")):
+        if not isinstance(obj, type):
+            continue
+        # Skip classes imported from other modules
+        if getattr(obj, "__module__", None) != mod.__name__:
+            continue
+        # Must look like a trainer: subclass of BaseTrainer shim, or has train/predict
+        if _BaseClass and issubclass(obj, _BaseClass):
+            return obj()
+        if hasattr(obj, "train") or hasattr(obj, "predict"):
             return obj()
     raise RuntimeError("No trainer class found in trainer.py (needs train() or predict())")
 
@@ -116,17 +487,76 @@ def _to_json_safe(obj: object) -> object:
     return str(obj)
 
 
+# ── Backwards-compatible data wrapper ─────────────────────────────────────────
+
+class _FlatCompatData:
+    """
+    Wraps the new row-dict format (`{"rows": [...], "meta": ..., "_flat": [...]}`)
+    so that:
+    - Old trainers doing `for entry in raw_data` iterate the legacy flat list.
+    - New trainers doing `raw_data.get("rows")` get the rows list.
+    - Integer indexing (`raw_data[0]`) accesses the flat list.
+    """
+    __slots__ = ("_data", "_flat")
+
+    def __init__(self, data: dict) -> None:
+        self._data = data
+        self._flat: list = data.get("_flat") or []
+
+    def get(self, key: object, default: object = None) -> object:
+        return self._data.get(key, default)  # type: ignore[arg-type]
+
+    def __getitem__(self, key: object) -> object:
+        if isinstance(key, int):
+            return self._flat[key]
+        return self._data[key]  # type: ignore[index]
+
+    def __iter__(self):
+        return iter(self._flat)
+
+    def __len__(self) -> int:
+        return len(self._flat)
+
+    def __contains__(self, key: object) -> bool:
+        if isinstance(key, str):
+            return key in self._data
+        return key in self._flat
+
+    def keys(self):           return self._data.keys()
+    def values(self):         return self._data.values()
+    def items(self):          return self._data.items()
+    def __repr__(self) -> str:
+        return f"_FlatCompatData(rows={len(self._data.get('rows') or [])}, flat={len(self._flat)})"
+
+
 # ── Modes ─────────────────────────────────────────────────────────────────────
 
 def _run_train(base: Path) -> None:
-    with open(base / "input" / "data.pkl", "rb") as f:
+    data_pkl = base / "input" / "data.pkl"
+    if not data_pkl.exists():
+        # Fixture mode: tier_runner should have written data.pkl, but if missing
+        # fall back to a minimal in-memory dataset so the run doesn't hard-crash.
+        import pickle as _fallback_pkl
+        raw_data = {"features": [[0.0] * 4] * 10, "labels": [0] * 10, "_fixture": True}
+        with open(data_pkl, "wb") as _f:
+            _fallback_pkl.dump(raw_data, _f)
+
+    with open(data_pkl, "rb") as f:
         raw_data = _pkl.load(f)
+
+    # Wrap the new dict format in a backwards-compatible proxy so trainers
+    # written for the old flat-list format (`for entry in raw_data`) still work,
+    # while new trainers using `raw_data.get("rows")` also work.
+    if isinstance(raw_data, dict) and "_flat" in raw_data:
+        raw_data = _FlatCompatData(raw_data)
 
     with open(base / "input" / "config.json") as f:
         config_dict = json.load(f)
 
     config = SimpleNamespace(**config_dict)
     trainer = _load_trainer(base / "trainer.py")
+    # Inject config so preprocess() can access s3 creds via self._read_field()
+    trainer.config = config
 
     preprocessed = trainer.preprocess(raw_data)
     result = trainer.train(preprocessed, config)
@@ -137,6 +567,8 @@ def _run_train(base: Path) -> None:
         model, test_data = result
 
     metrics: dict = {}
+    y_true = None
+    y_pred = None
     if test_data is not None:
         try:
             eval_result = trainer.evaluate(model, test_data)
@@ -147,6 +579,9 @@ def _run_train(base: Path) -> None:
                     k: v for k, v in vars(eval_result).items()
                     if isinstance(v, (int, float, str, bool))
                 }
+                # Capture y_true/y_pred for confusion matrix in training_service
+                y_true = getattr(eval_result, "y_true", None)
+                y_pred = getattr(eval_result, "y_pred", None)
         except NotImplementedError:
             pass
         except Exception as exc:
@@ -158,8 +593,14 @@ def _run_train(base: Path) -> None:
     with open(out / "model.pkl", "wb") as f:
         _pkl.dump(model, f)
 
+    result_payload: dict = {"status": "ok", "metrics": _to_json_safe(metrics)}
+    if y_true is not None:
+        result_payload["y_true"] = _to_json_safe(y_true)
+    if y_pred is not None:
+        result_payload["y_pred"] = _to_json_safe(y_pred)
+
     with open(out / "result.json", "w") as f:
-        json.dump({"status": "ok", "metrics": _to_json_safe(metrics)}, f)
+        json.dump(result_payload, f)
 
 
 def _run_predict(base: Path) -> None:

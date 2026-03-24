@@ -1,0 +1,547 @@
+apiVersion: 1
+
+groups:
+
+  # ── Infrastructure ────────────────────────────────────────────
+  - orgId: 1
+    name: PMS Infrastructure
+    folder: PMS Alerts
+    interval: 1m
+    rules:
+
+      - uid: pms-service-down
+        title: Service Down
+        condition: B
+        for: 1m
+        isPaused: false
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is unreachable"
+          description: "Prometheus cannot scrape {{ $labels.instance }}. Check if the container is running."
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: 'up{job!~"pms-worker|pms-voice|mlflow"} == 0'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [0] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }
+
+      - uid: pms-cpu-warning
+        title: High CPU Usage
+        condition: B
+        for: 5m
+        isPaused: false
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host CPU above 85% for 5 minutes"
+          description: "Current CPU usage: {{ $values.A.Value | printf \"%.1f\" }}%"
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: '100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [85] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }
+
+      - uid: pms-cpu-critical
+        title: Critical CPU Usage
+        condition: B
+        for: 2m
+        isPaused: false
+        labels:
+          severity: critical
+        annotations:
+          summary: "Host CPU above 95% for 2 minutes"
+          description: "Current CPU usage: {{ $values.A.Value | printf \"%.1f\" }}%"
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: '100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [95] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }
+
+      - uid: pms-memory-warning
+        title: High Memory Usage
+        condition: B
+        for: 5m
+        isPaused: false
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host memory above 85%"
+          description: "Memory usage: {{ $values.A.Value | printf \"%.1f\" }}%"
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: '(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [85] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }
+
+      - uid: pms-memory-critical
+        title: Critical Memory Usage
+        condition: B
+        for: 2m
+        isPaused: false
+        labels:
+          severity: critical
+        annotations:
+          summary: "Host memory above 95%"
+          description: "Memory usage: {{ $values.A.Value | printf \"%.1f\" }}%"
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: '(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [95] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }
+
+      - uid: pms-disk-warning
+        title: Low Disk Space
+        condition: B
+        for: 5m
+        isPaused: false
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk usage above 80%"
+          description: "Disk used: {{ $values.A.Value | printf \"%.1f\" }}%"
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: '100 - (min(node_filesystem_avail_bytes) / min(node_filesystem_size_bytes) * 100)'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [80] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }
+
+      - uid: pms-disk-critical
+        title: Critical Disk Space
+        condition: B
+        for: 2m
+        isPaused: false
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk usage above 90% — immediate action required"
+          description: "Disk used: {{ $values.A.Value | printf \"%.1f\" }}%"
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: '100 - (min(node_filesystem_avail_bytes) / min(node_filesystem_size_bytes) * 100)'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [90] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }
+
+      - uid: pms-container-restart
+        title: Container Restarting
+        condition: B
+        for: 0m
+        isPaused: false
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container restarted more than twice in 15 minutes"
+          description: "Container {{ $labels.id }} is crash-looping."
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: 'increase(container_start_time_seconds{id=~"/docker/.+"}[15m])'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [2] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }
+
+  # ── ML Service ────────────────────────────────────────────────
+  - orgId: 1
+    name: PMS ML Service
+    folder: PMS Alerts
+    interval: 1m
+    rules:
+
+      - uid: pms-ml-high-error-rate
+        title: ML High Error Rate
+        condition: B
+        for: 5m
+        isPaused: false
+        labels:
+          severity: warning
+        annotations:
+          summary: "ML Service 5xx error rate above 5%"
+          description: "Error rate: {{ $values.A.Value | printf \"%.1f\" }}%"
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: >
+                sum(rate(ml_http_requests_total{job="pms-ml",status_code=~"5.."}[5m]))
+                / sum(rate(ml_http_requests_total{job="pms-ml"}[5m])) * 100
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [5] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }
+
+      - uid: pms-ml-high-latency
+        title: ML High p95 Latency
+        condition: B
+        for: 5m
+        isPaused: false
+        labels:
+          severity: warning
+        annotations:
+          summary: "ML Service p95 latency above 2s"
+          description: "p95 latency: {{ $values.A.Value | printf \"%.2f\" }}s"
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: >
+                histogram_quantile(0.95,
+                  sum(rate(ml_http_request_duration_seconds_bucket{job="pms-ml"}[5m])) by (le))
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [2] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }
+
+      - uid: pms-ml-active-jobs-high
+        title: High Active Training Jobs
+        condition: B
+        for: 10m
+        isPaused: false
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 10 training jobs active simultaneously"
+          description: "Active jobs: {{ $values.A.Value }}"
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: 'ml_active_training_jobs'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [10] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }
+
+  # ── Redis ─────────────────────────────────────────────────────
+  - orgId: 1
+    name: PMS Redis
+    folder: PMS Alerts
+    interval: 1m
+    rules:
+
+      - uid: pms-redis-high-connections
+        title: Redis High Connections
+        condition: B
+        for: 5m
+        isPaused: false
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis has more than 200 connected clients"
+          description: "Connected clients: {{ $values.A.Value }}"
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: 'redis_connected_clients'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [200] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }
+
+      - uid: pms-redis-evictions
+        title: Redis Evicting Keys
+        condition: B
+        for: 0m
+        isPaused: false
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis is evicting keys — memory pressure"
+          description: "Evictions in last 5m: {{ $values.A.Value }}"
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: 'increase(redis_evicted_keys_total[5m])'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [0] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }
+
+  # ── RabbitMQ ──────────────────────────────────────────────────
+  - orgId: 1
+    name: PMS RabbitMQ
+    folder: PMS Alerts
+    interval: 1m
+    rules:
+
+      - uid: pms-rabbitmq-messages-high
+        title: RabbitMQ Queue Backlog
+        condition: B
+        for: 5m
+        isPaused: false
+        labels:
+          severity: warning
+        annotations:
+          summary: "RabbitMQ has more than 5000 queued messages"
+          description: "Total messages: {{ $values.A.Value }}"
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: 'rabbitmq_queue_messages'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [5000] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }
+
+      - uid: pms-rabbitmq-unacked-high
+        title: RabbitMQ High Unacked Messages
+        condition: B
+        for: 5m
+        isPaused: false
+        labels:
+          severity: warning
+        annotations:
+          summary: "RabbitMQ has more than 1000 unacknowledged messages"
+          description: "Unacked messages: {{ $values.A.Value }}. Workers may be stuck."
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: 'rabbitmq_queue_messages_unacked'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [1000] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }
+
+      - uid: pms-rabbitmq-no-consumer
+        title: RabbitMQ No Consumers
+        condition: B
+        for: 5m
+        isPaused: false
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQ has queued messages but no consumers"
+          description: "Messages waiting: {{ $values.A.Value }}. All workers may be down."
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: '(rabbitmq_queue_messages > 100) * (rabbitmq_queue_consumers == 0)'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              refId: B
+              conditions:
+                - type: query
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  evaluator: { type: gt, params: [0] }
+                  operator: { type: and }
+              datasource: { type: __expr__, uid: __expr__ }

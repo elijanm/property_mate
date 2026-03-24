@@ -5,22 +5,50 @@ global:
 alerting:
   alertmanagers:
     - static_configs:
-        - targets:
-            - alertmanager:9093
+        - targets: ['alertmanager:9093']
 
-rule_files: []
+rule_files:
+  - /etc/prometheus/rules/*.yml
 
 scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: ['localhost:9090']
 
+  - job_name: node
+    static_configs:
+      - targets: ['host-gateway:9100']
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: ['cadvisor:8080']
+    metric_relabel_configs:
+      - source_labels: [container_label_com_docker_compose_service]
+        target_label: service
+
   - job_name: pms-backend
     static_configs:
       - targets: ['backend:8000']
     metrics_path: /metrics
 
-  - job_name: pms-worker
+  - job_name: pms-ml
     static_configs:
-      - targets: ['worker:9091']
+      - targets: ['ml-service:8030']
     metrics_path: /metrics
+
+  - job_name: pms-iot
+    static_configs:
+      - targets: ['iot-service:8020']
+    metrics_path: /metrics
+
+  - job_name: redis
+    static_configs:
+      - targets: ['redis-exporter:9121']
+
+  - job_name: mongodb
+    static_configs:
+      - targets: ['mongodb-exporter:9216']
+
+  - job_name: rabbitmq
+    static_configs:
+      - targets: ['rabbitmq:15692']  # built-in rabbitmq_prometheus plugin

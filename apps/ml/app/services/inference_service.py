@@ -29,6 +29,7 @@ def _cache_set(key: tuple, model) -> None:
             while len(_model_cache) > _MODEL_CACHE_MAX:
                 _model_cache.popitem(last=False)
 
+from app.core.metrics import INFERENCE_REQUESTS_TOTAL, INFERENCE_LATENCY_SECONDS
 from app.models.inference_log import InferenceLog
 from app.models.model_deployment import ModelDeployment
 from app.services.registry_service import get_trainer_class
@@ -482,6 +483,9 @@ async def predict(
 
     finally:
         latency = (time.monotonic() - t0) * 1000
+        _status = "error" if error_msg else "success"
+        INFERENCE_REQUESTS_TOTAL.labels(trainer_name=trainer_name, status=_status).inc()
+        INFERENCE_LATENCY_SECONDS.labels(trainer_name=trainer_name).observe(latency / 1000)
 
         # Extract S3 image keys from result (fields ending in _key)
         # so presigned URLs can be refreshed later without expiring.

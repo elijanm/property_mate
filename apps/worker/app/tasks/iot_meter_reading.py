@@ -18,6 +18,7 @@ from bson import ObjectId as BsonObjectId
 
 from app.core.database import get_db
 from app.core.logging import get_logger
+from app.core.metrics import task_metrics_wrap
 from app.core.redis import get_redis
 from app.utils.datetime import utc_now
 
@@ -221,4 +222,4 @@ async def handle(message: aio_pika.abc.AbstractIncomingMessage) -> None:
 
 async def start(channel: aio_pika.abc.AbstractChannel) -> None:
     queue = await channel.get_queue(QUEUE_NAME)
-    await queue.consume(handle)
+    await queue.consume(task_metrics_wrap(QUEUE_NAME, "iot_meter_reading", handle))

@@ -74,4 +74,11 @@ export const trainersApi = {
 
   setVisibility: (deploymentId: string, visibility: 'viewer' | 'engineer') =>
     client.patch<ModelDeployment>(`/models/${deploymentId}/visibility`, { visibility }).then(r => r.data),
+
+  setTrainerFlags: (name: string, flags: {
+    trainer_visible?: boolean
+    trainer_source_downloadable?: boolean
+    trainer_model_visible?: boolean
+    trainer_model_downloadable?: boolean
+  }) => client.patch(`/trainers/${name}/flags`, flags).then(r => r.data),
 }

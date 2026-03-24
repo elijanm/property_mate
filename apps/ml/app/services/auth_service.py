@@ -525,3 +525,59 @@ async def ensure_sample_model_deployed():
         logger.info("ml_sample_model_enqueued", trainer="iris_classifier", job_id=job_id)
     except Exception as exc:
         logger.warning("ml_sample_model_preinstall_failed", error=str(exc))
+
+
+async def oauth_login_or_register(
+    provider: str,
+    oauth_id: str,
+    email: str,
+    full_name: str = "",
+) -> MLUser:
+    """Find or create a user via OAuth. Verified by default; no password required."""
+    # 1. Find by (provider, oauth_id) — most reliable link
+    user = await MLUser.find_one({"oauth_provider": provider, "oauth_id": oauth_id})
+    if user:
+        await user.set({"last_login_at": utc_now()})
+        return user
+
+    # 2. Find by email — link OAuth to existing email/password account
+    user = await MLUser.find_one(MLUser.email == email)
+    if user:
+        await user.set({
+            "oauth_provider": provider,
+            "oauth_id": oauth_id,
+            "is_verified": True,
+            "last_login_at": utc_now(),
+        })
+        return user
+
+    # 3. New user — create account (no password, pre-verified)
+    org_id = str(uuid.uuid4())
+    user = MLUser(
+        email=email,
+        hashed_password="",
+        full_name=full_name or email.split("@")[0],
+        role="engineer",
+        org_id=org_id,
+        is_verified=True,
+        is_onboarded=False,
+        oauth_provider=provider,
+        oauth_id=oauth_id,
+    )
+    await user.insert()
+    logger.info("ml_user_oauth_registered", email=email, provider=provider, org_id=org_id)
+
+    import asyncio as _asyncio
+    _asyncio.create_task(_init_trainer_workspace(email, org_id))
+    _asyncio.create_task(_create_org_config(email, org_id))
+    return user
+
+
+async def _create_org_config(email: str, org_id: str) -> None:
+    try:
+        from app.models.org_config import OrgConfig
+        existing = await OrgConfig.find_one(OrgConfig.org_id == org_id)
+        if not existing:
+            await OrgConfig(org_id=org_id, owner_email=email).insert()
+    except Exception as exc:
+        logger.warning("ml_org_config_create_failed_oauth", email=email, org_id=org_id, error=str(exc))

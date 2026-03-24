@@ -835,49 +835,76 @@ def _security_check(code: str) -> Optional[str]:
     except SyntaxError as e:
         return f"SyntaxError line {e.lineno}: {e.msg}"
 
+    # ── Pass 1: collect os aliases + import-level violations ─────────────────
+    # Tracks all names bound to the `os` module so alias-based bypasses are caught.
+    os_names: set[str] = {"os"}
     for node in ast.walk(tree):
-        # Block certain imports
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            names = (
-                [a.name for a in node.names]
-                if isinstance(node, ast.Import)
-                else [node.module or ""]
-            )
-            for name in names:
-                top = (name or "").split(".")[0]
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".")[0]
                 if top in _BLOCKED_MODULES:
                     return f"Restricted import: '{top}' is not allowed in trainer code"
+                # Track: import os as o  →  os_names includes 'o'
+                if alias.name == "os" and alias.asname:
+                    os_names.add(alias.asname)
 
-        # Block os.<dangerous_attr> calls
+        elif isinstance(node, ast.ImportFrom):
+            top = (node.module or "").split(".")[0]
+            if top in _BLOCKED_MODULES:
+                return f"Restricted import: '{top}' is not allowed in trainer code"
+            # Block: from os import environ / getenv / putenv …
+            if node.module == "os":
+                for alias in node.names:
+                    if alias.name in _BLOCKED_OS_ATTRS:
+                        return (
+                            f"Restricted import: 'from os import {alias.name}' "
+                            "is not allowed in trainer code"
+                        )
+
+    # ── Pass 2: runtime-pattern violations ───────────────────────────────────
+    for node in ast.walk(tree):
+
         if isinstance(node, ast.Call):
             func = node.func
+
+            # Direct os_alias.X() call
             if (
                 isinstance(func, ast.Attribute)
                 and isinstance(func.value, ast.Name)
-                and func.value.id == "os"
+                and func.value.id in os_names
                 and func.attr in _BLOCKED_OS_ATTRS
             ):
                 return f"Restricted call: os.{func.attr}() is not allowed"
+
+            # getattr(os_alias, ...) — indirect access / obfuscation bypass
+            # Blocked regardless of what the second argument is (constant or variable).
+            if isinstance(func, ast.Name) and func.id == "getattr":
+                if (
+                    node.args
+                    and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id in os_names
+                ):
+                    return (
+                        "Restricted call: getattr(os, ...) is not allowed — "
+                        "use direct attribute access instead"
+                    )
+
+            # vars(os_alias) / dir(os_alias) — another introspection vector
+            if isinstance(func, ast.Name) and func.id in ("vars", "dir"):
+                if (
+                    node.args
+                    and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id in os_names
+                ):
+                    return f"Restricted call: {func.id}(os) is not allowed"
 
             # Block eval/exec/compile/__import__ with non-constant args
             if isinstance(func, ast.Name) and func.id in _BLOCKED_BUILTINS:
                 if node.args and not isinstance(node.args[0], ast.Constant):
                     return f"Restricted call: {func.id}() with dynamic arguments is not allowed"
 
-        # Block os.environ / os.getenv direct attribute access (not inside a Call)
-        if (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "os"
-            and node.attr in _BLOCKED_OS_ATTRS
-        ):
-            return f"Restricted access: os.{node.attr} is not allowed in trainer code"
-
-        # Block open() for write outside /tmp
-        if isinstance(node, ast.Call):
-            func = node.func
+            # Block open() for write outside /tmp
             if isinstance(func, ast.Name) and func.id == "open":
-                # Check mode arg (2nd positional or 'mode' keyword)
                 mode_val: Optional[str] = None
                 if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
                     mode_val = node.args[1].value
@@ -885,16 +912,16 @@ def _security_check(code: str) -> Optional[str]:
                     if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
                         mode_val = kw.value.value
                 if mode_val and any(c in mode_val for c in ("w", "a", "x", "+")):
-                    # Allow writes only if the path starts with /tmp
                     path_val: Optional[str] = None
                     if node.args and isinstance(node.args[0], ast.Constant):
                         path_val = str(node.args[0].value)
                     if path_val and not path_val.startswith("/tmp"):
-                        return f"Restricted call: open({path_val!r}, {mode_val!r}) — write access outside /tmp is not allowed"
+                        return (
+                            f"Restricted call: open({path_val!r}, {mode_val!r}) — "
+                            "write access outside /tmp is not allowed"
+                        )
 
-        # Block pickle.loads (arbitrary code execution)
-        if isinstance(node, ast.Call):
-            func = node.func
+            # Block pickle.loads (arbitrary code execution)
             if (
                 isinstance(func, ast.Attribute)
                 and func.attr in ("loads", "load")
@@ -902,6 +929,15 @@ def _security_check(code: str) -> Optional[str]:
                 and func.value.id == "pickle"
             ):
                 return "Restricted call: pickle.loads() is not allowed — use joblib or safetensors instead"
+
+        # Direct attribute access: os_alias.environ / os_alias.getenv etc.
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in os_names
+            and node.attr in _BLOCKED_OS_ATTRS
+        ):
+            return f"Restricted access: os.{node.attr} is not allowed in trainer code"
 
     return None
 
@@ -2461,10 +2497,71 @@ class RunRequest(BaseModel):
 
 
 _RUNNER_TEMPLATE = """
-import sys, asyncio, traceback
+import sys, asyncio, traceback, re, subprocess
 sys.path.insert(0, '/app')
 import os
 os.environ.setdefault('PYTHONUNBUFFERED', '1')
+
+# ── Auto-install trainer requirements ────────────────────────────────────────
+def _install_trainer_requirements(plugin_path):
+    import ast as _ast
+    try:
+        source = open(plugin_path).read()
+    except Exception:
+        return
+
+    pkgs = []
+
+    # A) comment header: # Requirements: pkg1, pkg2
+    for line in source.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith('#'):
+            break
+        m = re.match(r'#\\s*[Rr]equirements?\\s*:\\s*(.+)', stripped)
+        if m:
+            pkgs = [p.strip() for p in m.group(1).split(',') if p.strip()]
+            break
+
+    # B) class attribute: requirements = ["pkg1", "pkg2"]
+    if not pkgs:
+        try:
+            tree = _ast.parse(source)
+            for node in _ast.walk(tree):
+                if isinstance(node, _ast.ClassDef):
+                    for item in node.body:
+                        if (
+                            isinstance(item, _ast.Assign)
+                            and any(
+                                isinstance(t, _ast.Name) and t.id == 'requirements'
+                                for t in item.targets
+                            )
+                            and isinstance(item.value, _ast.List)
+                        ):
+                            pkgs = [
+                                elt.value for elt in item.value.elts
+                                if isinstance(elt, _ast.Constant) and isinstance(elt.value, str)
+                            ]
+                            break
+                if pkgs:
+                    break
+        except Exception:
+            pass
+
+    if pkgs:
+        print(f"[editor] Installing requirements: {{', '.join(pkgs)}}", flush=True)
+        result = subprocess.run(
+            [sys.executable, '-m', 'pip', 'install', '--quiet',
+             '--disable-pip-version-check', *pkgs],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print(f"[editor] Requirements installed: {{', '.join(pkgs)}}", flush=True)
+        else:
+            print(f"[editor] WARNING: pip install failed: {{result.stdout[-300:]}}", flush=True)
+
+_install_trainer_requirements({plugin_path!r})
 
 async def _main():
     from app.core.database import init_db
@@ -2479,6 +2576,33 @@ async def _main():
         org_id={org_id!r} or None,
         only_file=_Path({plugin_path!r}),
     )
+
+    # ── Extract test API credentials BEFORE stripping env ────────────────────
+    # These are the ONLY credentials a trainer is allowed to use.
+    # Captured now; injected into config below; then removed from os.environ.
+    _test_api_key      = os.environ.get('SANDBOX_TEST_API_KEY', '')
+    _test_api_base_url = os.environ.get('SANDBOX_TEST_API_BASE_URL', '')
+    _test_api_model    = os.environ.get('SANDBOX_TEST_API_MODEL', '')
+
+    # ── Strip ALL service credentials before running any trainer code ─────────
+    # Service setup above (init_db, scan_and_register_plugins) is now complete.
+    _STRIP_PREFIXES = (
+        'MONGO', 'REDIS', 'RABBIT', 'AMQP',
+        'JWT', 'SECRET', 'PASSWORD',
+        'OPENAI', 'ANTHROPIC', 'SENDGRID', 'SMTP', 'EMAIL',
+        'STRIPE', 'MPESA', 'PAYMENT',
+        'MLFLOW_TRACKING_URI',
+        'SANDBOX_TEST_API',   # remove raw test key from env after extracting above
+    )
+    _STRIP_EXACT = {{
+        'DATABASE_URL', 'MONGO_URL', 'REDIS_URL', 'RABBITMQ_URL',
+        'JWT_SECRET', 'SECRET_KEY', 'API_SECRET',
+    }}
+    for _k in list(os.environ.keys()):
+        _ku = _k.upper()
+        if _ku in _STRIP_EXACT or any(_ku.startswith(_p) for _p in _STRIP_PREFIXES):
+            del os.environ[_k]
+    # ─────────────────────────────────────────────────────────────────────────
 
     cls = get_trainer_class({trainer_name!r})
     if not cls:
@@ -2505,6 +2629,14 @@ async def _main():
     trainer = cls()
     config = TrainingConfig()
 {overrides_snippet}
+    # Inject test API credentials into config (never from os.environ — those are stripped)
+    if _test_api_key:
+        config.api_key = _test_api_key
+    if _test_api_base_url:
+        config.api_base_url = _test_api_base_url
+    if _test_api_model:
+        config.api_model = _test_api_model
+
     # Inject org_id so DatasetDataSource can auto-create missing datasets
     from app.abstract.data_source import DatasetDataSource as _DDS
     if isinstance(trainer.data_source, _DDS):
@@ -2519,6 +2651,35 @@ async def _main():
     print(f"[editor] Training {{cls.trainer_name()!r}}...", flush=True)
     result = trainer.train(preprocessed, config)
     print(f"[editor] train() returned {{type(result).__name__}}", flush=True)
+
+    # Call evaluate() if train() returned (model, test_data) tuple
+    model = result
+    test_data = None
+    if isinstance(result, tuple) and len(result) == 2:
+        model, test_data = result
+
+    if test_data is not None:
+        print("[editor] Evaluating...", flush=True)
+        try:
+            eval_result = trainer.evaluate(model, test_data)
+            if isinstance(eval_result, dict):
+                metrics = eval_result
+            elif hasattr(eval_result, "__dict__"):
+                metrics = {{k: v for k, v in vars(eval_result).items()
+                            if isinstance(v, (int, float, str, bool))}}
+            else:
+                metrics = {{}}
+            if metrics:
+                import json as _json
+                print(_json.dumps({{"metric": metrics}}), flush=True)
+                print(f"[editor] Evaluation metrics: {{list(metrics.keys())}}", flush=True)
+        except NotImplementedError:
+            print("[editor] evaluate() not implemented — skipping", flush=True)
+        except Exception as _eval_exc:
+            print(f"[editor] WARNING: evaluate() raised {{type(_eval_exc).__name__}}: {{_eval_exc}}", flush=True)
+            import traceback as _tb2
+            _tb2.print_exc()
+
     print("[editor] ✓ Run complete", flush=True)
 
 try:
@@ -2528,6 +2689,78 @@ except Exception as _e:
     traceback.print_exc()
     sys.exit(1)
 """
+
+
+async def _execute_trainer_split_test(
+    *,
+    job_id: str,
+    trainer_name: str,
+    trainer_source: str,
+    config_overrides: Optional[dict],
+    org_id: str,
+) -> None:
+    """
+    Split-sandbox test path: push to sandbox:test:jobs queue, subscribe to
+    Redis pub/sub for log events, and forward them into _RUN_QUEUES[job_id].
+    Used only when SANDBOX_SPLIT_MODE=true.
+    """
+    from app.services.split_sandbox_service import push_test_job, stream_job_logs
+
+    queue = _RUN_QUEUES.get(job_id)
+    if queue is None:
+        return
+
+    try:
+        await push_test_job(
+            job_id=job_id,
+            org_id=org_id,
+            trainer_source=trainer_source,
+            config_overrides=config_overrides,
+        )
+
+        # Forward pub/sub events → SSE queue
+        async for event in stream_job_logs(job_id, timeout=settings.SANDBOX_TEST_TIMEOUT + 10):
+            evt = event.get("event", "log")
+            if evt == "log":
+                await queue.put({"event": "log", "data": {"line": event.get("line", "")}})
+            elif evt == "metric":
+                await queue.put({"event": "metric", "data": event})
+            elif evt == "artifact":
+                await queue.put({"event": "artifact", "data": event})
+            elif evt in ("done", "error"):
+                status = "success" if evt == "done" and event.get("status") != "error" else "error"
+                await queue.put({
+                    "event": "done",
+                    "data": {
+                        "status": status,
+                        "exit_code": event.get("exit_code", 1 if status == "error" else 0),
+                        "metrics": event.get("metrics", {}),
+                        "error": event.get("error", ""),
+                        "sandbox": "test",
+                        "data_mode": "fixture",
+                    },
+                })
+                break
+        else:
+            # Stream exhausted without done event — timeout
+            await queue.put({
+                "event": "done",
+                "data": {
+                    "status": "error",
+                    "exit_code": 1,
+                    "error": f"Test sandbox timed out after {settings.SANDBOX_TEST_TIMEOUT}s",
+                    "sandbox": "test",
+                },
+            })
+    except Exception as exc:
+        if queue:
+            await queue.put({
+                "event": "done",
+                "data": {"status": "error", "exit_code": 1, "error": str(exc), "sandbox": "test"},
+            })
+    finally:
+        await queue.put(None)  # sentinel — closes SSE stream
+        _RUN_QUEUES.pop(job_id, None)
 
 
 async def _execute_trainer(
@@ -2561,6 +2794,8 @@ async def _execute_trainer(
         org_id=org_id,
     )
 
+    # Pass full service env so init_db / scan_plugins work, but the template
+    # will strip secrets from os.environ before any trainer code runs.
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": "/app", "ML_ORG_ID": org_id}
 
     await emit("log", {"line": f"[editor] Executing {plugin_path.name} directly (no queue)..."})
@@ -2577,11 +2812,24 @@ async def _execute_trainer(
             stderr=asyncio.subprocess.STDOUT,
             env=env,
             cwd="/app",
+            limit=20 * 1024 * 1024,  # 20 MB — artifact lines (base64 PNG) exceed 64 KB default
         )
 
         assert proc.stdout is not None
         async for raw_line in proc.stdout:
             line = raw_line.decode("utf-8", errors="replace").rstrip()
+            # Try to parse as structured JSON event from TrainerLogger / PlotContext
+            try:
+                parsed = __import__("json").loads(line)
+                evt_type = parsed.get("event")
+                if evt_type == "artifact":
+                    await emit("artifact", parsed)
+                    continue
+                elif evt_type == "metric" or "metric" in parsed:
+                    await emit("metric", parsed)
+                    continue
+            except Exception:
+                pass
             await emit("log", {"line": line})
 
         run_rc = await asyncio.wait_for(proc.wait(), timeout=5)
@@ -2651,6 +2899,24 @@ async def run_trainer(body: RunRequest, user=Depends(require_roles("engineer", "
         ast.parse(body.content)
     except SyntaxError as e:
         raise HTTPException(status_code=400, detail=f"SyntaxError line {e.lineno}: {e.msg}")
+
+    # ── Split sandbox mode: route test runs to dedicated test-sandbox cluster ──
+    # When SANDBOX_SPLIT_MODE=true, editor runs go to sandbox:test:jobs queue.
+    # Test runs are always free — no billing reservation needed.
+    if settings.SANDBOX_SPLIT_MODE:
+        job_id = str(uuid.uuid4())
+        queue: asyncio.Queue = asyncio.Queue(maxsize=10_000)
+        _RUN_QUEUES[job_id] = queue
+        asyncio.create_task(
+            _execute_trainer_split_test(
+                job_id=job_id,
+                trainer_name=body.trainer_name,
+                trainer_source=body.content,
+                config_overrides=body.config_overrides,
+                org_id=user.org_id or "",
+            )
+        )
+        return {"job_id": job_id, "status": "running", "sandbox": "test"}
 
     # ── Billing check ─────────────────────────────────────────────────────────
     # Editor runs are local compute — same billing rules as /training/start local.

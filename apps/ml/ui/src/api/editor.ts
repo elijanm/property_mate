@@ -181,6 +181,19 @@ export const editorApi = {
       filename: string | null
       suggestions: string[]
       has_code: boolean
-      debug?: { tokens: { input: number; output: number; total: number }; cost_usd: number; model: string }
+      debug?: {
+        tokens: { input: number; output: number; total: number }
+        cost_usd: number
+        model: string
+        provider?: string
+        num_ctx?: number | null
+        system_prompt_tokens_est?: number
+        extraction_pass?: string
+        continuation_count?: number
+        repair_ran?: boolean
+        final_line_count?: number
+        missing_methods_final?: string[]
+        raw_llm_reply?: string
+      }
     }>('/editor/ai-chat', payload).then(r => r.data),
 }

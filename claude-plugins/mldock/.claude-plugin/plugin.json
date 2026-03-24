@@ -1,0 +1,16 @@
+{
+  "name": "mldock",
+  "description": "Build, generate, and upload ML neurons to MLDock from Claude Code.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Nexidra"
+  },
+  "mcpServers": {
+    "mldock": {
+      "command": "mldock-mcp",
+      "env": {
+        "MLDOCK_BASE_URL": "${MLDOCK_BASE_URL:-https://www.mldock.io}"
+      }
+    }
+  }
+}

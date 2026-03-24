@@ -35,9 +35,11 @@ import ast
 import hashlib
 import os
 import re
+import time as _time
 from typing import Any, Dict, List, Optional
 
 import structlog
+from app.core.metrics import TRAINER_SUBMISSIONS_TOTAL, SCAN_DURATION_SECONDS
 
 logger = structlog.get_logger(__name__)
 
@@ -487,7 +489,9 @@ async def scan_trainer_security(
         {passed, severity, summary, issues, ast_violations, model_used}
     """
     # ── Step 1: AST collection ─────────────────────────────────────────────
+    _ast_t0 = _time.monotonic()
     ast_result = ast_collect(source)
+    SCAN_DURATION_SECONDS.labels(scan_type="ast").observe(_time.monotonic() - _ast_t0)
     definite_blocks = ast_result["definite_blocks"]
     hints = ast_result["hints"]
 
@@ -503,6 +507,7 @@ async def scan_trainer_security(
             org_id=org_id,
             rules=[v["rule"] for v in definite_blocks],
         )
+        TRAINER_SUBMISSIONS_TOTAL.labels(outcome="rejected").inc()
         return {
             "passed": False,
             "severity": "critical",
@@ -520,7 +525,9 @@ async def scan_trainer_security(
 
     # ── Step 2: LLM contextual scan ───────────────────────────────────────
     prompt = _build_security_prompt(source, trainer_name, hints)
+    _llm_t0 = _time.monotonic()
     result, model_used = await _call_llm_with_fallback(prompt)
+    SCAN_DURATION_SECONDS.labels(scan_type="llm").observe(_time.monotonic() - _llm_t0)
 
     # Attach raw AST hints to result for frontend display
     result["ast_violations"] = [
@@ -540,6 +547,8 @@ async def scan_trainer_security(
         issues_count=len(result.get("issues", [])),
     )
 
+    _outcome = "flagged" if not result.get("passed") else "approved"
+    TRAINER_SUBMISSIONS_TOTAL.labels(outcome=_outcome).inc()
     return result
 
 

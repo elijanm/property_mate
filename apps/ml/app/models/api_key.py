@@ -11,6 +11,7 @@ class ApiKey(Document):
     key_prefix: str            # first 8 chars shown in UI (e.g. "pms_ml_a")
     key_hash: str              # SHA-256 hash of full key
     owner_email: str
+    org_id: Optional[str] = None   # org scope — all data access is restricted to this org
     rate_limit_per_min: int = 60
     expires_at: Optional[datetime] = None
     last_used_at: Optional[datetime] = None

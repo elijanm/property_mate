@@ -1,0 +1,190 @@
+{
+  "title": "PMS Overview",
+  "uid": "pms-overview",
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Services Up",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "count(up == 1)", "refId": "A" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "green", "value": 5 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Services Down",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "count(up == 0) or vector(0)", "refId": "A" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Host CPU Usage %",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "100 - (avg by(instance)(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)", "legendFormat": "CPU %", "refId": "A" }],
+      "options": { "tooltip": { "mode": "single" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Host Memory Usage %",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100", "legendFormat": "Memory %", "refId": "A" }],
+      "options": { "tooltip": { "mode": "single" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Container CPU Usage",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "rate(container_cpu_usage_seconds_total{name!=\"\",name!~\".*_exporter.*\"}[5m]) * 100", "legendFormat": "{{name}}", "refId": "A" }],
+      "options": { "tooltip": { "mode": "single" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Container Memory MB",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "container_memory_usage_bytes{name!=\"\",name!~\".*_exporter.*\"} / 1024 / 1024", "legendFormat": "{{name}}", "refId": "A" }],
+      "options": { "tooltip": { "mode": "single" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "HTTP Request Rate",
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum by(job)(rate(pms_http_requests_total[5m]))", "legendFormat": "{{job}}", "refId": "A" }],
+      "options": { "tooltip": { "mode": "single" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "HTTP Error Rate %",
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "100 * rate(pms_http_requests_total{status_code=~\"5..\"}[5m]) / rate(pms_http_requests_total[5m])", "legendFormat": "5xx %", "refId": "A" }],
+      "options": { "tooltip": { "mode": "single" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Redis Memory MB",
+      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "redis_memory_used_bytes / 1024 / 1024", "legendFormat": "Used MB", "refId": "A" }],
+      "options": { "tooltip": { "mode": "single" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Redis Connected Clients",
+      "gridPos": { "x": 12, "y": 28, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "redis_connected_clients", "legendFormat": "Clients", "refId": "A" }],
+      "options": { "tooltip": { "mode": "single" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "MongoDB Connections",
+      "gridPos": { "x": 0, "y": 36, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "mongodb_connections{state=\"current\"}", "legendFormat": "Connections", "refId": "A" }],
+      "options": { "tooltip": { "mode": "single" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "RabbitMQ Queue Depths",
+      "gridPos": { "x": 12, "y": 36, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "rabbitmq_queue_messages", "legendFormat": "{{queue}}", "refId": "A" }],
+      "options": { "tooltip": { "mode": "single" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "ML Active Training Jobs",
+      "gridPos": { "x": 0, "y": 44, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "ml_active_training_jobs", "legendFormat": "Active Jobs", "refId": "A" }],
+      "options": { "tooltip": { "mode": "single" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "ML Inference Rate",
+      "gridPos": { "x": 12, "y": 44, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum by(trainer_name)(rate(ml_inference_requests_total[5m]))", "legendFormat": "{{trainer_name}}", "refId": "A" }],
+      "options": { "tooltip": { "mode": "single" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "ML Inference Latency p95",
+      "gridPos": { "x": 0, "y": 52, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by(trainer_name, le)(rate(ml_inference_latency_seconds_bucket[5m])))", "legendFormat": "{{trainer_name}} p95", "refId": "A" }],
+      "options": { "tooltip": { "mode": "single" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "ML Sandbox Queue Depth",
+      "gridPos": { "x": 12, "y": 52, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "ml_sandbox_queue_depth", "legendFormat": "{{tier}}", "refId": "A" }],
+      "options": { "tooltip": { "mode": "single" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    }
+  ]
+}

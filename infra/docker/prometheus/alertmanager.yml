@@ -2,24 +2,47 @@ global:
   resolve_timeout: 5m
 
 route:
-  group_by: ['alertname']
+  group_by: ['alertname', 'severity']
   group_wait: 30s
   group_interval: 5m
-  repeat_interval: 12h
-  receiver: 'email-notifications'
+  repeat_interval: 4h
+  receiver: default
+  routes:
+    - matchers:
+        - severity="critical"
+      receiver: critical
+      repeat_interval: 1h
+    - matchers:
+        - severity="warning"
+      receiver: default
+      repeat_interval: 4h
 
 receivers:
-  - name: 'email-notifications'
+  - name: default
     email_configs:
-      - to: 'alerts@example.com'
-        from: 'pms-alerts@example.com'
-        smarthost: 'smtp.example.com:587'
-        auth_username: 'pms-alerts@example.com'
-        auth_password: 'change-me'
+      - to: '${ALERTMANAGER_EMAIL_TO:-ops@pms.local}'
+        from: '${ALERTMANAGER_SMTP_FROM:-alerts@pms.local}'
+        smarthost: '${ALERTMANAGER_SMTP_HOST:-smtp.gmail.com:587}'
+        auth_username: '${ALERTMANAGER_SMTP_USER:-}'
+        auth_password: '${ALERTMANAGER_SMTP_PASSWORD:-}'
+        require_tls: true
+        send_resolved: true
+
+  - name: critical
+    email_configs:
+      - to: '${ALERTMANAGER_EMAIL_TO:-ops@pms.local}'
+        from: '${ALERTMANAGER_SMTP_FROM:-alerts@pms.local}'
+        smarthost: '${ALERTMANAGER_SMTP_HOST:-smtp.gmail.com:587}'
+        auth_username: '${ALERTMANAGER_SMTP_USER:-}'
+        auth_password: '${ALERTMANAGER_SMTP_PASSWORD:-}'
+        require_tls: true
+        send_resolved: true
+        headers:
+          subject: '[CRITICAL] {{ .GroupLabels.alertname }} - PMS Alert'
 
 inhibit_rules:
-  - source_match:
-      severity: 'critical'
-    target_match:
-      severity: 'warning'
-    equal: ['alertname', 'dev', 'instance']
+  - source_matchers:
+      - severity="critical"
+    target_matchers:
+      - severity="warning"
+    equal: ['alertname', 'instance']

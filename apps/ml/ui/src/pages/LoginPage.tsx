@@ -4,6 +4,7 @@ import { authApi } from '../api/auth'
 import { Eye, EyeOff, Loader2, Mail, ArrowRight, Cpu, Zap, BarChart2, Layers } from 'lucide-react'
 import Logo from '@/components/Logo'
 import DisposableEmailModal from '@/components/DisposableEmailModal'
+import OAuthButtons from '@/components/OAuthButtons'
 
 interface Props { onGoHome: () => void; onGoRegister: () => void; onForgotPassword: () => void }
 
@@ -209,6 +210,14 @@ export default function LoginPage({ onGoHome, onGoRegister, onForgotPassword }: 
           <div className="mb-8">
             <h1 className="text-2xl font-bold text-white tracking-tight mb-1">Welcome back</h1>
             <p className="text-sm text-gray-500">Sign in to your MLDock account</p>
+          </div>
+
+          <OAuthButtons mode="signin" />
+
+          <div className="flex items-center gap-3 my-1">
+            <div className="flex-1 h-px bg-white/8" />
+            <span className="text-[11px] text-gray-600">or continue with email</span>
+            <div className="flex-1 h-px bg-white/8" />
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-5">

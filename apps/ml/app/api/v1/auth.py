@@ -394,3 +394,245 @@ async def update_profile(body: UpdateProfileRequest, authorization: Optional[str
 
     await user.save()
     return _user_dict(user)
+
+
+# ── OAuth (Google + GitHub) ────────────────────────────────────────────────────
+
+import secrets as _secrets
+
+# ── CLI Device Login ────────────────────────────────────────────────────────────
+
+import secrets as _cli_secrets
+
+_CLI_SESSION_TTL = 300  # 5 minutes
+
+
+def _cli_redis():
+    """Return a synchronous-compatible async Redis client for CLI session ops."""
+    import redis.asyncio as aioredis
+    from app.core.config import settings
+    return aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+
+
+@router.post("/cli-session/request")
+async def cli_session_request():
+    """
+    CLI device flow — Step 1: Request a login link.
+    Returns a login URL and a device_code for polling.
+    No authentication required.
+    """
+    device_code = _cli_secrets.token_urlsafe(32)
+    r = _cli_redis()
+    try:
+        await r.set(f"cli_session:{device_code}", "pending", ex=_CLI_SESSION_TTL)
+    finally:
+        await r.aclose()
+
+    from app.core.config import settings
+    base = (settings.FRONTEND_BASE_URL or settings.APP_BASE_URL).rstrip("/")
+    login_url = f"{base}/cli-login?code={device_code}"
+    return {
+        "device_code": device_code,
+        "login_url": login_url,
+        "expires_in": _CLI_SESSION_TTL,
+    }
+
+
+@router.get("/cli-session/poll/{device_code}")
+async def cli_session_poll(device_code: str):
+    """
+    CLI device flow — Step 2: Poll for authorization.
+    Returns {"status": "pending"} or {"status": "authorized", "token": "...", "user": {...}}.
+    """
+    r = _cli_redis()
+    try:
+        value = await r.get(f"cli_session:{device_code}")
+    finally:
+        await r.aclose()
+
+    if value is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Device code expired or not found")
+
+    if value == "pending":
+        return {"status": "pending"}
+
+    # value is JSON-encoded token + user on authorized
+    import json as _json
+    data = _json.loads(value)
+    return {"status": "authorized", "token": data["token"], "user": data["user"]}
+
+
+@router.post("/cli-session/confirm/{device_code}")
+async def cli_session_confirm(device_code: str, authorization: Optional[str] = Header(None)):
+    """
+    CLI device flow — Step 3: Authorize the device (called from web browser after login).
+    Requires the user to be authenticated (Bearer token in header).
+    """
+    from fastapi import HTTPException
+    import json as _json
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = authorization.split(" ", 1)[1]
+    user = await auth_service.get_current_user(token)
+
+    r = _cli_redis()
+    try:
+        value = await r.get(f"cli_session:{device_code}")
+        if value is None:
+            raise HTTPException(status_code=404, detail="Device code expired or not found")
+        if value != "pending":
+            raise HTTPException(status_code=409, detail="Device code already used")
+
+        # Store the access token and user info so the CLI can retrieve it
+        access = auth_service.make_access_token(user)
+        payload = _json.dumps({"token": access, "user": _user_dict(user)})
+        await r.set(f"cli_session:{device_code}", payload, ex=60)  # 60s to retrieve
+    finally:
+        await r.aclose()
+
+    return {"ok": True, "message": "CLI session authorized. You can close this tab."}
+
+
+class OAuthExchangeRequest(BaseModel):
+    code: str
+    redirect_uri: str
+
+
+@router.get("/oauth/{provider}/url")
+async def oauth_url(provider: str, redirect_uri: str):
+    """Return the authorization URL to redirect the user to."""
+    from fastapi import HTTPException
+    from app.core.config import settings
+
+    state = _secrets.token_urlsafe(16)
+
+    if provider == "google":
+        if not settings.GOOGLE_CLIENT_ID:
+            raise HTTPException(status_code=503, detail="Google OAuth not configured")
+        params = {
+            "client_id": settings.GOOGLE_CLIENT_ID,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": "openid email profile",
+            "state": state,
+            "access_type": "online",
+        }
+        from urllib.parse import urlencode
+        url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+
+    elif provider == "github":
+        if not settings.GITHUB_CLIENT_ID:
+            raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
+        params = {
+            "client_id": settings.GITHUB_CLIENT_ID,
+            "redirect_uri": redirect_uri,
+            "scope": "read:user user:email",
+            "state": state,
+        }
+        from urllib.parse import urlencode
+        url = "https://github.com/login/oauth/authorize?" + urlencode(params)
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported provider: {provider}")
+
+    return {"url": url, "state": state}
+
+
+@router.post("/oauth/{provider}/exchange")
+async def oauth_exchange(provider: str, body: OAuthExchangeRequest):
+    """Exchange an authorization code for MLDock tokens."""
+    from fastapi import HTTPException
+    from app.core.config import settings
+    import httpx
+
+    try:
+        if provider == "google":
+            async with httpx.AsyncClient(timeout=10) as client:
+                token_resp = await client.post(
+                    "https://oauth2.googleapis.com/token",
+                    data={
+                        "code": body.code,
+                        "client_id": settings.GOOGLE_CLIENT_ID,
+                        "client_secret": settings.GOOGLE_CLIENT_SECRET,
+                        "redirect_uri": body.redirect_uri,
+                        "grant_type": "authorization_code",
+                    },
+                )
+                token_resp.raise_for_status()
+                access_token = token_resp.json()["access_token"]
+
+                info_resp = await client.get(
+                    "https://www.googleapis.com/oauth2/v2/userinfo",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                info_resp.raise_for_status()
+                info = info_resp.json()
+
+            oauth_id = info["id"]
+            email = info.get("email", "")
+            full_name = info.get("name", "")
+
+        elif provider == "github":
+            async with httpx.AsyncClient(timeout=10) as client:
+                token_resp = await client.post(
+                    "https://github.com/login/oauth/access_token",
+                    data={
+                        "code": body.code,
+                        "client_id": settings.GITHUB_CLIENT_ID,
+                        "client_secret": settings.GITHUB_CLIENT_SECRET,
+                        "redirect_uri": body.redirect_uri,
+                    },
+                    headers={"Accept": "application/json"},
+                )
+                token_resp.raise_for_status()
+                access_token = token_resp.json().get("access_token", "")
+
+                user_resp = await client.get(
+                    "https://api.github.com/user",
+                    headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"},
+                )
+                user_resp.raise_for_status()
+                gh_user = user_resp.json()
+
+                # GitHub may not expose email publicly — fetch from /user/emails
+                email = gh_user.get("email") or ""
+                if not email:
+                    emails_resp = await client.get(
+                        "https://api.github.com/user/emails",
+                        headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"},
+                    )
+                    if emails_resp.status_code == 200:
+                        for e in emails_resp.json():
+                            if e.get("primary") and e.get("verified"):
+                                email = e["email"]
+                                break
+
+            oauth_id = str(gh_user["id"])
+            full_name = gh_user.get("name") or gh_user.get("login", "")
+
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported provider: {provider}")
+
+        if not email:
+            raise HTTPException(status_code=400, detail="Could not retrieve email from OAuth provider")
+
+        user = await auth_service.oauth_login_or_register(provider, oauth_id, email, full_name)
+        return {
+            "access_token": auth_service.make_access_token(user),
+            "refresh_token": auth_service.make_refresh_token(user),
+            "token_type": "bearer",
+            "user": {
+                "email": user.email,
+                "full_name": user.full_name,
+                "role": user.role,
+                "org_id": user.org_id,
+                "is_onboarded": user.is_onboarded,
+            },
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"OAuth failed: {exc}")

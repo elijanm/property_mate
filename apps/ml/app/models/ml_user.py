@@ -34,6 +34,9 @@ class MLUser(Document):
     disposable_email_attempts: int = 0
     # Coupon
     pending_coupon_code: Optional[str] = None  # set at registration, cleared after redemption
+    # OAuth / social login
+    oauth_provider: Optional[str] = None   # "google" | "github" | None
+    oauth_id: Optional[str] = None         # provider's user ID (stable)
 
     class Settings:
         name = "ml_users"

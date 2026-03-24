@@ -8,6 +8,12 @@ from typing import Any, Dict, Optional, Tuple, Type
 import mlflow
 import structlog
 
+from app.core.metrics import (
+    ACTIVE_TRAINING_JOBS,
+    TRAINING_JOBS_TOTAL,
+    TRAINING_DURATION_SECONDS,
+    WALLET_CHARGES_TOTAL,
+)
 from app.abstract.base_trainer import BaseTrainer, EvaluationResult, TrainingConfig
 from app.core.config import settings
 from app.models.training_job import TrainingJob
@@ -187,6 +193,8 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
     # Mark running
     await job.set({"status": "running", "started_at": utc_now(), "updated_at": utc_now()})
     await _publish_job_event(job_id, {"type": "status", "status": "running", "trainer_name": job.trainer_name})
+    ACTIVE_TRAINING_JOBS.inc()
+    _compute_type = getattr(job, "compute_type", "local") or "local"
 
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
     experiment = mlflow.set_experiment(settings.MLFLOW_DEFAULT_EXPERIMENT)
@@ -206,7 +214,7 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
         await job.set({"run_id": run.info.run_id, "experiment_id": experiment.experiment_id, "updated_at": utc_now()})
 
         try:
-            # Log config
+            # Log training config
             mlflow.log_params({
                 "device": config.device,
                 "workers": config.workers,
@@ -225,6 +233,42 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
                 "warmup_ratio": config.warmup_ratio,
                 "task": config.task,
             })
+
+            # Log trainer metadata
+            _trainer_meta: dict = {
+                "trainer_name":      job.trainer_name,
+                "trainer_version":   getattr(trainer, "version", "unknown"),
+                "trainer_framework": getattr(trainer, "framework", "unknown"),
+                "data_source_type":  type(trainer.data_source).__name__,
+                "compute_type":      _compute_type,
+                "org_id":            job.org_id or "",
+            }
+            _cat = getattr(trainer, "category", None)
+            if isinstance(_cat, dict):
+                _trainer_meta["trainer_category"] = _cat.get("key", "")
+                _trainer_meta["trainer_category_label"] = _cat.get("label", "")
+            elif isinstance(_cat, str):
+                _trainer_meta["trainer_category"] = _cat
+            mlflow.log_params(_trainer_meta)
+
+            # Log any extra/custom hyperparams from config.extra
+            _extra = getattr(config, "extra", None) or {}
+            if _extra:
+                _safe_extra = {
+                    f"extra.{k}": str(v)[:250]
+                    for k, v in _extra.items()
+                    if isinstance(v, (str, int, float, bool))
+                }
+                if _safe_extra:
+                    try:
+                        mlflow.log_params(_safe_extra)
+                    except Exception:
+                        pass  # extra params are best-effort
+
+            # Log trainer-level tags (if defined)
+            _trainer_tags = getattr(trainer, "tags", None)
+            if isinstance(_trainer_tags, dict) and _trainer_tags:
+                mlflow.set_tags({f"trainer.{k}": str(v)[:250] for k, v in _trainer_tags.items()})
 
             # Load data
             await _log(job, "Loading data...")
@@ -245,10 +289,161 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
                 injected_data=injected_data,
                 org_id=job.org_id or "",   # consumed by UrlDatasetDataSource.load()
             )
-            await _log(job, f"Data loaded ({len(raw_data) if isinstance(raw_data, (bytes, list)) else 'n/a'} bytes/items)")
+            _data_count = len(raw_data) if isinstance(raw_data, (bytes, list)) else "n/a"
+            await _log(job, f"Data loaded ({_data_count} bytes/items)")
+            try:
+                _ds_slug = getattr(getattr(trainer, "data_source", None), "slug", None)
+                _ds_params: dict = {"data_sample_count": str(_data_count)}
+                if _ds_slug:
+                    _ds_params["dataset_slug"] = _ds_slug
+                mlflow.log_params(_ds_params)
+            except Exception:
+                pass  # data info logging is best-effort
 
             # ── Sandbox branches ───────────────────────────────────────────────
-            if settings.TRAINER_SANDBOX in ("docker", "docker-pool"):
+            _job_compute = getattr(job, "compute_type", "cpu") or "cpu"
+            if settings.SANDBOX_SPLIT_MODE and _job_compute != "cloud_gpu":
+                # Split mode: push to dedicated prod-cpu queue, wait for result
+                from app.services.split_sandbox_service import push_prod_job, get_job_result
+                from pathlib import Path as _Path
+
+                plugin_dir = _Path(settings.TRAINER_PLUGIN_DIR)
+                trainer_py = next(
+                    (f for f in plugin_dir.glob("**/*.py")
+                     if f.stem == job.trainer_name or f.stem.lower() == job.trainer_name.lower()),
+                    None,
+                )
+                if trainer_py is None:
+                    raise RuntimeError(
+                        f"Cannot find trainer source for '{job.trainer_name}' in {plugin_dir}"
+                    )
+                trainer_source = trainer_py.read_text(encoding="utf-8")
+
+                from app.api.v1.editor import _security_check as _sc
+                _violation = _sc(trainer_source)
+                if _violation:
+                    raise RuntimeError(f"Security violation in trainer source: {_violation}")
+
+                # Generate org-scoped temp S3 credentials (1h, read-only on org_id/*)
+                _s3_creds: dict = {}
+                try:
+                    _s3_creds = await _generate_sandbox_s3_creds(job.org_id or "", job_id)
+                    await _log(job, "S3 sandbox credentials generated.")
+                except Exception as _cred_exc:
+                    logger.warning(
+                        "sandbox_s3_creds_failed",
+                        job_id=job_id,
+                        error=str(_cred_exc),
+                    )
+
+                # Pre-write data.pkl in standardized sandbox row format
+                import pickle as _pkl_ws
+                workspace = _Path(settings.TRAINER_SANDBOX_WORKSPACE) / job_id
+                (workspace / "input").mkdir(parents=True, exist_ok=True)
+                (workspace / "output").mkdir(parents=True, exist_ok=True)
+                _sandbox_data = _to_sandbox_format(raw_data)
+                with open(workspace / "input" / "data.pkl", "wb") as _f:
+                    _pkl_ws.dump(_sandbox_data, _f)
+
+                # Merge S3 creds into config_overrides so tier_runner writes them to config.json
+                _base_overrides = getattr(job, "training_config", {}).get("extra") or {}
+                _config_overrides = {**_base_overrides, **_s3_creds} if _s3_creds else _base_overrides
+
+                _sandbox_compute = "gpu" if _job_compute == "gpu" else "cpu"
+                _prod_timeout = (
+                    settings.SANDBOX_PROD_GPU_TIMEOUT
+                    if _sandbox_compute == "gpu"
+                    else settings.SANDBOX_PROD_CPU_TIMEOUT
+                )
+                await _log(job, f"Running trainer in split prod-{_sandbox_compute} sandbox...")
+
+                await push_prod_job(
+                    job_id=job_id,
+                    org_id=job.org_id or "",
+                    trainer_source=trainer_source,
+                    compute_type=_sandbox_compute,
+                    config_overrides=_config_overrides or None,
+                )
+
+                t0 = time.monotonic()
+                split_result = await get_job_result(
+                    job_id, timeout=_prod_timeout
+                )
+                elapsed = time.monotonic() - t0
+
+                if split_result is None:
+                    raise RuntimeError(f"Prod sandbox timed out after {elapsed:.0f}s")
+                if split_result.get("status") == "error":
+                    raise RuntimeError(f"Prod sandbox error: {split_result.get('error')}")
+
+                mlflow.log_metric("training_duration_s", elapsed)
+
+                # Load model from workspace output
+                model_pkl = workspace / "output" / "model.pkl"
+                if not model_pkl.exists():
+                    raise RuntimeError("Prod sandbox did not produce model.pkl")
+                try:
+                    import cloudpickle as _cpkl
+                except ImportError:
+                    import pickle as _cpkl  # type: ignore[no-redef]
+                import io as _io
+                model = _cpkl.load(_io.BytesIO(model_pkl.read_bytes()))
+
+                sandbox_metrics = split_result.get("metrics", {})
+                eval_result = None
+                if sandbox_metrics:
+                    mlflow.log_metrics(sandbox_metrics)
+                    await job.set({"metrics": sandbox_metrics, "updated_at": utc_now()})
+                    await _log(job, f"Metrics: {sandbox_metrics}")
+                    await _publish_job_event(job_id, {"type": "metrics", "metrics": sandbox_metrics})
+                    _log_metrics_chart(sandbox_metrics)
+
+                # Log plot artifacts produced by PlotContext during training
+                _artifact_paths = split_result.get("artifact_paths", [])
+                _logged_artifacts = 0
+                for _art_path in _artifact_paths:
+                    _p = _Path(_art_path)
+                    if _p.exists():
+                        try:
+                            mlflow.log_artifact(str(_p), artifact_path="plots")
+                            _logged_artifacts += 1
+                            await _log(job, f"Logged artifact: {_p.name}")
+                        except Exception as _art_exc:
+                            logger.warning(
+                                "sandbox_artifact_upload_failed",
+                                job_id=job_id,
+                                path=str(_p),
+                                error=str(_art_exc),
+                            )
+                            await _log(job, f"Artifact upload failed: {_p.name} — {_art_exc}")
+                    else:
+                        logger.warning(
+                            "sandbox_artifact_missing",
+                            job_id=job_id,
+                            path=_art_path,
+                        )
+                if _artifact_paths:
+                    await _log(job, f"Logged {_logged_artifacts}/{len(_artifact_paths)} plot artifact(s) to MLflow")
+
+                # Confusion matrix if runner serialised y_true/y_pred
+                _y_true = split_result.get("y_true")
+                _y_pred = split_result.get("y_pred")
+                if _y_true and _y_pred:
+                    _eval_for_cm = EvaluationResult(y_true=_y_true, y_pred=_y_pred)
+                    _class_names = getattr(trainer_cls, "get_class_names", lambda: [])()
+                    _log_confusion_matrix_artifacts(_eval_for_cm, _class_names)
+
+                _log_schema_artifacts(trainer_cls)
+                await _log(job, f"Split sandbox training complete in {elapsed:.1f}s")
+
+                # Clean up workspace now that all artifacts are in MLflow
+                try:
+                    import shutil as _shutil
+                    _shutil.rmtree(str(workspace), ignore_errors=True)
+                except Exception:
+                    pass
+
+            elif settings.TRAINER_SANDBOX in ("docker", "docker-pool"):
                 _pool_mode = settings.TRAINER_SANDBOX == "docker-pool"
                 await _log(job, f"Running trainer in {'pooled ' if _pool_mode else ''}Docker sandbox...")
                 if _pool_mode:
@@ -269,6 +464,11 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
                         f"Cannot find trainer source for '{job.trainer_name}' in {plugin_dir}"
                     )
                 trainer_source = trainer_py.read_text(encoding="utf-8")
+
+                from app.api.v1.editor import _security_check as _sc2
+                _violation2 = _sc2(trainer_source)
+                if _violation2:
+                    raise RuntimeError(f"Security violation in trainer source: {_violation2}")
 
                 t0 = time.monotonic()
                 sandbox_result = await run_train_in_sandbox(
@@ -461,6 +661,10 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
                 "updated_at": finished_at,
             })
             await _log(job, "Training complete.")
+            TRAINING_JOBS_TOTAL.labels(status="success", compute_type=_compute_type, trainer_name=job.trainer_name).inc()
+            if elapsed > 0:
+                TRAINING_DURATION_SECONDS.labels(trainer_name=job.trainer_name, compute_type=_compute_type).observe(elapsed)
+            ACTIVE_TRAINING_JOBS.dec()
             await _publish_job_event(job_id, {
                 "type": "status",
                 "status": "completed",
@@ -481,6 +685,8 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
                         charged = await wallet_service.release_and_charge(
                             wallet, str(job.id), actual_cost
                         )
+                        if charged:
+                            WALLET_CHARGES_TOTAL.labels(compute_type=_compute_type).inc(actual_cost)
                         await job.set({"wallet_charged": charged, "updated_at": utc_now()})
                         logger.info(
                             "local_training_charged",
@@ -509,6 +715,8 @@ async def run_training(job_id: str, injected_data: Optional[bytes] = None) -> No
             logger.error("training_failed", job_id=job_id, error=str(exc), exc_info=exc)
             mlflow.set_tag("error", str(exc))
             await _fail(job, str(exc))
+            TRAINING_JOBS_TOTAL.labels(status="failed", compute_type=_compute_type, trainer_name=job.trainer_name).inc()
+            ACTIVE_TRAINING_JOBS.dec()
 
             # Release wallet reservation so funds are never permanently held after failure.
             # Charge for actual elapsed time if training started; otherwise release in full.
@@ -656,11 +864,14 @@ def _log_confusion_matrix_artifacts(
             try:
                 plt.savefig(tmp, dpi=120, bbox_inches="tight")
                 mlflow.log_artifact(tmp, "plots")
-            except Exception:
-                pass
+            except Exception as art_exc:
+                logger.warning("confusion_matrix_artifact_upload_failed", error=str(art_exc))
             finally:
                 plt.close(fig)
-                os.unlink(tmp)
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
     except Exception as exc:
         logger.warning("confusion_matrix_log_failed", error=str(exc))
 
@@ -677,36 +888,64 @@ def _log_metrics_chart(metrics: dict) -> None:
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        keys = [k for k in metrics if isinstance(metrics[k], float) and 0 <= metrics[k] <= 1]
+        # Include all numeric metrics (float or int), not just those in [0,1].
+        # Metrics like cross-entropy loss (>1) or MSE are common and useful to chart.
+        keys = [k for k in metrics if isinstance(metrics[k], (float, int)) and not isinstance(metrics[k], bool)]
         if not keys:
             return
-        vals = [metrics[k] for k in keys]
+        vals = [float(metrics[k]) for k in keys]
 
-        fig, ax = plt.subplots(figsize=(max(5, len(keys) * 1.4), 4))
-        bars = ax.bar(keys, vals, color="#6366f1", alpha=0.85)
-        ax.set_ylim(0, 1.1)
-        ax.set_ylabel("Score")
-        ax.set_title("Training Metrics Summary")
-        for bar, val in zip(bars, vals):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.02,
-                f"{val:.3f}",
-                ha="center",
-                va="bottom",
-                fontsize=10,
-            )
+        # Split into two sub-charts: ratio metrics (0-1) and scale metrics (anything else)
+        ratio_items = [(k, v) for k, v in zip(keys, vals) if 0.0 <= v <= 1.0]
+        scale_items = [(k, v) for k, v in zip(keys, vals) if not (0.0 <= v <= 1.0)]
+
+        n_charts = (1 if ratio_items else 0) + (1 if scale_items else 0)
+        if n_charts == 0:
+            return
+
+        fig, axes = plt.subplots(1, n_charts, figsize=(max(5, len(keys) * 1.4), 4))
+        if n_charts == 1:
+            axes = [axes]
+
+        def _draw(ax, items, title, fixed_ylim=None):
+            ks = [i[0] for i in items]
+            vs = [i[1] for i in items]
+            bars = ax.bar(ks, vs, color="#6366f1", alpha=0.85)
+            if fixed_ylim:
+                ax.set_ylim(*fixed_ylim)
+            ax.set_ylabel("Value")
+            ax.set_title(title)
+            ax.tick_params(axis="x", rotation=20, labelsize=9)
+            for bar, val in zip(bars, vs):
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() * 1.02,
+                    f"{val:.3f}",
+                    ha="center", va="bottom", fontsize=9,
+                )
+
+        idx = 0
+        if ratio_items:
+            _draw(axes[idx], ratio_items, "Metrics (ratio)", fixed_ylim=(0, 1.15))
+            idx += 1
+        if scale_items:
+            _draw(axes[idx], scale_items, "Metrics (scale)")
+
+        plt.suptitle("Training Metrics Summary", fontsize=11, y=1.02)
         plt.tight_layout()
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             tmp = f.name
         try:
             plt.savefig(tmp, dpi=120, bbox_inches="tight")
             mlflow.log_artifact(tmp, "plots")
-        except Exception:
-            pass
+        except Exception as art_exc:
+            logger.warning("metrics_chart_artifact_upload_failed", error=str(art_exc))
         finally:
             plt.close(fig)
-            os.unlink(tmp)
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
     except Exception as exc:
         logger.warning("metrics_chart_log_failed", error=str(exc))
 
@@ -780,3 +1019,110 @@ class _PickleWrapper(mlflow.pyfunc.PythonModel):
 
     def predict(self, context, model_input):
         return self._model.predict(model_input)
+
+
+# ── Sandbox data helpers ───────────────────────────────────────────────────────
+
+async def _generate_sandbox_s3_creds(org_id: str, job_id: str) -> dict:
+    """
+    Generate MinIO STS temp credentials (1h) scoped to:
+      s3:GetObject on  {S3_BUCKET}/{org_id}/*
+
+    Uses MinIO's STS AssumeRole endpoint.  The RoleArn value is accepted by
+    MinIO as long as the signing credentials are valid admin credentials.
+
+    Returns a dict ready to merge into config_overrides / config.json.
+    """
+    import json as _json
+    import boto3 as _boto3
+
+    policy = _json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Action": ["s3:GetObject"],
+            "Resource": f"arn:aws:s3:::{settings.S3_BUCKET}/{org_id}/*",
+        }],
+    })
+    sts = _boto3.client(
+        "sts",
+        endpoint_url=settings.S3_ENDPOINT_URL,
+        aws_access_key_id=settings.S3_ACCESS_KEY,
+        aws_secret_access_key=settings.S3_SECRET_KEY,
+        region_name=settings.S3_REGION or "us-east-1",
+    )
+    creds = sts.assume_role(
+        RoleArn="arn:aws:sts:::assumed-role/sandbox-readonly/unused",
+        RoleSessionName=f"sb-{job_id[:12]}",
+        Policy=policy,
+        DurationSeconds=3600,
+    )["Credentials"]
+    return {
+        "s3_endpoint":      settings.S3_ENDPOINT_URL,
+        "s3_bucket":        settings.S3_BUCKET,
+        "s3_region":        settings.S3_REGION or "us-east-1",
+        "s3_access_key":    creds["AccessKeyId"],
+        "s3_secret_key":    creds["SecretAccessKey"],
+        "s3_session_token": creds["SessionToken"],
+    }
+
+
+def _to_sandbox_format(raw_data: Any) -> dict:
+    """
+    Convert DatasetDataSource flat field list to the standardized sandbox row format:
+
+      {
+        "rows": [
+          {
+            "<field_label>": {"type": "text",  "value": "..."},
+            "<file_field>":  {"type": "image", "s3_key": "org/.../file.jpg", "mime": "..."},
+          },
+          ...
+        ],
+        "meta": {"row_count": N, "fields": [...]},
+        "_flat": [original flat list],   # legacy — old trainers still work
+      }
+
+    If raw_data is already in the new format (has "rows" key) it is passed through.
+    Any non-list raw_data (bytes, custom dict) is wrapped minimally.
+    """
+    if isinstance(raw_data, dict) and "rows" in raw_data:
+        return raw_data
+
+    if not isinstance(raw_data, list):
+        return {"rows": [], "meta": {"row_count": 0}, "_raw": raw_data}
+
+    # Group flat per-field entries by entry_id → one dict per dataset row
+    from collections import defaultdict as _dd
+    grouped: dict = _dd(dict)
+    field_names: set = set()
+    for entry in raw_data:
+        if not isinstance(entry, dict):
+            # Raw list items that are plain values (strings, ints, etc.) — wrap them
+            eid = str(len(grouped))
+            grouped[eid]["value"] = {"type": "text", "value": str(entry)}
+            field_names.add("value")
+            continue
+        eid = entry.get("entry_id") or str(len(grouped))
+        label = (
+            entry.get("field_label") or entry.get("field_id") or "field"
+        ).lower().replace(" ", "_")
+        field_names.add(label)
+        ftype = entry.get("field_type", "text")
+        cell: dict = {"type": ftype}
+        if ftype == "text":
+            cell["value"] = entry.get("text_value") or ""
+        else:
+            cell["s3_key"] = entry.get("file_key") or ""
+            cell["mime"]   = entry.get("file_mime") or ""
+        grouped[eid][label] = cell
+
+    rows = list(grouped.values())
+    return {
+        "rows": rows,
+        "meta": {
+            "row_count": len(rows),
+            "fields": [{"name": n} for n in sorted(field_names)],
+        },
+        "_flat": raw_data,  # legacy — trainers iterating flat entries still work
+    }

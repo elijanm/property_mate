@@ -26,7 +26,7 @@ async def create_key(
 ):
     # Non-admin users always get the default rate limit regardless of what they send
     rate_limit = body.rate_limit_per_min if user.role == "admin" else _NON_ADMIN_DEFAULT_RATE
-    record, raw_key = await api_key_service.create_key(body.name, user.email, rate_limit, body.expires_at)
+    record, raw_key = await api_key_service.create_key(body.name, user.email, rate_limit, body.expires_at, org_id=user.org_id or None)
     return {"id": str(record.id), "key": raw_key, "prefix": record.key_prefix, "name": record.name, "note": "Store this key — it will not be shown again"}
 
 

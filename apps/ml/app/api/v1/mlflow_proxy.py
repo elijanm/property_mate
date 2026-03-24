@@ -3,14 +3,34 @@
 The browser cannot reach http://mlflow:5000 (internal Docker network), so
 artifact image URLs are rewritten to /api/v1/mlflow/artifact?run_uuid=...&path=...
 and this endpoint fetches the bytes from MLflow and streams them back.
+
+Uses MlflowClient.download_artifacts() which works for any backend (local FS,
+S3/MinIO, Azure Blob, GCS) — more reliable than the /get-artifact HTTP endpoint
+which doesn't work with S3-backed stores.
 """
-import httpx
+import asyncio
+import structlog
+import tempfile
+from pathlib import Path
+
 from fastapi import APIRouter, Query
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
+from mlflow.tracking import MlflowClient
 
 from app.core.config import settings
 
+logger = structlog.get_logger(__name__)
+
 router = APIRouter(prefix="/mlflow", tags=["mlflow-proxy"])
+
+_CONTENT_TYPES = {
+    ".png":  "image/png",
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".svg":  "image/svg+xml",
+    ".gif":  "image/gif",
+    ".webp": "image/webp",
+}
 
 _PLACEHOLDER_SVG = b"""<svg xmlns="http://www.w3.org/2000/svg" width="480" height="320" viewBox="0 0 480 320">
   <rect width="480" height="320" fill="#111827" rx="8"/>
@@ -24,27 +44,32 @@ _PLACEHOLDER_SVG = b"""<svg xmlns="http://www.w3.org/2000/svg" width="480" heigh
 </svg>"""
 
 
+def _download_sync(run_uuid: str, path: str) -> tuple[bytes, str]:
+    """Download artifact via MLflow Python SDK (handles S3/MinIO, local FS, etc.)."""
+    client = MlflowClient(tracking_uri=settings.MLFLOW_TRACKING_URI)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local = client.download_artifacts(run_uuid, path, tmpdir)
+        content = Path(local).read_bytes()
+        suffix = Path(local).suffix.lower()
+    return content, suffix
+
+
 @router.get("/artifact")
 async def proxy_mlflow_artifact(
     run_uuid: str = Query(...),
     path: str = Query(...),
 ):
     """Fetch a MLflow artifact and stream it back to the browser."""
+    loop = asyncio.get_event_loop()
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(
-                f"{settings.MLFLOW_TRACKING_URI}/get-artifact",
-                params={"run_uuid": run_uuid, "path": path},
-            )
-    except httpx.RequestError:
+        content, suffix = await loop.run_in_executor(None, _download_sync, run_uuid, path)
+        content_type = _CONTENT_TYPES.get(suffix, "image/png")
+        return Response(content=content, media_type=content_type)
+    except Exception as exc:
+        logger.warning(
+            "mlflow_artifact_proxy_failed",
+            run_uuid=run_uuid,
+            path=path,
+            error=str(exc),
+        )
         return Response(content=_PLACEHOLDER_SVG, media_type="image/svg+xml")
-
-    if resp.status_code != 200:
-        return Response(content=_PLACEHOLDER_SVG, media_type="image/svg+xml")
-
-    content_type = resp.headers.get("content-type", "image/png")
-
-    async def _stream():
-        yield resp.content
-
-    return StreamingResponse(_stream(), media_type=content_type)

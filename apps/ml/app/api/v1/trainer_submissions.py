@@ -353,6 +353,11 @@ async def upload_trainer(
 
     source = file_bytes.decode("utf-8", errors="replace")
 
+    from app.api.v1.editor import _security_check
+    violation = _security_check(source)
+    if violation:
+        raise HTTPException(status_code=400, detail=f"Security violation: {violation}")
+
     # Parse metadata header
     import re, os
     from app.services.registry_service import _parse_metadata_header, _compute_file_hash

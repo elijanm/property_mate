@@ -109,4 +109,23 @@ export const modelsApi = {
     client.get<{ artifacts: { path: string; url: string; label: string }[] }>(
       `/models/${id}/training-artifacts`
     ).then(r => r.data),
+
+  getRunParams: (id: string) =>
+    client.get<{ params: Record<string, string>; tags: Record<string, string> }>(
+      `/models/${id}/run-params`
+    ).then(r => r.data),
+
+  /**
+   * Download the trained model as a zip.
+   * Rejects with { code, message } if the trainer owner has disabled downloads.
+   */
+  downloadModel: async (id: string, filename: string) => {
+    const resp = await client.get(`/models/${id}/download-url`, { responseType: 'blob' })
+    const url = URL.createObjectURL(resp.data)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+  },
 }

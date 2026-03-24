@@ -1,0 +1,34 @@
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: PMS Email Alerts
+    receivers:
+      - uid: pms-email-receiver
+        type: email
+        disableResolveMessage: false
+        settings:
+          addresses: ${GF_ALERTS_ADMIN_EMAIL}
+          subject: |
+            [{{ .Status | toUpper }}{{ if eq .Status "firing" }} x{{ len .Alerts.Firing }}{{ end }}] {{ .GroupLabels.alertname }} — PMS
+          message: |
+            {{ range .Alerts }}
+            **{{ .Labels.alertname }}** — {{ .Labels.severity | toUpper }}
+            {{ if .Annotations.summary }}Summary: {{ .Annotations.summary }}{{ end }}
+            {{ if .Annotations.description }}Detail: {{ .Annotations.description }}{{ end }}
+            Labels: {{ range .Labels.SortedPairs }}{{ .Name }}={{ .Value }} {{ end }}
+            Starts: {{ .StartsAt | date "2006-01-02 15:04:05 UTC" }}
+            {{ end }}
+
+  # Uncomment and set GF_ALERTS_SLACK_WEBHOOK_URL in .env to enable Slack alerts
+  # - orgId: 1
+  #   name: PMS Slack Alerts
+  #   receivers:
+  #     - uid: pms-slack-receiver
+  #       type: slack
+  #       settings:
+  #         url: ${GF_ALERTS_SLACK_WEBHOOK_URL}
+  #         title: "[{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}"
+  #         text: "{{ range .Alerts }}*{{ .Labels.severity | toUpper }}* — {{ .Annotations.summary }}{{ end }}"
+  #         icon_emoji: ":rotating_light:"
+  #         username: PMS Grafana

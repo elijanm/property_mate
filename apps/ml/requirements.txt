@@ -33,6 +33,11 @@ inference-sdk>=0.9.0
 opencv-python-headless==4.10.0.84
 Pillow>=10.0.0
 
+# Time-series / statistics (commonly needed by AI-generated trainers)
+statsmodels>=0.14.0               # ARIMA, VAR, seasonal decomposition, OLS
+pmdarima>=2.0.0                   # auto_arima wrapper around statsmodels
+prophet>=1.1.0                    # Facebook/Meta Prophet forecasting
+
 # Security
 clamd==1.0.2                      # ClamAV daemon client (virus scanning)
 

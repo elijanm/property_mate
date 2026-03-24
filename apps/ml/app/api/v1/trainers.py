@@ -198,11 +198,18 @@ async def upload_trainer_plugin(
     if not file.filename or not file.filename.endswith(".py"):
         raise HTTPException(status_code=400, detail="Only .py files are accepted")
 
+    content = await file.read()
+    source = content.decode("utf-8", errors="replace")
+
+    from app.api.v1.editor import _security_check
+    violation = _security_check(source)
+    if violation:
+        raise HTTPException(status_code=400, detail=f"Security violation: {violation}")
+
     plugin_dir = Path(settings.TRAINER_PLUGIN_DIR)
     plugin_dir.mkdir(parents=True, exist_ok=True)
     dest = plugin_dir / file.filename
 
-    content = await file.read()
     async with aiofiles.open(dest, "wb") as f:
         await f.write(content)
 
@@ -438,6 +445,39 @@ async def deactivate_trainer(name: str, user=Depends(require_roles("engineer", "
     for dep in active_deps:
         await dep.set({"status": "archived", "is_default": False, "updated_at": now})
     return {"deactivated": True, "deployments_archived": len(active_deps)}
+
+
+class _TrainerFlagsRequest(BaseModel):
+    trainer_visible: Optional[bool] = None
+    trainer_source_downloadable: Optional[bool] = None
+    trainer_model_visible: Optional[bool] = None
+    trainer_model_downloadable: Optional[bool] = None
+
+
+@router.patch("/{name}/flags")
+async def update_trainer_flags(
+    name: str,
+    payload: _TrainerFlagsRequest,
+    current_user=Depends(get_current_user),
+) -> dict:
+    """Update visibility/downloadability flags for a trainer owned by this org."""
+    reg = await TrainerRegistration.find_one(
+        TrainerRegistration.name == name,
+        TrainerRegistration.org_id == current_user.org_id,
+    )
+    if not reg:
+        raise HTTPException(status_code=404, detail="Trainer not found")
+    updates: dict = {"updated_at": utc_now()}
+    if payload.trainer_visible is not None:
+        updates["trainer_visible"] = payload.trainer_visible
+    if payload.trainer_source_downloadable is not None:
+        updates["trainer_source_downloadable"] = payload.trainer_source_downloadable
+    if payload.trainer_model_visible is not None:
+        updates["trainer_model_visible"] = payload.trainer_model_visible
+    if payload.trainer_model_downloadable is not None:
+        updates["trainer_model_downloadable"] = payload.trainer_model_downloadable
+    await reg.set(updates)
+    return {"ok": True, "name": name, **{k: v for k, v in updates.items() if k != "updated_at"}}
 
 
 # ── Serialisation helper ────────────────────────────────────────────────────

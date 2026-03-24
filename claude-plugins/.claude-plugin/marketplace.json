@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "mldock-local",
+  "description": "Local MLDock plugins for the MLDock ML training platform",
+  "owner": {
+    "name": "Nexidra",
+    "email": "admin@nexidra.com"
+  },
+  "plugins": [
+    {
+      "name": "mldock",
+      "description": "Build, generate, and upload ML trainers to MLDock from Claude Code.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Nexidra",
+        "email": "admin@nexidra.com"
+      },
+      "source": "./mldock",
+      "category": "development"
+    }
+  ]
+}

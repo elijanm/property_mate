@@ -64,4 +64,13 @@ export const authApi = {
 
   ignoreDisposableEmail: () =>
     client.post<{ ok: boolean }>('/auth/me/email/ignore').then(r => r.data),
+
+  oauthUrl: (provider: 'google' | 'github', redirectUri: string) =>
+    client.get<{ url: string; state: string }>(`/auth/oauth/${provider}/url`, { params: { redirect_uri: redirectUri } }).then(r => r.data),
+
+  oauthExchange: (provider: 'google' | 'github', code: string, redirectUri: string) =>
+    client.post<LoginResponse>(`/auth/oauth/${provider}/exchange`, { code, redirect_uri: redirectUri }).then(r => r.data),
+
+  confirmCliSession: (deviceCode: string) =>
+    client.post<{ ok: boolean; message: string }>(`/auth/cli-session/confirm/${deviceCode}`).then(r => r.data),
 }
