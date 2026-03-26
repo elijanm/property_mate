@@ -376,7 +376,7 @@ async def create_github_repo(body: CreateRepoRequest, user=Depends(require_roles
                     "auto_init": body.auto_init,
                 },
                 headers={
-                    "Authorization": f"Bearer {user.github_access_token}",
+                    "Authorization": f"token {user.github_access_token}",
                     "Accept": "application/vnd.github+json",
                 },
             )

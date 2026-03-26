@@ -606,9 +606,12 @@ async def oauth_exchange(provider: str, body: OAuthExchangeRequest):
                     gh_error = token_data.get("error_description") or token_data.get("error") or "GitHub did not return an access token"
                     raise HTTPException(status_code=400, detail=gh_error)
 
+                # GitHub OAuth tokens use "token <tok>" not "Bearer <tok>"
+                # ("Bearer" is for GitHub Apps / JWTs and returns 401 for OAuth App tokens)
+                gh_auth_header = f"token {access_token}"
                 user_resp = await client.get(
                     "https://api.github.com/user",
-                    headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"},
+                    headers={"Authorization": gh_auth_header, "Accept": "application/vnd.github+json"},
                 )
                 user_resp.raise_for_status()
                 gh_user = user_resp.json()
@@ -617,7 +620,7 @@ async def oauth_exchange(provider: str, body: OAuthExchangeRequest):
                 email = gh_user.get("email") or ""
                 emails_resp = await client.get(
                     "https://api.github.com/user/emails",
-                    headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"},
+                    headers={"Authorization": gh_auth_header, "Accept": "application/vnd.github+json"},
                 )
                 if emails_resp.status_code == 200:
                     all_emails = emails_resp.json()
@@ -836,7 +839,7 @@ async def list_github_repos(
                     "affiliation": "owner,collaborator",
                 },
                 headers={
-                    "Authorization": f"Bearer {user.github_access_token}",
+                    "Authorization": f"token {user.github_access_token}",
                     "Accept": "application/vnd.github+json",
                 },
             )
