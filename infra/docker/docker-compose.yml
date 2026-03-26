@@ -449,7 +449,8 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8030/health"]
       interval: 15s
       timeout: 5s
-      retries: 3
+      retries: 5
+      start_period: 60s
 
   ml-worker:
     build:
