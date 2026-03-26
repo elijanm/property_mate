@@ -33,10 +33,20 @@ RUN pip install --no-cache-dir \
     torchvision==0.20.1+cu124 \
     --index-url https://download.pytorch.org/whl/cu124
 
-# Install the rest of the ML dependencies (torch/torchvision will be skipped — already installed)
+# Install the rest of the ML dependencies (torch/torchvision already installed above)
+# - Strip torch/torchvision lines so pip doesn't downgrade them to CPU builds
+# - Pass the PyTorch CUDA index so any torch-dependent package (ultralytics, open-clip-torch, etc.)
+#   resolves against the CUDA wheel instead of pulling a CPU build from PyPI
+# - prophet is excluded: it requires pystan C++ compilation and is not needed in the sandbox runner;
+#   trainers that use prophet should declare it in their own requirements
 COPY requirements.txt .
-RUN grep -v "^torch==" requirements.txt | grep -v "^torchvision==" > /tmp/requirements_no_torch.txt \
-    && pip install --no-cache-dir -r /tmp/requirements_no_torch.txt
+RUN grep -v "^torch==" requirements.txt \
+    | grep -v "^torchvision==" \
+    | grep -v "^prophet" \
+    > /tmp/requirements_no_torch.txt \
+    && pip install --no-cache-dir \
+       --extra-index-url https://download.pytorch.org/whl/cu124 \
+       -r /tmp/requirements_no_torch.txt
 
 # Install redis client for tier_runner pub/sub
 RUN pip install --no-cache-dir "redis[asyncio]>=5.0"
