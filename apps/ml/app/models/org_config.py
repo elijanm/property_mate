@@ -14,6 +14,7 @@ class OrgConfig(Document):
     org_name: str = ""         # e.g. "Mike_org"
     display_name: str = ""     # friendly display name (same as org_name initially)
     org_type: str = "individual"  # individual | team | enterprise
+    account_type_confirmed: bool = False   # True once user explicitly picks a type in setup wizard
     previous_slugs: List[str] = Field(default_factory=list)  # old slugs kept as backward-compat aliases
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

@@ -7,6 +7,8 @@ interface User {
   role: string
   org_id: string
   is_onboarded: boolean
+  avatar_url?: string
+  github_connected?: boolean
 }
 
 interface AuthCtx {

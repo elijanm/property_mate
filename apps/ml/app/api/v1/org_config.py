@@ -22,13 +22,19 @@ class OrgConfigResponse(BaseModel):
     org_name: str
     display_name: str
     org_type: str
+    account_type_confirmed: bool = False
     previous_slugs: List[str] = Field(default_factory=list)
+
+
+_VALID_ORG_TYPES = {"individual", "team", "enterprise"}
 
 
 class OrgConfigUpdateRequest(BaseModel):
     slug: Optional[str] = None
     display_name: Optional[str] = None
     org_name: Optional[str] = None
+    org_type: Optional[str] = None
+    account_type_confirmed: Optional[bool] = None
 
 
 async def _get_or_create(org_id: str, display_name: str = "") -> OrgConfig:
@@ -63,6 +69,7 @@ def _to_response(cfg: OrgConfig) -> OrgConfigResponse:
         org_name=cfg.org_name or cfg.display_name,
         display_name=cfg.display_name,
         org_type=cfg.org_type if hasattr(cfg, "org_type") else "individual",
+        account_type_confirmed=getattr(cfg, "account_type_confirmed", False) or False,
         previous_slugs=cfg.previous_slugs or [],
     )
 
@@ -137,6 +144,14 @@ async def update_org_config(
 
     if body.display_name is not None:
         cfg.display_name = body.display_name.strip()
+
+    if body.org_type is not None:
+        if body.org_type not in _VALID_ORG_TYPES:
+            raise HTTPException(status_code=400, detail=f"org_type must be one of: {', '.join(sorted(_VALID_ORG_TYPES))}")
+        cfg.org_type = body.org_type
+
+    if body.account_type_confirmed is not None:
+        cfg.account_type_confirmed = body.account_type_confirmed
 
     cfg.updated_at = utc_now()
     await cfg.save()

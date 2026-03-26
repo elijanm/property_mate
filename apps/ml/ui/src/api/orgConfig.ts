@@ -6,13 +6,14 @@ export interface OrgConfig {
   org_name: string
   display_name: string
   org_type: string
+  account_type_confirmed: boolean
   previous_slugs: string[]
 }
 
 export const orgConfigApi = {
   get: () => api.get<OrgConfig>('/org/config').then(r => r.data),
 
-  update: (body: { slug?: string; org_name?: string; display_name?: string }) =>
+  update: (body: { slug?: string; org_name?: string; display_name?: string; org_type?: string; account_type_confirmed?: boolean }) =>
     api.patch<OrgConfig>('/org/config', body).then(r => r.data),
 
   checkSlug: (slug: string) =>

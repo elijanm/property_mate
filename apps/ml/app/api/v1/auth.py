@@ -125,6 +125,9 @@ async def register_with_invite(body: InviteRegisterRequest):
         body.email, body.password, body.full_name,
         role="viewer", org_id=org_id, skip_verification=True
     )
+    # Invited users join an existing org — no workspace setup needed
+    await user.set({"is_onboarded": True})
+    user.is_onboarded = True
     token = auth_service.make_access_token(user)
     return {
         "token": token,
@@ -364,6 +367,8 @@ def _user_dict(user) -> dict:
         "role": user.role,
         "org_id": user.org_id,
         "is_onboarded": user.is_onboarded,
+        "github_connected": bool(getattr(user, "github_access_token", None)),
+        "avatar_url": getattr(user, "avatar_url", None) or "",
     }
 
 
@@ -495,6 +500,11 @@ async def cli_session_confirm(device_code: str, authorization: Optional[str] = H
     return {"ok": True, "message": "CLI session authorized. You can close this tab."}
 
 
+def _is_noreply_email(email: str) -> bool:
+    """Return True for GitHub-generated no-reply addresses."""
+    return bool(email and email.endswith("@users.noreply.github.com"))
+
+
 class OAuthExchangeRequest(BaseModel):
     code: str
     redirect_uri: str
@@ -528,7 +538,7 @@ async def oauth_url(provider: str, redirect_uri: str):
         params = {
             "client_id": settings.GITHUB_CLIENT_ID,
             "redirect_uri": redirect_uri,
-            "scope": "read:user user:email",
+            "scope": "read:user user:email repo",
             "state": state,
         }
         from urllib.parse import urlencode
@@ -548,6 +558,8 @@ async def oauth_exchange(provider: str, body: OAuthExchangeRequest):
     import httpx
 
     try:
+        _github_access_token: Optional[str] = None
+        _github_avatar_url: str = ""
         if provider == "google":
             async with httpx.AsyncClient(timeout=10) as client:
                 token_resp = await client.post(
@@ -573,6 +585,7 @@ async def oauth_exchange(provider: str, body: OAuthExchangeRequest):
             oauth_id = info["id"]
             email = info.get("email", "")
             full_name = info.get("name", "")
+            _github_avatar_url = info.get("picture", "")
 
         elif provider == "github":
             async with httpx.AsyncClient(timeout=10) as client:
@@ -587,7 +600,11 @@ async def oauth_exchange(provider: str, body: OAuthExchangeRequest):
                     headers={"Accept": "application/json"},
                 )
                 token_resp.raise_for_status()
-                access_token = token_resp.json().get("access_token", "")
+                token_data = token_resp.json()
+                access_token = token_data.get("access_token", "")
+                if not access_token:
+                    gh_error = token_data.get("error_description") or token_data.get("error") or "GitHub did not return an access token"
+                    raise HTTPException(status_code=400, detail=gh_error)
 
                 user_resp = await client.get(
                     "https://api.github.com/user",
@@ -596,21 +613,41 @@ async def oauth_exchange(provider: str, body: OAuthExchangeRequest):
                 user_resp.raise_for_status()
                 gh_user = user_resp.json()
 
-                # GitHub may not expose email publicly — fetch from /user/emails
+                # GitHub may not expose email publicly — always fetch /user/emails for best result
                 email = gh_user.get("email") or ""
-                if not email:
-                    emails_resp = await client.get(
-                        "https://api.github.com/user/emails",
-                        headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"},
+                emails_resp = await client.get(
+                    "https://api.github.com/user/emails",
+                    headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"},
+                )
+                if emails_resp.status_code == 200:
+                    all_emails = emails_resp.json()
+                    real_emails = [e for e in all_emails if not _is_noreply_email(e.get("email", ""))]
+                    # Preference: real primary+verified → real verified → real primary → real any
+                    # → then fall back to noreply with same priority order
+                    email = (
+                        next((e["email"] for e in real_emails if e.get("primary") and e.get("verified")), None)
+                        or next((e["email"] for e in real_emails if e.get("verified")), None)
+                        or next((e["email"] for e in real_emails if e.get("primary")), None)
+                        or next((e["email"] for e in real_emails if e.get("email")), None)
+                        or next((e["email"] for e in all_emails if e.get("primary") and e.get("verified")), None)
+                        or next((e["email"] for e in all_emails if e.get("verified")), None)
+                        or next((e["email"] for e in all_emails if e.get("primary")), None)
+                        or next((e["email"] for e in all_emails if e.get("email")), None)
+                        or email  # keep profile email if emails list was unhelpful
                     )
-                    if emails_resp.status_code == 200:
-                        for e in emails_resp.json():
-                            if e.get("primary") and e.get("verified"):
-                                email = e["email"]
-                                break
+                # Final fallback: synthesise noreply from GitHub login
+                if not email or _is_noreply_email(email):
+                    # If we already have something, keep it — only synthesise if truly nothing
+                    if not email:
+                        login = gh_user.get("login", "")
+                        gh_id = gh_user.get("id", "")
+                        if login:
+                            email = f"{gh_id}+{login}@users.noreply.github.com"
 
             oauth_id = str(gh_user["id"])
             full_name = gh_user.get("name") or gh_user.get("login", "")
+            _github_access_token = access_token  # store for repo access
+            _github_avatar_url = gh_user.get("avatar_url", "")
 
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported provider: {provider}")
@@ -619,6 +656,38 @@ async def oauth_exchange(provider: str, body: OAuthExchangeRequest):
             raise HTTPException(status_code=400, detail="Could not retrieve email from OAuth provider")
 
         user = await auth_service.oauth_login_or_register(provider, oauth_id, email, full_name)
+
+        # Persist OAuth-sourced fields (token, avatar, real email upgrade)
+        # Use raw Motor update to avoid Beanie RevisionIdWasChanged (oauth_login_or_register
+        # already called user.set() which incremented revision_id, making our object stale).
+        updates: dict = {}
+        if _github_access_token:
+            updates["github_access_token"] = _github_access_token
+        if _github_avatar_url and not user.avatar_url:
+            updates["avatar_url"] = _github_avatar_url
+        # Upgrade noreply → real email on every login
+        if _is_noreply_email(user.email) and email and not _is_noreply_email(email):
+            updates["email"] = email
+        if updates:
+            from bson import ObjectId as _OID
+            from pymongo.errors import DuplicateKeyError as _DupKey
+            try:
+                await user.get_motor_collection().update_one(
+                    {"_id": _OID(str(user.id))},
+                    {"$set": updates},
+                )
+                if "email" in updates:
+                    user.email = email
+            except _DupKey:
+                # Real email already belongs to another account — skip email upgrade,
+                # the user will be linked properly on next login via oauth_login_or_register.
+                updates.pop("email", None)
+                if updates:
+                    await user.get_motor_collection().update_one(
+                        {"_id": _OID(str(user.id))},
+                        {"$set": updates},
+                    )
+
         return {
             "access_token": auth_service.make_access_token(user),
             "refresh_token": auth_service.make_refresh_token(user),
@@ -635,4 +704,171 @@ async def oauth_exchange(provider: str, body: OAuthExchangeRequest):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"OAuth failed: {exc}")
+        import traceback as _tb
+        detail = f"OAuth failed [{type(exc).__name__}]: {exc or '(no message)'}\n{_tb.format_exc()}"
+        raise HTTPException(status_code=400, detail=detail)
+
+
+# ── GitHub repo listing + disconnect ──────────────────────────────────────────
+
+class GitHubConnectRequest(BaseModel):
+    code: str
+    redirect_uri: str
+
+
+@router.post("/github/connect")
+async def github_connect(body: GitHubConnectRequest, authorization: Optional[str] = Header(None)):
+    """Link GitHub to an existing MLDock account (for email/password users)."""
+    from fastapi import HTTPException
+    from app.core.config import settings
+    import httpx
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = authorization.split(" ", 1)[1]
+    user = await auth_service.get_current_user(token)
+
+    if not settings.GITHUB_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            token_resp = await client.post(
+                "https://github.com/login/oauth/access_token",
+                data={
+                    "code": body.code,
+                    "client_id": settings.GITHUB_CLIENT_ID,
+                    "client_secret": settings.GITHUB_CLIENT_SECRET,
+                    "redirect_uri": body.redirect_uri,
+                },
+                headers={"Accept": "application/json"},
+            )
+            token_resp.raise_for_status()
+            github_token = token_resp.json().get("access_token", "")
+            if not github_token:
+                raise HTTPException(status_code=400, detail="GitHub did not return an access token")
+
+        await user.set({"github_access_token": github_token})
+        return {"ok": True, "github_connected": True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"GitHub connect failed: {exc}")
+
+
+@router.delete("/github/disconnect")
+async def github_disconnect(authorization: Optional[str] = Header(None)):
+    """Unlink GitHub from the current account."""
+    from fastapi import HTTPException
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = authorization.split(" ", 1)[1]
+    user = await auth_service.get_current_user(token)
+    await user.set({"github_access_token": None})
+    return {"ok": True, "github_connected": False}
+
+
+_ML_INDICATORS = {
+    "files": {
+        "requirements.txt", "setup.py", "setup.cfg", "pyproject.toml",
+        "Pipfile", "environment.yml", "conda.yml",
+        "train.py", "training.py", "model.py", "predict.py",
+        "inference.py", "evaluate.py",
+    },
+    "extensions": {".ipynb", ".pt", ".pth", ".pkl", ".h5", ".onnx", ".pb"},
+    "content_keywords": {
+        "torch", "tensorflow", "keras", "sklearn", "scikit-learn",
+        "transformers", "numpy", "pandas", "xgboost", "lightgbm",
+        "BaseTrainer", "nn.Module", "fit(", "predict(",
+    },
+}
+
+_ML_TOPICS = {
+    "machine-learning", "deep-learning", "neural-network", "pytorch", "tensorflow",
+    "scikit-learn", "computer-vision", "nlp", "natural-language-processing",
+    "data-science", "ai", "artificial-intelligence", "ml", "model-training",
+}
+
+
+def _detect_ml(repo: dict) -> bool:
+    """Heuristically detect if a GitHub repo is an ML project."""
+    # 1. Topics
+    topics = set(repo.get("topics") or [])
+    if topics & _ML_TOPICS:
+        return True
+    # 2. Language
+    lang = (repo.get("language") or "").lower()
+    if lang == "jupyter notebook":
+        return True
+    # 3. Description keywords
+    desc = (repo.get("description") or "").lower()
+    if any(kw in desc for kw in ("machine learning", "deep learning", "neural", "model", "train", "pytorch", "tensorflow")):
+        return True
+    return False
+
+
+@router.get("/github/repos")
+async def list_github_repos(
+    page: int = 1,
+    per_page: int = 30,
+    authorization: Optional[str] = Header(None),
+):
+    """List the authenticated user's GitHub repos; annotate ML projects."""
+    from fastapi import HTTPException
+    import httpx
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token_str = authorization.split(" ", 1)[1]
+    user = await auth_service.get_current_user(token_str)
+
+    if not user.github_access_token:
+        raise HTTPException(status_code=400, detail="GitHub not connected. Connect via /auth/github/connect or sign in with GitHub.")
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                "https://api.github.com/user/repos",
+                params={
+                    "sort": "updated",
+                    "per_page": per_page,
+                    "page": page,
+                    "affiliation": "owner,collaborator",
+                },
+                headers={
+                    "Authorization": f"Bearer {user.github_access_token}",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+            if resp.status_code == 401:
+                # Token revoked — clear it
+                await user.set({"github_access_token": None})
+                raise HTTPException(status_code=401, detail="GitHub token expired. Please reconnect GitHub.")
+            resp.raise_for_status()
+            repos = resp.json()
+
+        result = []
+        for r in repos:
+            result.append({
+                "id": r["id"],
+                "name": r["name"],
+                "full_name": r["full_name"],
+                "description": r.get("description") or "",
+                "html_url": r["html_url"],
+                "clone_url": r["clone_url"],
+                "ssh_url": r.get("ssh_url", ""),
+                "default_branch": r.get("default_branch", "main"),
+                "language": r.get("language") or "",
+                "topics": r.get("topics") or [],
+                "private": r.get("private", False),
+                "updated_at": r.get("updated_at") or "",
+                "stargazers_count": r.get("stargazers_count", 0),
+                "is_ml_project": _detect_ml(r),
+            })
+
+        return {"repos": result, "page": page, "per_page": per_page, "total": len(result)}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"GitHub API error: {exc}")

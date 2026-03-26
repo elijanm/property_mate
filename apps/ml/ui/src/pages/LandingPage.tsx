@@ -219,9 +219,9 @@ export default function LandingPage({ onSignIn, onGetStarted, onGoContributor, o
 
   const displayPlans = dbPlans.length > 0 ? dbPlans : FALLBACK_PLANS
   const planGridClass = displayPlans.length <= 1 ? 'max-w-sm'
-    : displayPlans.length === 2 ? 'grid-cols-2 max-w-2xl'
-    : displayPlans.length <= 3 ? 'grid-cols-3 max-w-5xl'
-    : 'grid-cols-4 max-w-6xl'
+    : displayPlans.length === 2 ? 'grid-cols-1 sm:grid-cols-2 max-w-2xl'
+    : displayPlans.length <= 3 ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 max-w-5xl'
+    : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 max-w-6xl'
 
   const Check = ({ ok }: { ok: boolean }) => ok
     ? <CheckCircle2 size={15} className="text-emerald-400 flex-shrink-0" />
@@ -565,7 +565,7 @@ export default function LandingPage({ onSignIn, onGetStarted, onGoContributor, o
             </p>
 
             {/* On-demand / Monthly toggle */}
-            <div className="inline-flex rounded-xl border border-gray-800 overflow-hidden text-sm font-medium">
+            <div className="inline-flex rounded-xl border border-gray-800 overflow-hidden text-sm font-medium max-w-full">
               <button
                 onClick={() => setBillingMode('monthly')}
                 className={clsx('px-5 py-2 transition-colors',
@@ -647,7 +647,7 @@ export default function LandingPage({ onSignIn, onGetStarted, onGoContributor, o
           ) : (
             /* ── Monthly plan cards (live from DB) ── */
             <div>
-              <div className={clsx('grid gap-5 mx-auto', planGridClass)}>
+              <div className={clsx('grid gap-6 mx-auto', planGridClass)}>
                 {displayPlans.map((plan, idx) => {
                   const isFree = plan.price_usd_per_month === 0
                   // highlight the first paid plan
@@ -658,7 +658,7 @@ export default function LandingPage({ onSignIn, onGetStarted, onGoContributor, o
                   return (
                     <div key={plan.id ?? plan.name} className={clsx(
                       'rounded-2xl border p-6 flex flex-col relative',
-                      isHighlight ? 'border-sky-500/60 bg-sky-950/25 ring-1 ring-sky-500/20' : 'border-white/6 bg-gray-900/40',
+                      isHighlight ? 'border-sky-500/60 bg-sky-950/25 ring-1 ring-sky-500/20 mt-3 sm:mt-0' : 'border-white/6 bg-gray-900/40',
                     )}>
                       {isHighlight && (
                         <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-sky-600 text-white text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-widest">

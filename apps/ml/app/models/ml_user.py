@@ -34,9 +34,12 @@ class MLUser(Document):
     disposable_email_attempts: int = 0
     # Coupon
     pending_coupon_code: Optional[str] = None  # set at registration, cleared after redemption
+    # Profile
+    avatar_url: Optional[str] = None       # profile picture URL (from OAuth provider)
     # OAuth / social login
     oauth_provider: Optional[str] = None   # "google" | "github" | None
     oauth_id: Optional[str] = None         # provider's user ID (stable)
+    github_access_token: Optional[str] = None  # stored GitHub OAuth token for repo access
 
     class Settings:
         name = "ml_users"

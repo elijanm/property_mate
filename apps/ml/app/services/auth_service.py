@@ -493,6 +493,13 @@ async def ensure_admin_exists():
             {"is_verified": {"$in": [None, False]}, "verification_token": None},
             {"$set": {"is_verified": True}},
         )
+        # Viewers are invited members — they join an existing org and have no workspace
+        # to configure, so mark any existing unboarded viewers as onboarded so they
+        # are not shown the workspace-setup screen (which would 403 on PATCH /org/config).
+        await db["ml_users"].update_many(
+            {"role": "viewer", "is_onboarded": {"$in": [None, False]}},
+            {"$set": {"is_onboarded": True}},
+        )
 
 
 async def ensure_sample_model_deployed():
@@ -527,6 +534,10 @@ async def ensure_sample_model_deployed():
         logger.warning("ml_sample_model_preinstall_failed", error=str(exc))
 
 
+def _is_noreply_email(email: str) -> bool:
+    return bool(email and email.endswith("@users.noreply.github.com"))
+
+
 async def oauth_login_or_register(
     provider: str,
     oauth_id: str,
@@ -534,22 +545,53 @@ async def oauth_login_or_register(
     full_name: str = "",
 ) -> MLUser:
     """Find or create a user via OAuth. Verified by default; no password required."""
-    # 1. Find by (provider, oauth_id) — most reliable link
-    user = await MLUser.find_one({"oauth_provider": provider, "oauth_id": oauth_id})
-    if user:
-        await user.set({"last_login_at": utc_now()})
-        return user
+    from bson import ObjectId as _OID
 
-    # 2. Find by email — link OAuth to existing email/password account
-    user = await MLUser.find_one(MLUser.email == email)
-    if user:
-        await user.set({
-            "oauth_provider": provider,
-            "oauth_id": oauth_id,
-            "is_verified": True,
-            "last_login_at": utc_now(),
-        })
-        return user
+    # 1. If we have a real (non-noreply) email, check by email first.
+    #    This ensures an existing email/password account is found and linked
+    #    before we fall through to the oauth_id lookup which may return a
+    #    stale noreply-email account from a previous GitHub login.
+    real_email = email and not _is_noreply_email(email)
+    email_account: MLUser | None = None
+    if real_email:
+        email_account = await MLUser.find_one(MLUser.email == email)
+
+    if email_account:
+        # Link this OAuth provider to the existing real account (raw update to avoid revision clash)
+        await MLUser.get_motor_collection().update_one(
+            {"_id": _OID(str(email_account.id))},
+            {"$set": {
+                "oauth_provider": provider,
+                "oauth_id": oauth_id,
+                "is_verified": True,
+                "last_login_at": utc_now(),
+            }},
+        )
+        # Deactivate any orphaned noreply account previously created for this oauth_id.
+        # We soft-deactivate (is_active=False) rather than delete to preserve any associated
+        # data (jobs, wallet, datasets). The oauth_id is also cleared so it cannot be
+        # matched again, and a merge_note records why the account was deactivated.
+        noreply_account = await MLUser.find_one({"oauth_provider": provider, "oauth_id": oauth_id, "email": {"$ne": email}})
+        if noreply_account and _is_noreply_email(noreply_account.email):
+            await MLUser.get_motor_collection().update_one(
+                {"_id": _OID(str(noreply_account.id))},
+                {"$set": {
+                    "is_active": False,
+                    "oauth_id": None,
+                    "github_access_token": None,
+                }},
+            )
+            logger.info("ml_user_noreply_deactivated", noreply=noreply_account.email, merged_into=email)
+        return email_account
+
+    # 2. Find by (provider, oauth_id) — covers returning GitHub/Google users
+    oauth_account = await MLUser.find_one({"oauth_provider": provider, "oauth_id": oauth_id})
+    if oauth_account:
+        await MLUser.get_motor_collection().update_one(
+            {"_id": _OID(str(oauth_account.id))},
+            {"$set": {"last_login_at": utc_now()}},
+        )
+        return oauth_account
 
     # 3. New user — create account (no password, pre-verified)
     org_id = str(uuid.uuid4())

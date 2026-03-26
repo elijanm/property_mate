@@ -568,3 +568,149 @@ PMS ML Studio has no per-second billing built in today — the wallet/credit sys
 ---
 
 *For plugin development documentation see `docs/plugin-guide.html`. For architecture details see `docs/medium-article.md`.*
+
+---
+
+## 13. OAuth Configuration (Google & GitHub)
+
+ML Studio supports social login via Google and GitHub. Users can sign in with either provider — accounts are automatically merged when a social login shares the same verified email as an existing email/password account.
+
+### 13.1 Environment Variables
+
+Add these to your `.env` (backend) before starting the service:
+
+| Variable | Required | Description |
+|---|---|---|
+| `GOOGLE_CLIENT_ID` | For Google login | OAuth 2.0 client ID from Google Cloud Console |
+| `GOOGLE_CLIENT_SECRET` | For Google login | OAuth 2.0 client secret from Google Cloud Console |
+| `GITHUB_CLIENT_ID` | For GitHub login | OAuth App client ID from GitHub |
+| `GITHUB_CLIENT_SECRET` | For GitHub login | OAuth App client secret from GitHub |
+
+---
+
+### 13.2 Google OAuth Setup
+
+#### Step 1 — Create a project in Google Cloud Console
+
+1. Go to [https://console.cloud.google.com](https://console.cloud.google.com)
+2. Create a new project (e.g. **PMS ML Studio**)
+
+#### Step 2 — Configure the OAuth consent screen
+
+1. Navigate to **APIs & Services → OAuth consent screen**
+2. Choose **External** (allows any Google account to sign in)
+3. Fill in:
+   - **App name**: PMS ML Studio
+   - **User support email**: your admin email
+   - **Developer contact**: your admin email
+4. Click **Save and Continue** through all steps (no extra scopes needed — `openid`, `email`, `profile` are granted by default)
+5. Add test users if the app is still in **Testing** mode (only listed emails can log in while unpublished)
+
+#### Step 3 — Create OAuth credentials
+
+1. Navigate to **APIs & Services → Credentials**
+2. Click **Create Credentials → OAuth client ID**
+3. Application type: **Web application**
+4. Name: `PMS ML Studio Web`
+5. Under **Authorized redirect URIs** add:
+
+   | Environment | Redirect URI |
+   |---|---|
+   | Local dev | `http://localhost:5200/oauth/callback/google` |
+   | Production | `https://your-domain.com/oauth/callback/google` |
+
+6. Click **Create** — copy the **Client ID** and **Client Secret** into your `.env`
+
+```env
+GOOGLE_CLIENT_ID=123456789-abc.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=GOCSPX-xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+#### Publishing the app (production)
+
+While in **Testing** mode only whitelisted test users can log in. To open login to all users:
+
+1. Go to **OAuth consent screen**
+2. Click **Publish App** → **Confirm**
+3. Google may show a "This app isn't verified" warning to users until you complete Google's verification (optional for internal tools)
+
+---
+
+### 13.3 GitHub OAuth Setup
+
+#### Step 1 — Create a GitHub OAuth App
+
+1. Go to your GitHub account → **Settings → Developer settings → OAuth Apps**
+2. Click **New OAuth App**
+3. Fill in:
+   - **Application name**: PMS ML Studio
+   - **Homepage URL**: `http://localhost:5200` (or your production URL)
+   - **Authorization callback URL**: `http://localhost:5200/oauth/callback/github`
+4. Click **Register application**
+5. Copy the **Client ID**
+6. Click **Generate a new client secret** — copy the secret
+
+```env
+GITHUB_CLIENT_ID=Iv1.xxxxxxxxxxxxxxxx
+GITHUB_CLIENT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+> **Note:** The Client ID for GitHub OAuth Apps starts with `Iv1.` and is ~20 characters. If yours looks like a short number (e.g. `3178555`) it is not a valid OAuth App client ID — recreate the app.
+
+#### Step 2 — Update callback URL for production
+
+In your GitHub OAuth App settings update **Authorization callback URL** to your production URL:
+```
+https://your-domain.com/oauth/callback/github
+```
+
+You can only have one callback URL per GitHub OAuth App. For multiple environments (dev + staging + prod) create separate OAuth Apps.
+
+#### GitHub permissions granted
+
+The platform requests the following GitHub scopes:
+
+| Scope | Purpose |
+|---|---|
+| `read:user` | Read name, username, avatar |
+| `user:email` | Read verified email addresses |
+| `repo` | Clone private repos to user workspace, push commits from code editor |
+
+---
+
+### 13.4 Callback URL Reference
+
+| Provider | Environment | Callback URL |
+|---|---|---|
+| Google | Local dev | `http://localhost:5200/oauth/callback/google` |
+| Google | Production | `https://your-domain.com/oauth/callback/google` |
+| GitHub | Local dev | `http://localhost:5200/oauth/callback/github` |
+| GitHub | Production | `https://your-domain.com/oauth/callback/github` |
+
+> The frontend runs on port **5200** in development. If you change `VITE_PORT` update the callback URLs in both provider consoles.
+
+---
+
+### 13.5 Account Merging Behaviour
+
+When a user signs in via OAuth, the platform resolves accounts in this order:
+
+1. **Real email match** — if the OAuth provider returns a verified non-noreply email that matches an existing account, that account is claimed and the OAuth credentials are attached to it. The user's password login continues to work alongside OAuth.
+2. **OAuth ID match** — if no email match, the platform looks up by `(provider, oauth_id)` — returning user recognised by a previous OAuth login.
+3. **New account** — if neither matches, a new account is created.
+
+**GitHub noreply emails** (`12345+username@users.noreply.github.com`) are treated as no-email. The platform fetches the user's verified emails via the GitHub API and uses the primary verified email instead. If the user has no public email at all, the noreply address is used as a last resort.
+
+**Orphaned noreply accounts**: if an earlier login created an account under a noreply address and a subsequent login finds the same user's real email on an existing account, the noreply account is soft-deactivated (`is_active=false`) — it is not deleted and its data is preserved.
+
+---
+
+### 13.6 Production Checklist
+
+- [ ] `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` set in production environment
+- [ ] `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` set in production environment
+- [ ] Google OAuth consent screen published (not in Testing mode)
+- [ ] Production callback URLs added to both Google Cloud Console and GitHub OAuth App
+- [ ] `https://` used for all production callback URLs (Google requires HTTPS in production)
+- [ ] GitHub OAuth App has a separate entry for each environment (dev, staging, prod) if needed
+- [ ] `APP_BASE_URL` environment variable set to production domain (used in email links)

@@ -7,7 +7,7 @@ import {
   Trash2, Save, AlertCircle, Loader2, PackageCheck,
   Terminal, Cpu, Wallet, Clock, Sparkles,
   ArrowLeft, Send, Paperclip, Wand2, CheckCircle2, BarChart2,
-  MessageSquare, ShieldAlert, RotateCcw, AlertTriangle, XCircle, Copy, Globe,
+  MessageSquare, ShieldAlert, RotateCcw, AlertTriangle, XCircle, Copy, Globe, Github, GitBranch,
 } from 'lucide-react'
 import { editorApi, type FileNode, type EditorDataset } from '@/api/editor'
 import { configApi } from '@/api/config'
@@ -21,6 +21,9 @@ import type { DatasetProfile } from '@/types/dataset'
 import type { TrainerSubmission } from '@/types/trainerSubmission'
 import DatasetUploadModal from '@/components/DatasetUploadModal'
 import TrainerAnomalyModal from '@/components/TrainerAnomalyModal'
+import GitHubReposModal from '@/components/GitHubReposModal'
+import GitPanel from '@/components/GitPanel'
+import { gitApi } from '@/api/git'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -2310,7 +2313,9 @@ export default function CodeEditorPage() {
   const [rejectionModalSub, setRejectionModalSub] = useState<TrainerSubmission | null>(null)
 
   // Sidebar: files | pending | library
-  const [sidebarView, setSidebarView] = useState<'files' | 'pending' | 'library'>('files')
+  const [sidebarView, setSidebarView] = useState<'files' | 'pending' | 'library' | 'git'>('files')
+  const [showGitHubModal, setShowGitHubModal] = useState(false)
+  const [gitProject, setGitProject] = useState<string>('')  // active project for git panel
   const [pendingSubmissions, setPendingSubmissions] = useState<TrainerSubmission[]>([])
   const [pendingRegistrations, setPendingRegistrations] = useState<import('@/types/trainer').TrainerRegistration[]>([])
   const [pendingLoading, setPendingLoading] = useState(false)
@@ -3604,6 +3609,17 @@ export default function CodeEditorPage() {
                 </span>
               )}
             </button>
+            <button
+              onClick={() => setSidebarView('git')}
+              className={clsx(
+                'flex-1 flex items-center justify-center gap-1 py-2 text-[10px] font-medium transition-colors',
+                sidebarView === 'git'
+                  ? 'text-green-400 border-b-2 border-green-500 -mb-px'
+                  : 'text-gray-500 hover:text-gray-300'
+              )}
+            >
+              <GitBranch size={10} /> Git
+            </button>
           </div>
 
           {sidebarView === 'files' ? (
@@ -3884,6 +3900,52 @@ export default function CodeEditorPage() {
                   })()}
                 </div>
               )}
+            </div>
+          ) : sidebarView === 'git' ? (
+            <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+              {/* Git header */}
+              <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800 flex-shrink-0">
+                <span className="text-[10px] text-gray-500 uppercase tracking-widest font-semibold">Git</span>
+                <button
+                  onClick={() => setShowGitHubModal(true)}
+                  className="flex items-center gap-1 px-2 py-1 text-[10px] bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors"
+                  title="Import from GitHub"
+                >
+                  <Github size={10} />
+                  Import
+                </button>
+              </div>
+
+              {/* Project selector */}
+              <div className="px-3 py-2 border-b border-gray-800 flex-shrink-0">
+                <select
+                  value={gitProject}
+                  onChange={e => setGitProject(e.target.value)}
+                  className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded-lg text-[11px] text-white focus:outline-none focus:border-gray-500"
+                >
+                  <option value="">— select project —</option>
+                  {/* derive project list from file tree: any top-level dir */}
+                  {tree.filter(n => n.type === 'dir').map(n => (
+                    <option key={n.name} value={n.name}>{n.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Git panel */}
+              <div className="flex-1 overflow-y-auto">
+                {gitProject ? (
+                  <GitPanel
+                    projectName={gitProject}
+                    onInitRepo={async () => {
+                      try {
+                        await gitApi.init(gitProject)
+                      } catch { /* ignore */ }
+                    }}
+                  />
+                ) : (
+                  <p className="px-3 py-6 text-xs text-gray-600 text-center">Select a project above to see git status.</p>
+                )}
+              </div>
             </div>
           ) : null}
         </aside>
@@ -4299,6 +4361,19 @@ export default function CodeEditorPage() {
             setShowUploadModal(false)
             // Offer to re-run after upload
             setTimeout(() => handleRun(), 300)
+          }}
+        />
+      )}
+
+      {/* GitHub Repos import modal */}
+      {showGitHubModal && (
+        <GitHubReposModal
+          onClose={() => setShowGitHubModal(false)}
+          onCloned={(projectName, _projectPath, _isMl) => {
+            setShowGitHubModal(false)
+            setGitProject(projectName)
+            setSidebarView('git')
+            loadTree()
           }}
         />
       )}

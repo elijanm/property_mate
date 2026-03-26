@@ -330,6 +330,23 @@ export default function ProfilePage() {
 
   return (
     <div className="max-w-2xl space-y-4">
+      {/* ── User header ───────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-4 bg-gray-900 border border-gray-800 rounded-xl p-4">
+        <div className="w-14 h-14 rounded-full bg-brand-800 flex items-center justify-center flex-shrink-0 overflow-hidden ring-2 ring-gray-700">
+          {user.avatar_url
+            ? <img src={user.avatar_url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+            : <User size={22} className="text-brand-300" />
+          }
+        </div>
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-white truncate">{user.full_name || user.email}</div>
+          <div className="text-xs text-gray-500 truncate">{user.email}</div>
+          <div className={clsx('inline-flex items-center gap-1 mt-1 text-[11px] px-2 py-0.5 rounded-full border', roleMeta.color)}>
+            {roleMeta.icon}{roleMeta.label}
+          </div>
+        </div>
+      </div>
+
       {/* ── Tab bar ──────────────────────────────────────────────────────── */}
       <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-xl p-1">
         {visibleTabs.map(t => (

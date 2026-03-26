@@ -368,8 +368,8 @@ export default function App() {
   // CLI device login — /cli-login?code=<device_code>
   if (_CLI_LOGIN_CODE) return <CLILoginPage deviceCode={_CLI_LOGIN_CODE} />
 
-  // OAuth callback — /oauth/callback/google or /oauth/callback/github
-  const oauthCallbackMatch = window.location.pathname.match(/\/oauth\/callback\/(google|github)/)
+  // OAuth callback — /oauth/callback/google or /oauth/callback/github (exact match, not github-connect)
+  const oauthCallbackMatch = window.location.pathname.match(/\/oauth\/callback\/(google|github)$/)
   if (oauthCallbackMatch) {
     return <OAuthCallbackPage provider={oauthCallbackMatch[1] as 'google' | 'github'} />
   }
@@ -531,8 +531,9 @@ export default function App() {
     )
   }
 
-  // First-login workspace setup — shown once until user completes or skips
-  if (!user.is_onboarded) {
+  // First-login workspace setup — shown once until user completes or skips.
+  // Viewers are invited into an existing org and cannot modify org config — skip for them.
+  if (!user.is_onboarded && user.role !== 'viewer') {
     return (
       <OrgConfigProvider>
         <WorkspaceSetupPage onComplete={() => setOnboarded()} />
@@ -713,12 +714,15 @@ export default function App() {
           )}
           {/* User info */}
           <div className="flex items-center gap-2 mb-2">
-            <div className="w-6 h-6 rounded-full bg-brand-700 flex items-center justify-center flex-shrink-0">
-              <User size={11} className="text-white" />
+            <div className="w-6 h-6 rounded-full bg-brand-700 flex items-center justify-center flex-shrink-0 overflow-hidden">
+              {user.avatar_url
+                ? <img src={user.avatar_url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                : <User size={11} className="text-white" />
+              }
             </div>
             <div className="flex-1 min-w-0">
-              <div className="text-[11px] text-gray-300 truncate">{user.email}</div>
-              <div className="text-[10px] text-gray-600 capitalize">{user.role}</div>
+              <div className="text-[11px] text-gray-300 truncate">{user.full_name || user.email}</div>
+              <div className="text-[10px] text-gray-600 truncate">{user.email}</div>
             </div>
             <button onClick={logoutEngineer} title="Sign out" className="text-gray-600 hover:text-red-400 transition-colors">
               <LogOut size={12} />
