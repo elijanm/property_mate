@@ -1,7 +1,7 @@
 # GPU Sandbox tier runner image.
 # Used by sandbox-test-gpu and sandbox-prod-gpu services.
 # CUDA 12.4 + cuDNN 9 on Ubuntu 22.04 — matches torch 2.5.1+cu124.
-FROM nvidia/cuda:12.4.1-cudnn9-runtime-ubuntu22.04
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
