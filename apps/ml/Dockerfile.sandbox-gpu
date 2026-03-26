@@ -16,8 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update && apt-get install -y --no-install-recommends \
     python3.12 \
     python3.12-dev \
-    python3.12-distutils \
-    python3-pip \
+    python3.12-venv \
     build-essential \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
     curl \
