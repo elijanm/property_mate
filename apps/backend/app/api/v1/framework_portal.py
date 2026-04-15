@@ -68,6 +68,7 @@ def _vendor_resp(v: FrameworkInvitedVendor) -> dict:
         "regions": v.regions,
         "site_codes": v.site_codes,
         "status": v.status,
+        "home_address": v.home_address,
         "has_selfie": bool(v.selfie_key),
         "has_id_front": bool(v.id_front_key),
         "has_id_back": bool(v.id_back_key),
@@ -94,6 +95,7 @@ class InviteInfoResponse(BaseModel):
     org_name: str
     status: str
     is_activated: bool
+    available_sites: List[dict] = []
 
 
 @public_router.get("/invite/{token}", response_model=InviteInfoResponse)
@@ -112,6 +114,7 @@ async def get_invite_info(token: str) -> InviteInfoResponse:
     from app.models.org import Org
     org = await Org.find_one(Org.org_id == vendor.org_id)
 
+    sites = fw.sites if fw and fw.sites else []
     return InviteInfoResponse(
         id=str(vendor.id),
         name=vendor.name,
@@ -123,6 +126,7 @@ async def get_invite_info(token: str) -> InviteInfoResponse:
         org_name=(org.business.name if org and org.business else "PMS"),
         status=vendor.status,
         is_activated=vendor.user_id is not None,
+        available_sites=[{"site_code": s.site_code, "site_name": s.site_name, "region": s.region} for s in sites],
     )
 
 
@@ -131,6 +135,7 @@ class ActivatePayload(BaseModel):
     mobile: str
     site_codes: List[str] = []
     specialization: Optional[str] = None
+    home_address: Optional[str] = None
     gps_lat: Optional[float] = None
     gps_lng: Optional[float] = None
 
@@ -162,6 +167,8 @@ async def activate_invite(token: str, payload: ActivatePayload) -> ActivateRespo
     vendor.site_codes = payload.site_codes
     if payload.specialization:
         vendor.specialization = payload.specialization
+    if payload.home_address:
+        vendor.home_address = payload.home_address
     if payload.gps_lat is not None:
         vendor.gps_lat = payload.gps_lat
     if payload.gps_lng is not None:
@@ -329,6 +336,69 @@ async def verify_portal_otp(payload: VerifyOtpPayload) -> PortalLoginResponse:
 _ALLOWED_PHOTO_TYPES = ("selfie", "id_front", "id_back")
 _ALLOWED_DOC_TYPES = ("cv", "certificate")
 
+@public_router.get("/verify/{vendor_id}")
+async def verify_badge(vendor_id: str) -> dict:
+    """
+    Public endpoint scanned from the QR code on the contractor badge.
+    Returns identity info + active work orders for verification.
+    """
+    from beanie import PydanticObjectId as _OID
+    try:
+        oid = _OID(vendor_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Invalid badge ID")
+
+    vendor = await FrameworkInvitedVendor.find_one(
+        FrameworkInvitedVendor.id == oid,
+        FrameworkInvitedVendor.deleted_at == None,
+    )
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Badge not found")
+
+    fw = await FrameworkContract.find_one(
+        FrameworkContract.id == _OID(vendor.framework_id),
+    )
+    from app.models.org import Org
+    org = await Org.find_one(Org.org_id == vendor.org_id)
+    org_name = org.business.name if org and org.business else "PMS"
+
+    # Active work orders assigned to this vendor
+    active_wos = await WorkOrder.find(
+        WorkOrder.org_id == vendor.org_id,
+        WorkOrder.assigned_vendor_id == str(vendor.id),
+        {"status": {"$in": ["assigned", "en_route", "in_progress"]}},
+        WorkOrder.deleted_at == None,
+    ).to_list()
+
+    selfie_url = await _s3_presign(vendor.selfie_key) if vendor.selfie_key else None
+
+    return {
+        "valid": vendor.status == "active",
+        "status": vendor.status,
+        "vendor_id": str(vendor.id),
+        "name": vendor.contact_name,
+        "company": vendor.name,
+        "specialization": vendor.specialization or "General Services",
+        "site_codes": vendor.site_codes,
+        "badge_no": f"SP-{str(vendor.id)[-8:].upper()}",
+        "org_name": org_name,
+        "framework_name": fw.name if fw else "",
+        "contract_end": fw.contract_end if fw else "",
+        "selfie_url": selfie_url,
+        "active_work_orders": [
+            {
+                "id": str(wo.id),
+                "work_order_number": wo.work_order_number,
+                "title": wo.title,
+                "status": wo.status,
+                "planned_date": wo.planned_date,
+                "sites": [s.site_code for s in (wo.route_stops or [])],
+            }
+            for wo in active_wos
+        ],
+    }
+
+
 @public_router.post("/invite/{token}/upload/{file_type}")
 async def upload_kyc_file(
     token: str,
@@ -386,7 +456,7 @@ async def _download_s3_bytes(key: Optional[str]) -> Optional[bytes]:
 
 
 async def _generate_and_store_badge(vendor: FrameworkInvitedVendor) -> None:
-    """Generate a contractor badge PDF and store it in S3."""
+    """Generate a contractor badge PDF (front + back) and store it in S3."""
     try:
         from beanie import PydanticObjectId as _OID
         fw = await FrameworkContract.find_one(
@@ -394,12 +464,27 @@ async def _generate_and_store_badge(vendor: FrameworkInvitedVendor) -> None:
         )
         from app.models.org import Org
         org = await Org.find_one(Org.org_id == vendor.org_id)
-        org_name = (org.business.name if org and org.business else "PMS")
+        org_name    = (org.business.name    if org and org.business else "PMS")
+        org_address = (org.business.address if org and org.business else None)
+        org_phone   = (org.business.phone   if org and org.business else None)
+        org_email   = (org.business.email   if org and org.business else None)
+        org_logo_url = (org.business.logo_url if org and org.business else None)
 
-        # Download selfie photo to embed in badge
+        # Download selfie and org logo to embed in badge
         selfie_bytes = await _download_s3_bytes(vendor.selfie_key)
+        org_logo_bytes: Optional[bytes] = None
+        if org_logo_url:
+            try:
+                from app.core.s3 import download_file as _dl
+                org_logo_bytes = await _dl(org_logo_url)
+            except Exception:
+                pass
 
-        pdf_bytes = _build_badge_pdf(vendor, fw, org_name, selfie_bytes=selfie_bytes)
+        pdf_bytes = _build_badge_pdf(
+            vendor, fw, org_name, selfie_bytes=selfie_bytes,
+            org_address=org_address, org_phone=org_phone, org_email=org_email,
+            org_logo_bytes=org_logo_bytes,
+        )
         key = f"{vendor.org_id}/framework-vendors/{vendor.id}/badge.pdf"
         await _s3_upload(key, pdf_bytes, "application/pdf")
         vendor.badge_key = key
@@ -414,15 +499,21 @@ def _build_badge_pdf(
     fw: Optional[FrameworkContract],
     org_name: str,
     selfie_bytes: Optional[bytes] = None,
+    org_address: Optional[str] = None,
+    org_phone: Optional[str] = None,
+    org_email: Optional[str] = None,
+    org_logo_bytes: Optional[bytes] = None,
 ) -> bytes:
     """
     Build a contractor ID badge PDF — CR80 card size (85.6 × 54 mm), print-ready.
-    Includes the vendor's selfie photo and a QR code for verification.
+    Page 1: front — photo (top-aligned), name/company/spec/contract/valid-until, QR code.
+    Page 2: back  — org contact block, permitted sites list, non-transferable notice.
     """
     try:
         from reportlab.lib.units import mm
-        from reportlab.lib.colors import HexColor, white, black
+        from reportlab.lib.colors import HexColor, white
         from reportlab.pdfgen import canvas as rl_canvas
+        from reportlab.lib.utils import ImageReader as _IR
     except ImportError:
         logger.warning("reportlab_not_installed", action="skip_badge_pdf")
         return b""
@@ -431,96 +522,114 @@ def _build_badge_pdf(
     CARD_W = 85.6 * mm
     CARD_H = 54.0 * mm
 
-    AMBER = HexColor("#D97706")
+    AMBER      = HexColor("#D97706")
     AMBER_DARK = HexColor("#92400E")
     AMBER_LIGHT = HexColor("#FFFBEB")
-    DARK = HexColor("#111827")
-    GRAY = HexColor("#6B7280")
+    DARK  = HexColor("#111827")
+    GRAY  = HexColor("#6B7280")
     WHITE = white
 
-    badge_no = f"SP-{str(vendor.id)[-8:].upper()}"
-    contract_name = fw.name if fw else "Framework Contract"
-    contract_end = fw.contract_end if fw else "N/A"
+    badge_no       = f"SP-{str(vendor.id)[-8:].upper()}"
+    contract_name  = fw.name if fw else "Framework Contract"
+    contract_end   = fw.contract_end if fw else "N/A"
     specialization = vendor.specialization or "General Services"
-    sites_text = ", ".join(vendor.site_codes[:4]) if vendor.site_codes else "All Assigned Sites"
-    if vendor.site_codes and len(vendor.site_codes) > 4:
-        sites_text += f" +{len(vendor.site_codes) - 4}"
-    issued = datetime.utcnow().strftime("%d %b %Y")
+    issued         = datetime.utcnow().strftime("%d %b %Y")
 
-    # Verification data for QR code
-    verify_payload = f"BADGE:{badge_no}|SP:{vendor.email}|ORG:{org_name}|ISSUED:{issued}"
+    # QR code
+    from app.core.config import settings
+    app_base    = getattr(settings, "app_base_url", "").rstrip("/")
+    verify_url  = f"{app_base}/framework-portal/verify/{str(vendor.id)}" if app_base else f"VERIFY:{str(vendor.id)}"
 
-    # Generate QR code as PNG bytes
     qr_img_bytes: Optional[bytes] = None
     try:
         import qrcode  # type: ignore
         qr = qrcode.QRCode(version=2, box_size=4, border=1)
-        qr.add_data(verify_payload)
+        qr.add_data(verify_url)
         qr.make(fit=True)
         qr_pil = qr.make_image(fill_color="#92400E", back_color="#FFFBEB")
         qr_buf = io.BytesIO()
         qr_pil.save(qr_buf, format="PNG")
         qr_img_bytes = qr_buf.getvalue()
     except ImportError:
-        pass  # qrcode library not available — badge renders without QR
+        pass
 
-    # ── Fixed zone heights ────────────────────────────────────────────────────
-    HEADER_H = 11 * mm   # top amber band
-    FOOTER_H = 5  * mm   # bottom amber band
-    ACCENT_W = 2  * mm   # left amber stripe
-    # Content zone: x=[ACCENT_W .. CARD_W], y=[FOOTER_H .. CARD_H-HEADER_H]
+    # ── Shared zone constants ─────────────────────────────────────────────────
+    HEADER_H = 11 * mm
+    FOOTER_H =  5 * mm
+    ACCENT_W =  2 * mm
     CONTENT_TOP    = CARD_H - HEADER_H   # 43 mm from bottom
     CONTENT_BOTTOM = FOOTER_H            #  5 mm from bottom
 
-    # ── Column geometry ───────────────────────────────────────────────────────
-    PHOTO_X = ACCENT_W + 1.5 * mm
-    PHOTO_W = 18 * mm
-    PHOTO_H = 28 * mm
-    PHOTO_Y = CONTENT_BOTTOM + 1 * mm   # sits just above footer
+    LOGO_SIZE = 7 * mm   # square logo in header
 
-    QR_SIZE = 16 * mm
-    QR_X    = CARD_W - QR_SIZE - 2 * mm
-    QR_Y    = CONTENT_BOTTOM + 1 * mm   # sits just above footer
+    def _draw_chrome(c: rl_canvas.Canvas, title_line1: str, title_line2: str) -> None:
+        """Draw header, footer, left accent stripe (shared by front and back)."""
+        c.setFillColor(WHITE)
+        c.rect(0, 0, CARD_W, CARD_H, fill=1, stroke=0)
+        c.setFillColor(AMBER)
+        c.rect(0, CARD_H - HEADER_H, CARD_W, HEADER_H, fill=1, stroke=0)
+        c.setFillColor(AMBER)
+        c.rect(0, 0, CARD_W, FOOTER_H, fill=1, stroke=0)
+        c.setFillColor(AMBER)
+        c.rect(0, FOOTER_H, ACCENT_W, CONTENT_TOP - FOOTER_H, fill=1, stroke=0)
 
-    TEXT_X  = PHOTO_X + PHOTO_W + 2.5 * mm
-    TEXT_MAX_X = QR_X - 1.5 * mm
-    TEXT_W  = TEXT_MAX_X - TEXT_X
+        # Org logo — left side of header band
+        logo_x = ACCENT_W + 1.5 * mm
+        logo_y = CARD_H - HEADER_H + (HEADER_H - LOGO_SIZE) / 2
+        if org_logo_bytes:
+            try:
+                logo_reader = _IR(io.BytesIO(org_logo_bytes))
+                c.drawImage(logo_reader, logo_x, logo_y, LOGO_SIZE, LOGO_SIZE,
+                            preserveAspectRatio=True, mask="auto")
+            except Exception:
+                _draw_logo_placeholder(c, logo_x, logo_y)
+        else:
+            _draw_logo_placeholder(c, logo_x, logo_y)
+
+        # Header text — offset right of logo
+        text_start_x = logo_x + LOGO_SIZE + 1.5 * mm
+        c.setFillColor(WHITE)
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(text_start_x, CARD_H - 5.5 * mm, title_line1[:32])
+        c.setFont("Helvetica", 4.5)
+        c.drawString(text_start_x, CARD_H - 9 * mm, title_line2)
+
+    def _draw_logo_placeholder(c: rl_canvas.Canvas, x: float, y: float) -> None:
+        """Draw a simple building icon as fallback when no logo is available."""
+        c.setFillColor(WHITE)
+        c.setFillAlpha(0.25)
+        c.rect(x, y, LOGO_SIZE, LOGO_SIZE, fill=1, stroke=0)
+        c.setFillAlpha(1.0)
+        # Simple building silhouette in white
+        bx, by = x + 1 * mm, y + 0.5 * mm
+        bw, bh = LOGO_SIZE - 2 * mm, LOGO_SIZE - 1.5 * mm
+        c.setFillColor(WHITE)
+        c.setFillAlpha(0.5)
+        c.rect(bx, by, bw, bh, fill=1, stroke=0)
+        # Windows
+        c.setFillColor(AMBER)
+        c.setFillAlpha(1.0)
+        ww = bw * 0.2
+        wh = bh * 0.18
+        for row in [0.6, 0.35]:
+            for col in [0.15, 0.45, 0.75]:
+                c.rect(bx + bw * col, by + bh * row, ww, wh, fill=1, stroke=0)
+        c.setFillAlpha(1.0)
 
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=(CARD_W, CARD_H))
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # LAYER 1: backgrounds (drawn first so content sits on top)
+    # PAGE 1 — FRONT
     # ═══════════════════════════════════════════════════════════════════════════
+    _draw_chrome(c, org_name.upper(), "AUTHORISED CONTRACTOR  ·  SERVICE PROVIDER")
 
-    # White card background
-    c.setFillColor(WHITE)
-    c.rect(0, 0, CARD_W, CARD_H, fill=1, stroke=0)
+    # ── Photo column — top-aligned within content zone ────────────────────────
+    PHOTO_X = ACCENT_W + 1.5 * mm
+    PHOTO_W = 22 * mm
+    PHOTO_H = 22 * mm
+    PHOTO_Y = CONTENT_TOP - PHOTO_H   # flush to top of content zone
 
-    # Amber header band
-    c.setFillColor(AMBER)
-    c.rect(0, CARD_H - HEADER_H, CARD_W, HEADER_H, fill=1, stroke=0)
-
-    # Amber footer band
-    c.setFillColor(AMBER)
-    c.rect(0, 0, CARD_W, FOOTER_H, fill=1, stroke=0)
-
-    # Amber left accent stripe (content zone only)
-    c.setFillColor(AMBER)
-    c.rect(0, FOOTER_H, ACCENT_W, CONTENT_TOP - FOOTER_H, fill=1, stroke=0)
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    # LAYER 2: header text
-    # ═══════════════════════════════════════════════════════════════════════════
-    c.setFillColor(WHITE)
-    c.setFont("Helvetica-Bold", 9)
-    c.drawCentredString(CARD_W / 2, CARD_H - 5 * mm, org_name.upper()[:40])
-    c.setFont("Helvetica", 5)
-    c.drawCentredString(CARD_W / 2, CARD_H - 9 * mm, "AUTHORISED CONTRACTOR  ·  SERVICE PROVIDER")
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    # LAYER 3: photo (left column)
-    # ═══════════════════════════════════════════════════════════════════════════
     c.setFillColor(AMBER_LIGHT)
     c.setStrokeColor(AMBER)
     c.setLineWidth(0.8)
@@ -528,11 +637,9 @@ def _build_badge_pdf(
 
     if selfie_bytes:
         try:
-            from reportlab.lib.utils import ImageReader as _IR
             img_reader = _IR(io.BytesIO(selfie_bytes))
             c.drawImage(img_reader, PHOTO_X, PHOTO_Y, PHOTO_W, PHOTO_H,
                         preserveAspectRatio=False, mask="auto")
-            # redraw border on top of image
             c.setStrokeColor(AMBER)
             c.setLineWidth(1.2)
             c.rect(PHOTO_X, PHOTO_Y, PHOTO_W, PHOTO_H, fill=0, stroke=1)
@@ -545,61 +652,152 @@ def _build_badge_pdf(
         c.setFont("Helvetica", 6)
         c.drawCentredString(PHOTO_X + PHOTO_W / 2, PHOTO_Y + PHOTO_H / 2 - 1 * mm, "PHOTO")
 
-    # Badge number — inside footer band under photo
+    # Badge number in footer under photo
     c.setFillColor(WHITE)
     c.setFont("Helvetica-Bold", 5)
     c.drawCentredString(PHOTO_X + PHOTO_W / 2, 1.8 * mm, badge_no)
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # LAYER 4: text fields (middle column)
-    # ═══════════════════════════════════════════════════════════════════════════
-    def draw_field(label: str, value: str, y: float, font_size: float = 7.0) -> None:
-        # label tiny gray
-        c.setFillColor(GRAY)
-        c.setFont("Helvetica", 4.5)
-        c.drawString(TEXT_X, y + font_size + 0.3, label.upper())
-        # value bold dark — truncate to fit
-        c.setFillColor(DARK)
-        c.setFont("Helvetica-Bold", font_size)
-        avg_char_w = font_size * 0.52
-        max_chars = max(1, int(TEXT_W / avg_char_w))
-        if len(value) > max_chars:
-            value = value[:max_chars - 1] + "…"
-        c.drawString(TEXT_X, y, value)
+    # ── QR column ─────────────────────────────────────────────────────────────
+    QR_SIZE = 16 * mm
+    QR_X    = CARD_W - QR_SIZE - 2 * mm
+    QR_Y    = CONTENT_BOTTOM + 1 * mm
 
-    # Fields spaced evenly from top of content to above the QR zone
-    # Content top = CONTENT_TOP = 43mm, content bottom = FOOTER_H = 5mm
-    # Available height = 38mm; 6 fields with ~6mm each
-    F_TOP = CONTENT_TOP - 3 * mm   # 40 mm
-    draw_field("Name",           vendor.contact_name,        F_TOP - 0  * mm, 8.0)
-    draw_field("Company",        vendor.name,                F_TOP - 8  * mm, 6.5)
-    draw_field("Specialization", specialization,             F_TOP - 15 * mm, 6.0)
-    draw_field("Sites Covered",  sites_text,                 F_TOP - 21 * mm, 5.5)
-    draw_field("Contract",       contract_name[:32],         F_TOP - 27 * mm, 5.5)
-    draw_field("Valid Until",    contract_end,               F_TOP - 33 * mm, 6.5)
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    # LAYER 5: QR code (right column, above footer)
-    # ═══════════════════════════════════════════════════════════════════════════
     if qr_img_bytes:
-        from reportlab.lib.utils import ImageReader as _IRqr
-        qr_reader = _IRqr(io.BytesIO(qr_img_bytes))
+        qr_reader = _IR(io.BytesIO(qr_img_bytes))
         c.drawImage(qr_reader, QR_X, QR_Y, QR_SIZE, QR_SIZE, preserveAspectRatio=True)
-        # "SCAN TO VERIFY" label inside footer band
         c.setFillColor(WHITE)
         c.setFont("Helvetica", 3.8)
         c.drawCentredString(QR_X + QR_SIZE / 2, 1.6 * mm, "SCAN TO VERIFY")
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # LAYER 6: footer text (drawn on top of footer band)
-    # ═══════════════════════════════════════════════════════════════════════════
-    # Footer text centred between badge_no area and QR label area
-    footer_text = f"Issued: {issued}  ·  This card is non-transferable"
+    # ── Text fields (middle column, top-aligned) ───────────────────────────────
+    TEXT_X     = PHOTO_X + PHOTO_W + 2 * mm
+    TEXT_MAX_X = QR_X - 1.5 * mm
+    TEXT_W     = TEXT_MAX_X - TEXT_X
+
+    def draw_field(label: str, value: str, y: float, font_size: float = 7.0) -> None:
+        c.setFillColor(GRAY)
+        c.setFont("Helvetica", 4.5)
+        c.drawString(TEXT_X, y + font_size + 0.3, label.upper())
+        c.setFillColor(DARK)
+        c.setFont("Helvetica-Bold", font_size)
+        avg_char_w = font_size * 0.52
+        max_chars = max(1, int(TEXT_W / avg_char_w))
+        v = value if len(value) <= max_chars else value[:max_chars - 1] + "…"
+        c.drawString(TEXT_X, y, v)
+
+    # Start fields below header — name label (drawn above y) must stay under CONTENT_TOP
+    # name label top = F_TOP + 8pt + 0.3pt; must be <= CONTENT_TOP → F_TOP <= CONTENT_TOP - 8.3pt
+    # Use 4*mm ≈ 11.3pt margin to ensure clearance
+    F_TOP = CONTENT_TOP - 4 * mm
+    draw_field("Name",           vendor.contact_name,  F_TOP - 0  * mm, 8.0)
+    draw_field("Company",        vendor.name,           F_TOP - 8  * mm, 6.5)
+    draw_field("Specialization", specialization,        F_TOP - 15 * mm, 6.0)
+    draw_field("Contract",       contract_name[:32],    F_TOP - 21 * mm, 5.5)
+    draw_field("Valid Until",    contract_end,          F_TOP - 27 * mm, 6.5)
+
+    # Footer centre text
+    mid_x = (PHOTO_X + PHOTO_W + QR_X) / 2
     c.setFillColor(WHITE)
     c.setFont("Helvetica", 4)
-    # Centre in the middle section (between left photo and right QR)
-    mid_x = (PHOTO_X + PHOTO_W + QR_X) / 2
-    c.drawCentredString(mid_x, 1.8 * mm, footer_text)
+    c.drawCentredString(mid_x, 1.8 * mm, f"Issued: {issued}  ·  Non-transferable")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PAGE 2 — BACK
+    # ═══════════════════════════════════════════════════════════════════════════
+    c.showPage()
+    _draw_chrome(c, org_name.upper(), "CONTRACTOR INFORMATION  ·  AUTHORISED SITES")
+
+    BODY_X    = ACCENT_W + 3 * mm
+    BODY_W    = CARD_W - BODY_X - 3 * mm
+    BODY_TOP  = CONTENT_TOP - 2 * mm   # just below header band
+
+    # ── Organisation contact block (compact, no emoji — Helvetica can't render them) ──
+    y = BODY_TOP
+    c.setFillColor(AMBER_DARK)
+    c.setFont("Helvetica-Bold", 5.5)
+    c.drawString(BODY_X, y, "ISSUING ORGANISATION")
+    y -= 4 * mm
+
+    def back_row(prefix: str, text: str) -> None:
+        nonlocal y
+        if not text:
+            return
+        c.setFillColor(DARK)
+        c.setFont("Helvetica", 5)
+        label = f"{prefix} {text}"
+        avg_w = 5 * 0.52
+        max_c = max(1, int(BODY_W / avg_w))
+        if len(label) > max_c:
+            label = label[:max_c - 1] + "…"
+        c.drawString(BODY_X, y, label)
+        y -= 3.2 * mm
+
+    back_row("Co:", org_name)
+    if org_address:
+        back_row("Addr:", org_address)
+    if org_phone:
+        back_row("Tel:", org_phone)
+    if org_email:
+        back_row("Email:", org_email)
+
+    # Divider
+    y -= 0.5 * mm
+    c.setStrokeColor(AMBER)
+    c.setLineWidth(0.5)
+    c.line(BODY_X, y, CARD_W - 3 * mm, y)
+    y -= 2.5 * mm
+
+    # ── Permitted sites ───────────────────────────────────────────────────────
+    c.setFillColor(AMBER_DARK)
+    c.setFont("Helvetica-Bold", 5.5)
+    c.drawString(BODY_X, y, "PERMITTED SITES")
+    y -= 4 * mm
+
+    PILL_H   = 3.5 * mm
+    PILL_ROW = 4.5 * mm   # row step
+    SAFE_Y   = FOOTER_H + 3 * mm   # minimum y before entering footer
+
+    if vendor.site_codes:
+        col1_x = BODY_X
+        col2_x = BODY_X + BODY_W / 2
+        pill_w = BODY_W / 2 - 1 * mm
+        shown  = 0
+        row_y  = y   # y is current cursor after "PERMITTED SITES" heading
+
+        for idx, sc in enumerate(vendor.site_codes):
+            # Move down for each new row (every 2 sites)
+            if idx % 2 == 0 and idx > 0:
+                row_y -= PILL_ROW
+            # Stop if pill bottom would overlap footer
+            if row_y - PILL_H < SAFE_Y:
+                break
+            col_x = col1_x if idx % 2 == 0 else col2_x
+            c.setFillColor(AMBER_LIGHT)
+            c.setStrokeColor(AMBER)
+            c.setLineWidth(0.4)
+            c.roundRect(col_x, row_y - PILL_H, pill_w, PILL_H, 1 * mm, fill=1, stroke=1)
+            c.setFillColor(AMBER_DARK)
+            c.setFont("Helvetica-Bold", 4.5)
+            c.drawCentredString(col_x + pill_w / 2, row_y - PILL_H + 1 * mm, sc)
+            shown += 1
+
+        remaining = len(vendor.site_codes) - shown
+        if remaining > 0:
+            overflow_y = row_y - PILL_ROW - 1 * mm
+            if overflow_y >= SAFE_Y:
+                c.setFillColor(GRAY)
+                c.setFont("Helvetica", 4)
+                c.drawString(BODY_X, overflow_y, f"+ {remaining} more — see portal for full list")
+    else:
+        c.setFillColor(GRAY)
+        c.setFont("Helvetica", 5)
+        c.drawString(BODY_X, y, "All sites under this contract")
+
+    # ── Footer notice ─────────────────────────────────────────────────────────
+    c.setFillColor(WHITE)
+    c.setFont("Helvetica", 3.8)
+    c.drawCentredString(CARD_W / 2, 1.8 * mm,
+        f"Badge No: {badge_no}  ·  Valid Until: {contract_end}  ·  Non-transferable")
 
     c.save()
     return buf.getvalue()
@@ -638,6 +836,7 @@ class UpdateProfilePayload(BaseModel):
     mobile: Optional[str] = None
     specialization: Optional[str] = None
     site_codes: Optional[List[str]] = None
+    home_address: Optional[str] = None
     gps_lat: Optional[float] = None
     gps_lng: Optional[float] = None
 
@@ -654,6 +853,8 @@ async def update_my_profile(
         vendor.specialization = payload.specialization
     if payload.site_codes is not None:
         vendor.site_codes = payload.site_codes
+    if payload.home_address is not None:
+        vendor.home_address = payload.home_address
     if payload.gps_lat is not None:
         vendor.gps_lat = payload.gps_lat
     if payload.gps_lng is not None:

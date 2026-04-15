@@ -250,6 +250,9 @@ async def create_framework(
         status="active",
         color=data.color,
         created_by=current_user.user_id,
+        contract_pdf_key=data.contract_pdf_key,
+        contract_meta=data.contract_meta,
+        contract_markdown=data.contract_markdown,
     )
     fw = await framework_repo.create(fw)
     return _fw_to_response(fw)
@@ -828,78 +831,170 @@ async def review_pre_inspection(
 # ── PDF Contract Extraction ───────────────────────────────────────────────────
 
 async def extract_contract_from_pdf(pdf_bytes: bytes) -> Dict[str, Any]:
-    """Use LLM to extract contract fields from a PDF. Returns extracted fields for review."""
-    from app.core.config import settings
+    """
+    Extract contract fields from a PDF using pdfplumber + regex (no AI/LLM).
+    Returns:
+      - Standard field extraction (name, client_name, …, confidence)
+      - raw_text_preview: first 500 chars of extracted text
+      - full_text: complete extracted text
+      - markdown: structured markdown converted from PDF layout
+      - meta: all regex-extracted fields for RAG metadata storage
+    """
+    import re
 
-    # Extract text from PDF using PyMuPDF (fitz) or pypdf
     text = _extract_pdf_text(pdf_bytes)
+    full_text = text.strip()
 
-    if not text.strip():
+    if not full_text:
         return {
             "name": "", "client_name": "", "contract_number": "",
             "contract_start": "", "contract_end": "", "region": "",
             "description": "", "confidence": "low",
-            "raw_text_preview": "",
+            "raw_text_preview": "", "full_text": "", "markdown": "", "meta": {},
         }
 
-    # Truncate to ~8000 chars to stay within token limits
-    text_excerpt = text[:8000]
+    # ── Regex field extraction ────────────────────────────────────────────────
 
-    prompt = (
-        "You are a contract data extraction assistant. Extract the following fields from the "
-        "contract text below. Return a JSON object with exactly these keys:\n"
-        "- name: short descriptive name for the contract (e.g. 'KCB Bank Genset Maintenance 2026')\n"
-        "- client_name: the client / customer organization name\n"
-        "- contract_number: the official contract reference/number\n"
-        "- contract_start: contract start date in YYYY-MM-DD format\n"
-        "- contract_end: contract end date in YYYY-MM-DD format\n"
-        "- region: geographic region or coverage area\n"
-        "- description: 1-2 sentence summary of contract scope\n"
-        "- confidence: 'high', 'medium', or 'low' based on how clearly the info was found\n\n"
-        "Return ONLY the JSON object, no markdown fences, no explanation.\n\n"
-        f"CONTRACT TEXT:\n{text_excerpt}"
-    )
+    def _find(patterns: list[str], text: str, group: int = 1) -> str:
+        for pat in patterns:
+            m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
+            if m:
+                try:
+                    return m.group(group).strip()
+                except IndexError:
+                    pass
+        return ""
 
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{settings.openai_base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.openai_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": settings.openai_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0,
-                    "max_tokens": 512,
-                },
-            )
-        resp.raise_for_status()
-        raw = resp.json()["choices"][0]["message"]["content"].strip()
+    def _normalise_date(raw: str) -> str:
+        """Try to convert any found date to YYYY-MM-DD."""
+        if not raw:
+            return ""
+        # Already ISO
+        m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", raw)
+        if m:
+            return f"{m.group(1)}-{m.group(2).zfill(2)}-{m.group(3).zfill(2)}"
+        # DD/MM/YYYY or DD-MM-YYYY
+        m = re.match(r"(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})", raw)
+        if m:
+            return f"{m.group(3)}-{m.group(2).zfill(2)}-{m.group(1).zfill(2)}"
+        # "1st January 2026" / "January 1, 2026"
+        months = {"january":"01","february":"02","march":"03","april":"04","may":"05","june":"06",
+                  "july":"07","august":"08","september":"09","october":"10","november":"11","december":"12"}
+        m = re.match(r"(\d{1,2})\w*\s+([a-z]+)\s+(\d{4})", raw, re.IGNORECASE)
+        if m:
+            mon = months.get(m.group(2).lower(), "01")
+            return f"{m.group(3)}-{mon}-{m.group(1).zfill(2)}"
+        m = re.match(r"([a-z]+)\s+(\d{1,2}),?\s+(\d{4})", raw, re.IGNORECASE)
+        if m:
+            mon = months.get(m.group(1).lower(), "01")
+            return f"{m.group(3)}-{mon}-{m.group(2).zfill(2)}"
+        return raw
 
-        # Strip any markdown fences if the model returned them
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
+    # Contract number
+    contract_number = _find([
+        r"contract\s*(?:no|number|ref|reference)[.:\s#]*([A-Z0-9\/\-]{4,30})",
+        r"agreement\s*(?:no|number|ref)[.:\s#]*([A-Z0-9\/\-]{4,30})",
+        r"ref(?:erence)?[.:\s#]+([A-Z0-9\/\-]{4,30})",
+    ], full_text)
 
-        import json
-        extracted = json.loads(raw)
-        extracted["raw_text_preview"] = text_excerpt[:500]
-        return extracted
+    # Dates — look for start/commencement and end/expiry
+    date_pat = r"(\d{1,2}(?:st|nd|rd|th)?\s+\w+\s+\d{4}|\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})"
+    raw_start = _find([
+        rf"(?:commencement|start|effective|from)\s+date[:\s]*{date_pat}",
+        rf"(?:commencing|starting|effective)\s+(?:on\s+|from\s+)?{date_pat}",
+        rf"(?:from|with effect from)\s+{date_pat}",
+    ], full_text)
+    raw_end = _find([
+        rf"(?:expir(?:y|ation)|end|termination|to)\s+date[:\s]*{date_pat}",
+        rf"(?:ending|expiring|until|up to and including)\s+{date_pat}",
+        rf"(?:for a period of[^.]+until)\s+{date_pat}",
+    ], full_text)
 
-    except Exception:
-        # Return whatever text we extracted even if LLM call fails
-        return {
-            "name": "", "client_name": "", "contract_number": "",
-            "contract_start": "", "contract_end": "", "region": "",
-            "description": "",
-            "confidence": "low",
-            "raw_text_preview": text_excerpt[:500],
-        }
+    contract_start = _normalise_date(raw_start)
+    contract_end = _normalise_date(raw_end)
+
+    # Client / parties — first "between" block
+    client_name = _find([
+        r"between\s+([A-Z][A-Za-z\s&(),.']{3,60})\s+(?:\(.*?client|hereinafter)",
+        r"client[:\s]+([A-Z][A-Za-z\s&(),.']{3,60})",
+        r"(?:the\s+)?client\s+(?:is|means)\s+([A-Z][A-Za-z\s&(),.']{3,60})",
+        r"entered into by and between\s+([A-Z][A-Za-z\s&(),.']{3,60})",
+    ], full_text)
+
+    # Region / coverage
+    region = _find([
+        r"(?:region|coverage|area|location|scope\s+of\s+(?:work|service))[:\s]+([A-Za-z\s,]{3,60})",
+        r"(?:within|across|covering)\s+([A-Za-z\s,]{3,60}(?:Kenya|Nairobi|Coast|Rift Valley|Western|Eastern|Nyanza|Central|North Eastern)[A-Za-z\s,]*)",
+    ], full_text)
+    if not region:
+        # Try to find known Kenyan regions
+        region_keywords = ["Nairobi", "Coast", "Rift Valley", "Western", "Eastern", "Nyanza", "Central", "North Eastern", "Kenya"]
+        for kw in region_keywords:
+            if kw.lower() in full_text.lower():
+                region = kw
+                break
+
+    # Service type — from title or scope
+    service_type = _find([
+        r"(?:for\s+the\s+provision\s+of|provision\s+of|supply\s+of|maintenance\s+of)\s+([A-Za-z\s]{5,60}?)(?:\s+services?)?(?:\n|$|\.)",
+        r"subject\s*:\s*([A-Za-z\s]{5,80})",
+        r"re\s*:\s*([A-Za-z\s]{5,80})",
+    ], full_text)
+
+    # Contract name — from title block (first non-empty short line)
+    name = ""
+    for line in full_text.split("\n")[:30]:
+        line = line.strip()
+        if 10 < len(line) < 100 and not line.startswith("Page"):
+            name = line
+            break
+
+    # Description — first substantial paragraph after a scope/purpose heading
+    description = _find([
+        r"(?:scope\s+of\s+(?:work|service)|purpose|objective|background)[:\s]*\n+([^\n]{40,}(?:\n[^\n]{20,}){0,3})",
+        r"(?:contractor\s+shall|service\s+provider\s+shall)\s+([^.]{40,200}\.)",
+    ], full_text)
+    if not description and len(full_text) > 200:
+        # Use second paragraph as fallback
+        paragraphs = [p.strip() for p in full_text.split("\n\n") if len(p.strip()) > 100]
+        if len(paragraphs) > 1:
+            description = paragraphs[1][:400]
+
+    # Confidence score
+    found_fields = sum(bool(f) for f in [contract_number, contract_start, contract_end, client_name, region])
+    confidence = "high" if found_fields >= 4 else ("medium" if found_fields >= 2 else "low")
+
+    # All metadata for RAG
+    meta: Dict[str, Any] = {
+        "contract_number": contract_number,
+        "contract_start": contract_start,
+        "contract_end": contract_end,
+        "client_name": client_name,
+        "region": region,
+        "service_type": service_type,
+        "name": name,
+        "confidence": confidence,
+        "page_count": full_text.count("\f") + 1,
+        "char_count": len(full_text),
+    }
+
+    # Markdown — layout-aware conversion, no LLM
+    markdown_text = _pdf_to_markdown(pdf_bytes, full_text)
+
+    return {
+        "name":             name,
+        "client_name":      client_name,
+        "contract_number":  contract_number,
+        "contract_start":   contract_start,
+        "contract_end":     contract_end,
+        "region":           region,
+        "description":      description[:500] if description else "",
+        "confidence":       confidence,
+        "raw_text_preview": full_text[:500],
+        "full_text":        full_text,
+        "markdown":         markdown_text,
+        "meta":             meta,
+    }
 
 
 # ── Regions & Sites service ───────────────────────────────────────────────────
@@ -1143,13 +1238,28 @@ async def upsert_rate_schedule(
 
 
 def _extract_pdf_text(pdf_bytes: bytes) -> str:
-    """Extract plain text from PDF bytes. Tries PyMuPDF first, falls back to pypdf."""
+    """Extract plain text from PDF bytes. Tries pdfplumber first (best), then PyMuPDF, then pypdf."""
+    try:
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            pages = []
+            for page in pdf.pages:
+                text = page.extract_text(layout=True) or ""
+                # Also extract tables as pipe-separated text
+                for table in page.extract_tables():
+                    rows = [" | ".join(str(c) if c else "" for c in row) for row in table if any(row)]
+                    text += "\n" + "\n".join(rows)
+                pages.append(text)
+            return "\n\n".join(pages)
+    except Exception:
+        pass
+
     try:
         import fitz  # PyMuPDF
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         pages = [page.get_text() for page in doc]
         return "\n".join(pages)
-    except ImportError:
+    except Exception:
         pass
 
     try:
@@ -1157,7 +1267,55 @@ def _extract_pdf_text(pdf_bytes: bytes) -> str:
         reader = PdfReader(io.BytesIO(pdf_bytes))
         pages = [page.extract_text() or "" for page in reader.pages]
         return "\n".join(pages)
-    except ImportError:
+    except Exception:
         pass
 
     return ""
+
+
+def _pdf_to_markdown(pdf_bytes: bytes, full_text: str) -> str:
+    """Convert PDF to structured markdown. Tries pymupdf4llm, falls back to formatting the raw text."""
+    try:
+        import fitz
+        import fitz.extra  # pymupdf4llm may expose via extra
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        md_parts = []
+        for page_num, page in enumerate(doc, 1):
+            blocks = page.get_text("dict")["blocks"]
+            page_md = []
+            for block in blocks:
+                if block.get("type") == 0:  # text block
+                    for line in block.get("lines", []):
+                        line_text = " ".join(span["text"] for span in line.get("spans", [])).strip()
+                        if not line_text:
+                            continue
+                        # Detect headings by font size
+                        sizes = [span.get("size", 10) for span in line.get("spans", [])]
+                        avg_size = sum(sizes) / len(sizes) if sizes else 10
+                        flags = [span.get("flags", 0) for span in line.get("spans", [])]
+                        is_bold = any(f & 16 for f in flags)
+                        if avg_size >= 16 or (avg_size >= 13 and is_bold):
+                            page_md.append(f"\n## {line_text}\n")
+                        elif avg_size >= 12 or is_bold:
+                            page_md.append(f"\n### {line_text}\n")
+                        else:
+                            page_md.append(line_text)
+            md_parts.append(f"\n---\n*Page {page_num}*\n\n" + "\n".join(page_md))
+        return "\n".join(md_parts)
+    except Exception:
+        pass
+
+    # Fallback: wrap raw text with basic structure
+    lines = full_text.split("\n")
+    md_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            md_lines.append("")
+            continue
+        # Simple heuristic: short ALL-CAPS or numbered lines → heading
+        if len(stripped) < 80 and (stripped.isupper() or stripped[:3].strip().rstrip(".").isdigit()):
+            md_lines.append(f"\n### {stripped}\n")
+        else:
+            md_lines.append(stripped)
+    return "\n".join(md_lines)

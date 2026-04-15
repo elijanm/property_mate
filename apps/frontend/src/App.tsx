@@ -15,6 +15,7 @@ import TenantDashboard from '@/pages/tenant/TenantDashboard'
 import SuperAdminDashboard from '@/pages/superadmin/SuperAdminDashboard'
 import AdminUsersPage from '@/pages/superadmin/AdminUsersPage'
 import PortfolioPage from '@/pages/owner/portfolio/PortfolioPage'
+import PortfolioDashboardPage from '@/pages/owner/portfolio/PortfolioDashboardPage'
 import PropertiesListPage from '@/pages/owner/properties/PropertiesListPage'
 import NewPropertyPage from '@/pages/owner/properties/NewPropertyPage'
 import PropertyWorkspacePage from '@/pages/owner/properties/PropertyWorkspacePage'
@@ -85,8 +86,10 @@ import FrameworkVendorsPage from '@/pages/owner/frameworks/FrameworkVendorsPage'
 import FrameworkSLAPage from '@/pages/owner/frameworks/FrameworkSLAPage'
 import FrameworkReportsPage from '@/pages/owner/frameworks/FrameworkReportsPage'
 import FrameworkSettingsPage from '@/pages/owner/frameworks/FrameworkSettingsPage'
+import FrameworkFaqPage from '@/pages/owner/frameworks/FrameworkFaqPage'
 import FrameworkPortalAcceptPage from '@/pages/framework_portal/FrameworkPortalAcceptPage'
 import FrameworkPortalLoginPage from '@/pages/framework_portal/FrameworkPortalLoginPage'
+import FrameworkPortalVerifyPage from '@/pages/framework_portal/FrameworkPortalVerifyPage'
 import FrameworkPortalLayout from '@/pages/framework_portal/FrameworkPortalLayout'
 import FrameworkPortalDashboard from '@/pages/framework_portal/FrameworkPortalDashboard'
 import FrameworkPortalWorkOrdersPage from '@/pages/framework_portal/FrameworkPortalWorkOrdersPage'
@@ -320,7 +323,19 @@ export default function App() {
         }
       />
 
-      {/* Portfolio — entry point for all asset categories */}
+      {/* Portfolio dashboard — unified KPI + P&L overview */}
+      <Route
+        path="/portfolio/dashboard"
+        element={
+          <ProtectedRoute allowedRoles={[...PROPERTY_ROLES]}>
+            <OrgSetupGate>
+              <PortfolioDashboardPage />
+            </OrgSetupGate>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Portfolio — asset classes list */}
       <Route
         path="/portfolio"
         element={
@@ -363,6 +378,7 @@ export default function App() {
         <Route path="sla" element={<FrameworkSLAPage />} />
         <Route path="reports" element={<FrameworkReportsPage />} />
         <Route path="settings" element={<FrameworkSettingsPage />} />
+        <Route path="faq" element={<FrameworkFaqPage />} />
       </Route>
 
       {/* Legacy redirects — keep old /properties/* bookmarks working */}
@@ -460,6 +476,7 @@ export default function App() {
       {/* Framework Service Provider Portal — standalone, no main auth */}
       <Route path="/framework-portal/invite/:token" element={<FrameworkPortalAcceptPage />} />
       <Route path="/framework-portal/login" element={<FrameworkPortalLoginPage />} />
+      <Route path="/framework-portal/verify/:vendorId" element={<FrameworkPortalVerifyPage />} />
       <Route path="/framework-portal" element={<FrameworkPortalLayout />}>
         <Route index element={<FrameworkPortalDashboard />} />
         <Route path="work-orders" element={<FrameworkPortalWorkOrdersPage />} />

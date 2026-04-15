@@ -271,6 +271,10 @@ export interface FrameworkCreateRequest {
   region: string
   description?: string
   color?: string
+  // PDF / RAG — populated when creating from extracted PDF
+  contract_pdf_key?: string
+  contract_meta?: Record<string, unknown>
+  contract_markdown?: string
 }
 
 export interface FrameworkAssetCreateRequest {
@@ -394,6 +398,41 @@ export interface PartsCatalogItem {
   notes?: string
   created_at: string
   updated_at: string
+}
+
+export interface VendorRating {
+  id: string
+  rated_by: string
+  rated_by_name?: string
+  work_order_id?: string
+  source: 'manual' | 'work_order'
+  responsiveness?: number
+  work_quality?: number
+  punctuality?: number
+  documentation?: number
+  overall: number
+  comment?: string
+  rated_at: string
+}
+
+export interface VendorRatingSummary {
+  rating_count: number
+  avg_overall?: number
+  avg_responsiveness?: number
+  avg_work_quality?: number
+  avg_punctuality?: number
+  avg_documentation?: number
+  ratings: VendorRating[]
+}
+
+export interface SubmitRatingPayload {
+  overall: number
+  responsiveness?: number
+  work_quality?: number
+  punctuality?: number
+  documentation?: number
+  comment?: string
+  work_order_id?: string
 }
 
 export const KVA_RANGES: KvaRange[] = ['22-35', '40-55', '60-75', '80-110', '120-200', '250-330']

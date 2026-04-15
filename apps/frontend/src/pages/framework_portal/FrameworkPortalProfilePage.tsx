@@ -20,7 +20,8 @@ export default function FrameworkPortalProfilePage() {
   const [editing, setEditing] = useState(false)
   const [mobile, setMobile] = useState('')
   const [specialization, setSpecialization] = useState('')
-  const [siteCodes, setSiteCodes] = useState('')
+  const [homeAddress, setHomeAddress] = useState('')
+  const [selectedSites, setSelectedSites] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -39,7 +40,8 @@ export default function FrameworkPortalProfilePage() {
       setProfile(p)
       setMobile(p.mobile || '')
       setSpecialization(p.specialization || '')
-      setSiteCodes(p.site_codes.join(', '))
+      setHomeAddress(p.home_address || '')
+      setSelectedSites(p.site_codes)
     })
   }, [])
 
@@ -50,7 +52,8 @@ export default function FrameworkPortalProfilePage() {
       const updated = await updateMyProfile({
         mobile: mobile || undefined,
         specialization: specialization || undefined,
-        site_codes: siteCodes.split(',').map(s => s.trim()).filter(Boolean),
+        site_codes: selectedSites,
+        home_address: homeAddress || undefined,
       })
       setProfile(updated)
       setVendor(updated)
@@ -210,10 +213,42 @@ export default function FrameworkPortalProfilePage() {
                 className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400" />
             </div>
             <div>
-              <label className="text-xs font-semibold text-gray-700 block mb-1">Site Codes (comma-separated)</label>
-              <input value={siteCodes} onChange={e => setSiteCodes(e.target.value)}
-                placeholder="NBI-001, MSA-002"
+              <label className="text-xs font-semibold text-gray-700 block mb-1">Home / Base Address</label>
+              <input value={homeAddress} onChange={e => setHomeAddress(e.target.value)}
+                placeholder="e.g. Westlands, Nairobi"
                 className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400" />
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-semibold text-gray-700">Sites You Cover</label>
+                <span className="text-xs text-amber-600">{selectedSites.length} selected</span>
+              </div>
+              {profile.site_codes.length === 0 && selectedSites.length === 0 ? (
+                <p className="text-xs text-gray-400 italic">No sites available — contact the framework manager.</p>
+              ) : (
+                <div className="border border-gray-200 rounded-xl divide-y divide-gray-50 max-h-40 overflow-y-auto">
+                  {/* Show currently selected sites as checkboxes; owner can add via re-invite */}
+                  {profile.site_codes.map(sc => {
+                    const checked = selectedSites.includes(sc)
+                    return (
+                      <label key={sc} className={`flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-amber-50 ${checked ? 'bg-amber-50' : ''}`}>
+                        <input type="checkbox" checked={checked} onChange={() =>
+                          setSelectedSites(prev => checked ? prev.filter(c => c !== sc) : [...prev, sc])
+                        } className="w-4 h-4 accent-amber-500 shrink-0" />
+                        <span className="text-sm text-gray-800">{sc}</span>
+                      </label>
+                    )
+                  })}
+                  {selectedSites.filter(sc => !profile.site_codes.includes(sc)).map(sc => (
+                    <label key={sc} className="flex items-center gap-3 px-3 py-2 bg-amber-50 cursor-pointer">
+                      <input type="checkbox" checked onChange={() =>
+                        setSelectedSites(prev => prev.filter(c => c !== sc))
+                      } className="w-4 h-4 accent-amber-500 shrink-0" />
+                      <span className="text-sm text-gray-800">{sc}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         ) : (
@@ -222,10 +257,20 @@ export default function FrameworkPortalProfilePage() {
             <ProfileRow label="Mobile" value={profile.mobile || '—'} />
             <ProfileRow label="Phone" value={profile.phone || '—'} />
             <ProfileRow label="Specialization" value={profile.specialization || '—'} />
+            <ProfileRow label="Home Address" value={profile.home_address || '—'} />
             <ProfileRow label="Regions" value={profile.regions || '—'} />
-            <ProfileRow label="Sites" value={profile.site_codes.join(', ') || '—'} />
+            {profile.site_codes.length > 0 && (
+              <div className="flex items-start gap-3">
+                <span className="text-xs text-gray-400 w-24 shrink-0 mt-1">Sites</span>
+                <div className="flex flex-wrap gap-1">
+                  {profile.site_codes.map(sc => (
+                    <span key={sc} className="text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-100 px-1.5 py-0.5 rounded-full">{sc}</span>
+                  ))}
+                </div>
+              </div>
+            )}
             {profile.gps_lat && (
-              <ProfileRow label="Location" value={`${profile.gps_lat.toFixed(5)}, ${profile.gps_lng?.toFixed(5)}`} />
+              <ProfileRow label="GPS" value={`${profile.gps_lat.toFixed(5)}, ${profile.gps_lng?.toFixed(5)}`} />
             )}
           </div>
         )}

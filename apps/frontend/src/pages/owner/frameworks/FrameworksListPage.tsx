@@ -718,6 +718,9 @@ function CreateFrameworkModal({
         region: data.region || '',
         description: data.description || '',
         color: CONTRACT_COLORS[0],
+        contract_pdf_key: data.pdf_s3_key || undefined,
+        contract_meta: data.meta || undefined,
+        contract_markdown: data.markdown || undefined,
       })
       setConfidence(data.confidence)
       setStep('review')

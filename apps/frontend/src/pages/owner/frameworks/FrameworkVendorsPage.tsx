@@ -1,11 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useContext, useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import {
   listInvitedVendors, inviteVendor, reinviteVendor, removeInvitedVendor, getVendorDocs,
+  adminRegenerateBadge, adminUpdateVendorSites, getVendorRatings, submitVendorRating,
 } from '@/api/frameworks'
 import type { InvitedVendor, InviteVendorPayload, VendorDocs } from '@/api/frameworks'
+import type { VendorRatingSummary, SubmitRatingPayload } from '@/types/framework'
 import { updateVendorStatus } from '@/api/frameworkPortal'
 import { extractApiError } from '@/utils/apiError'
+import { FrameworkContext } from './FrameworkWorkspacePage'
 
 const ACCENT = '#D97706'
 
@@ -18,6 +21,8 @@ const STATUS_PILL: Record<string, string> = {
 
 export default function FrameworkVendorsPage() {
   const { frameworkId } = useParams<{ frameworkId: string }>()
+  const { framework } = useContext(FrameworkContext)
+  const availableSites = framework?.sites ?? []
   const [invited, setInvited] = useState<InvitedVendor[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<'approved' | 'invited'>('approved')
@@ -28,6 +33,17 @@ export default function FrameworkVendorsPage() {
   const [docsVendor, setDocsVendor] = useState<InvitedVendor | null>(null)
   const [docs, setDocs] = useState<VendorDocs | null>(null)
   const [docsLoading, setDocsLoading] = useState(false)
+  const [regeneratingBadge, setRegeneratingBadge] = useState(false)
+  const [editingSites, setEditingSites] = useState(false)
+  const [selectedSites, setSelectedSites] = useState<string[]>([])
+  const [savingSites, setSavingSites] = useState(false)
+  const [slideTab, setSlideTab] = useState<'docs' | 'ratings'>('docs')
+  const [ratingSummary, setRatingSummary] = useState<VendorRatingSummary | null>(null)
+  const [ratingsLoading, setRatingsLoading] = useState(false)
+  const [showRateForm, setShowRateForm] = useState(false)
+  const [ratingForm, setRatingForm] = useState<SubmitRatingPayload>({ overall: 0 })
+  const [submittingRating, setSubmittingRating] = useState(false)
+  const [ratingError, setRatingError] = useState('')
 
   const approved = invited.filter(m => m.status === 'active')
   const pending = invited.filter(m => m.status !== 'active')
@@ -81,11 +97,47 @@ export default function FrameworkVendorsPage() {
     setDocsVendor(vendor)
     setDocs(null)
     setDocsLoading(true)
+    setSlideTab('docs')
+    setRatingSummary(null)
+    setShowRateForm(false)
+    setRatingForm({ overall: 0 })
+    setRatingError('')
     try {
       const d = await getVendorDocs(frameworkId, vendor.id)
       setDocs(d)
     } finally {
       setDocsLoading(false)
+    }
+  }
+
+  async function loadRatings(vendor: InvitedVendor) {
+    if (!frameworkId) return
+    setRatingsLoading(true)
+    try {
+      const summary = await getVendorRatings(frameworkId, vendor.id)
+      setRatingSummary(summary)
+    } finally {
+      setRatingsLoading(false)
+    }
+  }
+
+  async function handleSubmitRating() {
+    if (!frameworkId || !docsVendor) return
+    if (!ratingForm.overall || ratingForm.overall < 1) {
+      setRatingError('Please provide an overall star rating.')
+      return
+    }
+    setSubmittingRating(true)
+    setRatingError('')
+    try {
+      await submitVendorRating(frameworkId, docsVendor.id, ratingForm)
+      setShowRateForm(false)
+      setRatingForm({ overall: 0 })
+      await loadRatings(docsVendor)
+    } catch (e) {
+      setRatingError(extractApiError(e).message)
+    } finally {
+      setSubmittingRating(false)
     }
   }
 
@@ -322,13 +374,52 @@ export default function FrameworkVendorsPage() {
                 <h2 className="text-base font-bold text-gray-900">{docsVendor.contact_name}</h2>
                 <p className="text-xs text-gray-500">{docsVendor.name}</p>
               </div>
-              <button onClick={() => { setDocsVendor(null); setDocs(null) }} className="w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:bg-gray-100">✕</button>
+              <button onClick={() => { setDocsVendor(null); setDocs(null); setRatingSummary(null) }} className="w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:bg-gray-100">✕</button>
             </div>
 
-            <div className="flex-1 p-6 space-y-5">
-              {docsLoading ? (
+            {/* Slide-over tabs */}
+            <div className="flex border-b border-gray-100 shrink-0 px-6">
+              {([
+                { key: 'docs', label: 'Documents & Badge' },
+                { key: 'ratings', label: 'Ratings' },
+              ] as const).map(t => (
+                <button
+                  key={t.key}
+                  onClick={() => {
+                    setSlideTab(t.key)
+                    if (t.key === 'ratings' && !ratingSummary && docsVendor) loadRatings(docsVendor)
+                  }}
+                  className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                    slideTab === t.key ? 'border-amber-500 text-amber-700' : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex-1 p-6 space-y-5 overflow-y-auto">
+              {/* ── Ratings Tab ── */}
+              {slideTab === 'ratings' && (
+                <RatingsPanel
+                  summary={ratingSummary}
+                  loading={ratingsLoading}
+                  showForm={showRateForm}
+                  form={ratingForm}
+                  submitting={submittingRating}
+                  error={ratingError}
+                  accent={ACCENT}
+                  onOpenForm={() => { setShowRateForm(true); setRatingError('') }}
+                  onCancelForm={() => { setShowRateForm(false); setRatingError('') }}
+                  onChangeForm={patch => setRatingForm(prev => ({ ...prev, ...patch }))}
+                  onSubmit={handleSubmitRating}
+                />
+              )}
+
+              {/* ── Docs Tab ── */}
+              {slideTab === 'docs' && docsLoading ? (
                 <div className="text-center py-16 text-gray-400 text-sm">Loading documents…</div>
-              ) : docs ? (
+              ) : slideTab === 'docs' && docs ? (
                 <>
                   {/* Status & info */}
                   <div className="bg-gray-50 rounded-xl p-4 space-y-2">
@@ -340,16 +431,83 @@ export default function FrameworkVendorsPage() {
                     </div>
                     {docs.mobile && <InfoRow label="Mobile" value={docs.mobile} />}
                     {docs.activated_at && <InfoRow label="Activated" value={new Date(docs.activated_at).toLocaleString()} />}
-                    {docs.site_codes.length > 0 && (
-                      <div className="flex items-start gap-2">
-                        <span className="text-xs text-gray-400 w-16 shrink-0">Sites</span>
-                        <div className="flex flex-wrap gap-1">
-                          {docs.site_codes.map(sc => (
-                            <span key={sc} className="text-[10px] bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded border border-amber-100">{sc}</span>
-                          ))}
-                        </div>
+                    {/* Sites — editable */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-xs text-gray-400">Sites Covered</span>
+                        {!editingSites ? (
+                          <button
+                            onClick={() => { setSelectedSites(docs.site_codes); setEditingSites(true) }}
+                            className="text-[10px] font-semibold text-amber-700 hover:underline"
+                          >
+                            ✏️ Edit
+                          </button>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => setEditingSites(false)}
+                              className="text-[10px] text-gray-400 hover:text-gray-600"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              disabled={savingSites}
+                              onClick={async () => {
+                                if (!frameworkId || !docsVendor) return
+                                setSavingSites(true)
+                                try {
+                                  const result = await adminUpdateVendorSites(frameworkId, docsVendor.id, selectedSites)
+                                  setDocs(prev => prev ? { ...prev, site_codes: result.site_codes } : null)
+                                  setEditingSites(false)
+                                } catch (e) {
+                                  // error shown inline
+                                } finally {
+                                  setSavingSites(false)
+                                }
+                              }}
+                              className="text-[10px] font-semibold text-white px-2 py-0.5 rounded"
+                              style={{ backgroundColor: ACCENT }}
+                            >
+                              {savingSites ? 'Saving…' : 'Save'}
+                            </button>
+                          </div>
+                        )}
                       </div>
-                    )}
+                      {editingSites ? (
+                        <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
+                          {availableSites.length === 0 ? (
+                            <p className="text-xs text-gray-400">No sites configured for this contract yet.</p>
+                          ) : (
+                            availableSites.map(site => {
+                              const checked = selectedSites.includes(site.site_code)
+                              return (
+                                <label key={site.site_code} className="flex items-center gap-2 cursor-pointer p-1.5 rounded hover:bg-amber-50">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() => setSelectedSites(prev =>
+                                      checked ? prev.filter(s => s !== site.site_code) : [...prev, site.site_code]
+                                    )}
+                                    className="accent-amber-600"
+                                  />
+                                  <span className="text-xs font-medium text-gray-700">{site.site_code}</span>
+                                  <span className="text-xs text-gray-400 truncate">{site.site_name}</span>
+                                  <span className="text-[10px] text-gray-300 ml-auto">{site.region}</span>
+                                </label>
+                              )
+                            })
+                          )}
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap gap-1 min-h-[20px]">
+                          {docs.site_codes.length > 0 ? docs.site_codes.map(sc => (
+                            <span key={sc} className="text-[10px] bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded border border-amber-100">{sc}</span>
+                          )) : (
+                            <span className="text-xs text-gray-400 italic">No sites assigned</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
                     {docs.gps_lat && (
                       <div className="flex items-center justify-between">
                         <span className="text-xs text-gray-400">Location</span>
@@ -402,20 +560,44 @@ export default function FrameworkVendorsPage() {
                   )}
 
                   {/* Badge */}
-                  {docs.has_badge && docs.badge_url && (
-                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center gap-3">
-                      <span className="text-2xl">🪪</span>
-                      <div className="flex-1">
-                        <div className="text-sm font-semibold text-amber-800">Contractor Badge</div>
-                        <div className="text-xs text-amber-600">Ready for download</div>
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center gap-3">
+                    <span className="text-2xl">🪪</span>
+                    <div className="flex-1">
+                      <div className="text-sm font-semibold text-amber-800">Contractor Badge</div>
+                      <div className="text-xs text-amber-600">
+                        {docs.has_badge ? 'Ready for download' : 'Not yet generated'}
                       </div>
-                      <a href={docs.badge_url} target="_blank" rel="noreferrer"
-                        className="px-3 py-1.5 text-xs font-semibold text-white rounded-lg"
-                        style={{ backgroundColor: ACCENT }}>
-                        Download
-                      </a>
                     </div>
-                  )}
+                    <div className="flex items-center gap-2">
+                      {docs.has_badge && docs.badge_url && (
+                        <a href={docs.badge_url} target="_blank" rel="noreferrer"
+                          className="px-3 py-1.5 text-xs font-semibold text-white rounded-lg"
+                          style={{ backgroundColor: ACCENT }}>
+                          Download
+                        </a>
+                      )}
+                      <button
+                        disabled={regeneratingBadge}
+                        onClick={async () => {
+                          if (!frameworkId || !docsVendor) return
+                          setRegeneratingBadge(true)
+                          try {
+                            const result = await adminRegenerateBadge(frameworkId, docsVendor.id)
+                            setDocs(prev => prev ? {
+                              ...prev,
+                              has_badge: true,
+                              badge_url: result.badge_url ?? prev.badge_url,
+                            } : null)
+                          } finally {
+                            setRegeneratingBadge(false)
+                          }
+                        }}
+                        className="px-3 py-1.5 text-xs font-semibold border border-amber-400 text-amber-700 rounded-lg hover:bg-amber-100 disabled:opacity-50"
+                      >
+                        {regeneratingBadge ? 'Generating…' : docs.has_badge ? '↻ Regenerate' : '⚡ Generate'}
+                      </button>
+                    </div>
+                  </div>
 
                   {/* Approve / Suspend */}
                   {docs.status === 'pending_review' && (
@@ -443,9 +625,9 @@ export default function FrameworkVendorsPage() {
                     </button>
                   )}
                 </>
-              ) : (
+              ) : slideTab === 'docs' ? (
                 <div className="text-center py-16 text-gray-400 text-sm">Failed to load documents</div>
-              )}
+              ) : null}
             </div>
           </div>
         </div>
@@ -480,6 +662,217 @@ function DocPhoto({ label, icon, url, has }: { label: string; icon: string; url?
       ) : (
         <div className="w-full h-24 rounded-xl border-2 border-dashed border-gray-200 flex items-center justify-center text-gray-300 text-sm">
           Not uploaded
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Star Input ────────────────────────────────────────────────────────────────
+
+function StarInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  return (
+    <div className="flex items-center gap-1">
+      {[1, 2, 3, 4, 5].map(star => (
+        <button
+          key={star}
+          type="button"
+          onClick={() => onChange(star)}
+          className={`text-2xl transition-transform hover:scale-110 ${star <= value ? 'text-amber-400' : 'text-gray-200'}`}
+        >
+          ★
+        </button>
+      ))}
+      {value > 0 && <span className="text-xs text-gray-500 ml-1">{value}/5</span>}
+    </div>
+  )
+}
+
+// ── Dimension Score Slider ────────────────────────────────────────────────────
+
+function DimSlider({ label, value, onChange }: { label: string; value?: number; onChange: (v: number | undefined) => void }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-xs font-medium text-gray-700">{label}</label>
+        <span className="text-xs text-gray-400">{value ? `${value}/5` : 'skip'}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <input
+          type="range" min={0} max={5} step={0.5}
+          value={value ?? 0}
+          onChange={e => {
+            const v = parseFloat(e.target.value)
+            onChange(v === 0 ? undefined : v)
+          }}
+          className="flex-1 accent-amber-500"
+        />
+        {value !== undefined && (
+          <button type="button" onClick={() => onChange(undefined)} className="text-[10px] text-gray-400 hover:text-red-400">✕</button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Avg Score Bar ─────────────────────────────────────────────────────────────
+
+function ScoreBar({ label, value }: { label: string; value?: number }) {
+  if (value === undefined) return null
+  const pct = (value / 5) * 100
+  const color = value >= 4 ? 'bg-green-500' : value >= 3 ? 'bg-amber-400' : 'bg-red-400'
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs text-gray-600">{label}</span>
+        <span className="text-xs font-semibold text-gray-800">{value.toFixed(1)}</span>
+      </div>
+      <div className="h-1.5 bg-gray-100 rounded-full">
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  )
+}
+
+// ── Ratings Panel ─────────────────────────────────────────────────────────────
+
+function RatingsPanel({
+  summary, loading, showForm, form, submitting, error, accent,
+  onOpenForm, onCancelForm, onChangeForm, onSubmit,
+}: {
+  summary: VendorRatingSummary | null
+  loading: boolean
+  showForm: boolean
+  form: SubmitRatingPayload
+  submitting: boolean
+  error: string
+  accent: string
+  onOpenForm: () => void
+  onCancelForm: () => void
+  onChangeForm: (patch: Partial<SubmitRatingPayload>) => void
+  onSubmit: () => void
+}) {
+  if (loading) return <div className="text-center py-16 text-gray-400 text-sm">Loading ratings…</div>
+
+  const DIMENSIONS: { key: keyof Omit<SubmitRatingPayload, 'overall' | 'comment' | 'work_order_id'>; label: string }[] = [
+    { key: 'responsiveness', label: 'Responsiveness (response time to callouts)' },
+    { key: 'work_quality',   label: 'Work Quality (technician notes / feedback)' },
+    { key: 'punctuality',    label: 'Punctuality (on-time arrivals)' },
+    { key: 'documentation',  label: 'Documentation (reports submitted on time)' },
+  ]
+
+  return (
+    <div className="space-y-5">
+      {/* Summary card */}
+      {summary && summary.rating_count > 0 && (
+        <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm font-bold text-amber-800">Overall Rating</span>
+            <div className="flex items-center gap-1">
+              <span className="text-2xl font-black text-amber-600">{summary.avg_overall?.toFixed(1) ?? '—'}</span>
+              <span className="text-amber-400 text-lg">★</span>
+              <span className="text-xs text-amber-500 ml-1">({summary.rating_count} review{summary.rating_count !== 1 ? 's' : ''})</span>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <ScoreBar label="Responsiveness" value={summary.avg_responsiveness} />
+            <ScoreBar label="Work Quality" value={summary.avg_work_quality} />
+            <ScoreBar label="Punctuality" value={summary.avg_punctuality} />
+            <ScoreBar label="Documentation" value={summary.avg_documentation} />
+          </div>
+        </div>
+      )}
+
+      {!summary || summary.rating_count === 0 ? (
+        <div className="text-center py-8 border-2 border-dashed border-gray-200 rounded-xl">
+          <div className="text-4xl mb-2">⭐</div>
+          <p className="text-sm text-gray-500">No ratings yet</p>
+        </div>
+      ) : null}
+
+      {/* Rate button */}
+      {!showForm && (
+        <button
+          onClick={onOpenForm}
+          className="w-full py-2.5 text-sm font-semibold text-white rounded-xl"
+          style={{ backgroundColor: accent }}
+        >
+          + Submit Rating
+        </button>
+      )}
+
+      {/* Rating form */}
+      {showForm && (
+        <div className="bg-gray-50 rounded-xl p-4 space-y-4 border border-gray-200">
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-bold text-gray-900">New Rating</h4>
+            <button onClick={onCancelForm} className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
+          </div>
+
+          {error && <p className="text-xs text-red-600 bg-red-50 rounded px-3 py-2">{error}</p>}
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1.5">Overall Rating *</label>
+            <StarInput value={form.overall} onChange={v => onChangeForm({ overall: v })} />
+          </div>
+
+          {DIMENSIONS.map(d => (
+            <DimSlider
+              key={d.key}
+              label={d.label}
+              value={form[d.key]}
+              onChange={v => onChangeForm({ [d.key]: v })}
+            />
+          ))}
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Comments</label>
+            <textarea
+              rows={3}
+              value={form.comment ?? ''}
+              onChange={e => onChangeForm({ comment: e.target.value || undefined })}
+              placeholder="Optional feedback…"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 resize-none"
+            />
+          </div>
+
+          <button
+            onClick={onSubmit}
+            disabled={submitting || !form.overall}
+            className="w-full py-2.5 text-sm font-semibold text-white rounded-xl disabled:opacity-50"
+            style={{ backgroundColor: accent }}
+          >
+            {submitting ? 'Saving…' : 'Submit Rating'}
+          </button>
+        </div>
+      )}
+
+      {/* Past ratings */}
+      {summary && summary.ratings.length > 0 && (
+        <div>
+          <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">History</h4>
+          <div className="space-y-3">
+            {summary.ratings.map(r => (
+              <div key={r.id} className="bg-white border border-gray-100 rounded-xl p-3">
+                <div className="flex items-start justify-between mb-1">
+                  <div className="flex items-center gap-1 text-amber-400">
+                    {[1,2,3,4,5].map(s => (
+                      <span key={s} className={s <= Math.round(r.overall) ? 'text-amber-400' : 'text-gray-200'}>★</span>
+                    ))}
+                    <span className="text-xs text-gray-500 ml-1">{r.overall.toFixed(1)}</span>
+                  </div>
+                  <span className="text-[10px] text-gray-400">{new Date(r.rated_at).toLocaleDateString()}</span>
+                </div>
+                {r.comment && <p className="text-xs text-gray-600 mt-1">{r.comment}</p>}
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {r.responsiveness && <span className="text-[10px] bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">Resp {r.responsiveness.toFixed(1)}</span>}
+                  {r.work_quality    && <span className="text-[10px] bg-green-50 text-green-700 px-1.5 py-0.5 rounded">Quality {r.work_quality.toFixed(1)}</span>}
+                  {r.punctuality    && <span className="text-[10px] bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded">Punct {r.punctuality.toFixed(1)}</span>}
+                  {r.documentation  && <span className="text-[10px] bg-orange-50 text-orange-700 px-1.5 py-0.5 rounded">Docs {r.documentation.toFixed(1)}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

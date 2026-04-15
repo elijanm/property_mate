@@ -17,15 +17,15 @@ interface NavItem {
 
 const ROLE_NAV: Record<string, NavItem[]> = {
   owner: [
-    { label: 'Dashboard',    path: '/owner',               icon: '◫', exact: true },
-    { label: 'Portfolio',    path: '/portfolio',           icon: '🗂' },
+    { label: 'Dashboard',    path: '/portfolio/dashboard', icon: '◫', exact: true },
+    { label: 'Portfolio',    path: '/portfolio',           icon: '🗂', exact: true },
     { label: 'Tickets',      path: '/owner/tickets',       icon: '🎫' },
     { label: 'Settings',     path: '/owner/settings',      icon: '⚙' },
   ],
   agent: [
-    { label: 'Dashboard',  path: '/agent',         icon: '◫', exact: true },
-    { label: 'Portfolio',  path: '/portfolio',     icon: '🗂' },
-    { label: 'Tickets',    path: '/owner/tickets', icon: '🎫' },
+    { label: 'Dashboard',  path: '/portfolio/dashboard', icon: '◫', exact: true },
+    { label: 'Portfolio',  path: '/portfolio',           icon: '🗂', exact: true },
+    { label: 'Tickets',    path: '/owner/tickets',       icon: '🎫' },
   ],
   tenant: [
     { label: 'Dashboard', path: '/tenant',          icon: '◫', exact: true },

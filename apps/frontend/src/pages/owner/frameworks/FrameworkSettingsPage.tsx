@@ -5,6 +5,7 @@ import {
   listPartsKits, createPartsKit, updatePartsKit, deletePartsKit,
   listRateSchedules, upsertRateSchedule,
   updateRegionsSites, updateSchedule4,
+  listFrameworkAssets, createFrameworkAsset,
 } from '@/api/frameworks'
 import type { Schedule4EntryPayload } from '@/api/frameworks'
 import {
@@ -442,6 +443,8 @@ function Schedule4Tab() {
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState('')
   const [pasteOpen, setPasteOpen] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [exportResult, setExportResult] = useState<{ created: number; skipped: number } | null>(null)
 
   const regions = framework?.regions ?? []
   const sites = framework?.sites ?? []
@@ -519,6 +522,74 @@ function Schedule4Tab() {
     }
   }
 
+  async function exportAsAssets() {
+    if (!frameworkId) return
+    setExporting(true)
+    setExportResult(null)
+    setError('')
+    try {
+      // 1. Save schedule rows to DB first
+      const entries: Schedule4EntryPayload[] = rows
+        .filter(r => r.site_name.trim() && r.region.trim())
+        .map(r => ({
+          site_code: r.site_code || undefined,
+          site_name: r.site_name,
+          region: r.region,
+          brand: r.brand || undefined,
+          kva_rating: r.kva_rating || undefined,
+          cost_a: parseFloat(r.cost_a) || 0,
+          cost_b: parseFloat(r.cost_b) || 0,
+          cost_c: parseFloat(r.cost_c) || 0,
+          notes: r.notes || undefined,
+        }))
+      await updateSchedule4(frameworkId, entries)
+
+      // 2. Fetch all existing assets to detect duplicates by site_code
+      const existing = await listFrameworkAssets(frameworkId, { page: 1 })
+      // Collect all pages if total > page_size
+      let allAssets = existing.items
+      if (existing.total > existing.page_size) {
+        const pages = Math.ceil(existing.total / existing.page_size)
+        const rest = await Promise.all(
+          Array.from({ length: pages - 1 }, (_, i) =>
+            listFrameworkAssets(frameworkId, { page: i + 2 })
+          )
+        )
+        allAssets = [...allAssets, ...rest.flatMap(r => r.items)]
+      }
+      const existingSiteCodes = new Set(allAssets.map(a => a.site_code).filter(Boolean))
+
+      const validRows = rows.filter(r => r.site_name.trim() && r.region.trim())
+      let created = 0
+      let skipped = 0
+
+      for (const r of validRows) {
+        const key = r.site_code.trim() || r.site_name.trim()
+        if (r.site_code && existingSiteCodes.has(r.site_code.trim())) {
+          skipped++
+          continue
+        }
+        await createFrameworkAsset(frameworkId, {
+          site_name: r.site_name.trim(),
+          site_code: r.site_code.trim() || r.site_name.trim().toUpperCase().replace(/\s+/g, '-').slice(0, 20),
+          kva_rating: (r.kva_rating.trim() as any) || '22-35',
+          engine_make: r.brand.trim() || 'Unknown',
+          fuel_type: 'diesel',
+          region: r.region.trim(),
+          service_frequency: 'biannual',
+          notes: r.notes.trim() || undefined,
+        })
+        existingSiteCodes.add(key)
+        created++
+      }
+      setExportResult({ created, skipped })
+    } catch (e: any) {
+      setError(extractApiError(e).message)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const totalA = rows.reduce((s, r) => s + (parseFloat(r.cost_a) || 0), 0)
   const totalB = rows.reduce((s, r) => s + (parseFloat(r.cost_b) || 0), 0)
   const totalC = rows.reduce((s, r) => s + (parseFloat(r.cost_c) || 0), 0)
@@ -542,6 +613,11 @@ function Schedule4Tab() {
             className="px-3 py-1.5 text-xs font-semibold text-white rounded-lg" style={{ backgroundColor: ACCENT }}>
             + Add Row
           </button>
+          <button onClick={exportAsAssets} disabled={exporting || rows.filter(r => r.site_name.trim()).length === 0}
+            className="px-3 py-1.5 text-xs font-semibold border border-amber-400 text-amber-700 bg-amber-50 rounded-lg hover:bg-amber-100 disabled:opacity-50"
+            title="Create assets for each schedule row (skips existing site codes)">
+            {exporting ? 'Syncing…' : '⚡ Sync as Assets'}
+          </button>
           <button onClick={save} disabled={saving}
             className="px-4 py-1.5 text-xs font-semibold text-white rounded-lg disabled:opacity-50"
             style={{ backgroundColor: ACCENT }}>
@@ -555,6 +631,17 @@ function Schedule4Tab() {
           onPaste={handlePaste}
           hint="Site Code | Site Name | Region | Brand | KVA | Cost A (KES) | Cost B (KES) | Cost C (KES) | Notes"
         />
+      )}
+
+      {exportResult && (
+        <div className="mb-3 flex items-center gap-3 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-xs text-green-800">
+          <span className="text-base">✅</span>
+          <span>
+            Asset sync complete — <strong>{exportResult.created}</strong> created,{' '}
+            <strong>{exportResult.skipped}</strong> skipped (already exist).
+          </span>
+          <button onClick={() => setExportResult(null)} className="ml-auto text-green-600 hover:text-green-800 font-bold">✕</button>
+        </div>
       )}
 
       {error && <p className="text-xs text-red-600 mb-3">{error}</p>}

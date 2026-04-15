@@ -812,6 +812,195 @@ async def get_vendor_docs(
     }
 
 
+# ── Admin: Update SP Site Codes ──────────────────────────────────────────────
+
+class UpdateVendorSitesRequest(BaseModel):
+    site_codes: List[str]
+
+
+@router.patch(
+    "/{framework_id}/invited-vendors/{member_id}/sites",
+    dependencies=[Depends(require_roles("owner", "superadmin"))],
+)
+async def admin_update_vendor_sites(
+    framework_id: str,
+    member_id: str,
+    body: UpdateVendorSitesRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    from beanie import PydanticObjectId
+
+    member = await FrameworkInvitedVendor.find_one(
+        FrameworkInvitedVendor.id == PydanticObjectId(member_id),
+        FrameworkInvitedVendor.org_id == current_user.org_id,
+        FrameworkInvitedVendor.framework_id == framework_id,
+        FrameworkInvitedVendor.deleted_at == None,
+    )
+    if not member:
+        raise HTTPException(status_code=404, detail="Invited vendor not found")
+
+    member.site_codes = body.site_codes
+    await member.save()
+    return {"site_codes": member.site_codes}
+
+
+# ── Admin: Regenerate Contractor Badge ───────────────────────────────────────
+
+@router.post(
+    "/{framework_id}/invited-vendors/{member_id}/regenerate-badge",
+    dependencies=[Depends(require_roles("owner", "superadmin"))],
+)
+async def admin_regenerate_badge(
+    framework_id: str,
+    member_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    from beanie import PydanticObjectId
+    from app.api.v1.framework_portal import _generate_and_store_badge
+    from app.core.s3 import generate_presigned_url
+
+    member = await FrameworkInvitedVendor.find_one(
+        FrameworkInvitedVendor.id == PydanticObjectId(member_id),
+        FrameworkInvitedVendor.org_id == current_user.org_id,
+        FrameworkInvitedVendor.framework_id == framework_id,
+        FrameworkInvitedVendor.deleted_at == None,
+    )
+    if not member:
+        raise HTTPException(status_code=404, detail="Invited vendor not found")
+
+    await _generate_and_store_badge(member)
+    # Reload to get updated badge_key
+    await member.sync()
+    badge_url = await generate_presigned_url(member.badge_key) if member.badge_key else None
+    return {"badge_url": badge_url}
+
+
+# ── SP Ratings ───────────────────────────────────────────────────────────────
+
+class SubmitRatingRequest(BaseModel):
+    overall: float                          # 1–5 required
+    responsiveness: Optional[float] = None
+    work_quality: Optional[float] = None
+    punctuality: Optional[float] = None
+    documentation: Optional[float] = None
+    comment: Optional[str] = None
+    work_order_id: Optional[str] = None
+
+
+@router.post(
+    "/{framework_id}/invited-vendors/{member_id}/ratings",
+    dependencies=[Depends(require_roles("owner", "superadmin"))],
+    status_code=201,
+)
+async def submit_vendor_rating(
+    framework_id: str,
+    member_id: str,
+    body: SubmitRatingRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    from beanie import PydanticObjectId
+    from app.models.framework import VendorRating
+
+    if not (1.0 <= body.overall <= 5.0):
+        raise HTTPException(status_code=400, detail="overall must be between 1 and 5")
+
+    member = await FrameworkInvitedVendor.find_one(
+        FrameworkInvitedVendor.id == PydanticObjectId(member_id),
+        FrameworkInvitedVendor.org_id == current_user.org_id,
+        FrameworkInvitedVendor.framework_id == framework_id,
+        FrameworkInvitedVendor.deleted_at == None,
+    )
+    if not member:
+        raise HTTPException(status_code=404, detail="Invited vendor not found")
+
+    rating = VendorRating(
+        rated_by=current_user.user_id,
+        rated_by_name=None,
+        work_order_id=body.work_order_id,
+        source="manual",
+        responsiveness=body.responsiveness,
+        work_quality=body.work_quality,
+        punctuality=body.punctuality,
+        documentation=body.documentation,
+        overall=body.overall,
+        comment=body.comment,
+    )
+    member.ratings.append(rating)
+
+    # Recompute averages
+    def _avg(field: str) -> Optional[float]:
+        vals = [getattr(r, field) for r in member.ratings if getattr(r, field) is not None]
+        return round(sum(vals) / len(vals), 2) if vals else None
+
+    member.avg_responsiveness = _avg("responsiveness")
+    member.avg_work_quality = _avg("work_quality")
+    member.avg_punctuality = _avg("punctuality")
+    member.avg_documentation = _avg("documentation")
+    member.avg_overall = _avg("overall")
+    member.rating_count = len(member.ratings)
+    await member.save()
+
+    return {
+        "id": rating.id,
+        "overall": rating.overall,
+        "responsiveness": rating.responsiveness,
+        "work_quality": rating.work_quality,
+        "punctuality": rating.punctuality,
+        "documentation": rating.documentation,
+        "comment": rating.comment,
+        "rated_at": rating.rated_at.isoformat(),
+        "avg_overall": member.avg_overall,
+        "rating_count": member.rating_count,
+    }
+
+
+@router.get(
+    "/{framework_id}/invited-vendors/{member_id}/ratings",
+    dependencies=[Depends(require_roles("owner", "superadmin"))],
+)
+async def get_vendor_ratings(
+    framework_id: str,
+    member_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    from beanie import PydanticObjectId
+
+    member = await FrameworkInvitedVendor.find_one(
+        FrameworkInvitedVendor.id == PydanticObjectId(member_id),
+        FrameworkInvitedVendor.org_id == current_user.org_id,
+        FrameworkInvitedVendor.framework_id == framework_id,
+        FrameworkInvitedVendor.deleted_at == None,
+    )
+    if not member:
+        raise HTTPException(status_code=404, detail="Invited vendor not found")
+
+    return {
+        "rating_count": member.rating_count,
+        "avg_overall": member.avg_overall,
+        "avg_responsiveness": member.avg_responsiveness,
+        "avg_work_quality": member.avg_work_quality,
+        "avg_punctuality": member.avg_punctuality,
+        "avg_documentation": member.avg_documentation,
+        "ratings": [
+            {
+                "id": r.id,
+                "rated_by": r.rated_by,
+                "rated_by_name": r.rated_by_name,
+                "work_order_id": r.work_order_id,
+                "source": r.source,
+                "responsiveness": r.responsiveness,
+                "work_quality": r.work_quality,
+                "punctuality": r.punctuality,
+                "documentation": r.documentation,
+                "overall": r.overall,
+                "comment": r.comment,
+                "rated_at": r.rated_at.isoformat(),
+            }
+            for r in sorted(member.ratings, key=lambda r: r.rated_at, reverse=True)
+        ],
+    }
+
+
 # ── PDF Contract Extraction ───────────────────────────────────────────────────
 
 @router.post(
@@ -822,13 +1011,25 @@ async def extract_contract_pdf(
     file: UploadFile = File(...),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> dict:
-    """Upload a PDF contract and extract key fields using AI for review before saving."""
+    """
+    Upload a PDF contract, extract key fields via AI, and store the PDF in S3.
+    Returns extracted fields + pdf_s3_key + markdown for the caller to persist on contract save.
+    """
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
 
     content = await file.read()
-    if len(content) > 20 * 1024 * 1024:  # 20 MB max
+    if len(content) > 20 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="PDF file too large (max 20 MB)")
 
+    # Upload PDF to S3 immediately — key stored so caller can link it to the contract on save
+    import uuid as _uuid
+    from app.core.s3 import upload_file as _s3_upload, generate_presigned_url as _s3_url
+    pdf_key = f"{current_user.org_id}/frameworks/contracts/{_uuid.uuid4()}.pdf"
+    await _s3_upload(pdf_key, content, "application/pdf")
+    pdf_url = await _s3_url(pdf_key)
+
     extracted = await framework_service.extract_contract_from_pdf(content)
+    extracted["pdf_s3_key"] = pdf_key
+    extracted["pdf_url"] = pdf_url
     return extracted

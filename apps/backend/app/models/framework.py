@@ -128,6 +128,11 @@ class FrameworkContract(Document):
     overdue_schedules: int = 0
     sla_score: Optional[float] = None
 
+    # Contract document (PDF) — stored for RAG and audit
+    contract_pdf_key: Optional[str] = None       # S3 key of original uploaded PDF
+    contract_meta: Optional[dict] = None         # Full JSON extraction from LLM (all fields found)
+    contract_markdown: Optional[str] = None      # Markdown transcription of full PDF text (for RAG)
+
     created_by: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
@@ -491,6 +496,23 @@ class SparePartsPricing(Document):
 
 # ── Invited Vendor ────────────────────────────────────────────────────────────
 
+class VendorRating(BaseModel):
+    """Single rating submission for a framework service provider."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    rated_by: str                          # user_id of admin who submitted
+    rated_by_name: Optional[str] = None
+    work_order_id: Optional[str] = None    # WO that triggered this rating (auto-derived) or None (manual)
+    source: Literal["manual", "work_order"] = "manual"
+    # Dimension scores — 1 to 5
+    responsiveness: Optional[float] = None    # Response time to callouts
+    work_quality: Optional[float] = None      # Technician notes / client feedback
+    punctuality: Optional[float] = None       # On-time arrivals
+    documentation: Optional[float] = None     # Reports submitted on time
+    overall: float                             # Star rating (1–5)
+    comment: Optional[str] = None
+    rated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class FrameworkInvitedVendor(Document):
     """Vendor/service-provider invited to a framework contract."""
     org_id: Indexed(str)
@@ -504,6 +526,15 @@ class FrameworkInvitedVendor(Document):
     regions: Optional[str] = None           # comma-separated coverage regions
     site_codes: List[str] = Field(default_factory=list)   # sites they cover (from framework sites)
 
+    # Ratings
+    ratings: List[VendorRating] = Field(default_factory=list)
+    avg_responsiveness: Optional[float] = None
+    avg_work_quality: Optional[float] = None
+    avg_punctuality: Optional[float] = None
+    avg_documentation: Optional[float] = None
+    avg_overall: Optional[float] = None
+    rating_count: int = 0
+
     # Portal auth — password stored directly on vendor (no separate User account)
     portal_token: str = Field(default_factory=lambda: str(uuid.uuid4()))
     portal_password_hash: Optional[str] = None
@@ -513,6 +544,7 @@ class FrameworkInvitedVendor(Document):
 
     # KYC / onboarding
     status: str = "invited"                  # invited | pending_review | active | suspended
+    home_address: Optional[str] = None      # SP's home/base address
     gps_lat: Optional[float] = None
     gps_lng: Optional[float] = None
     selfie_key: Optional[str] = None        # S3 key for selfie photo

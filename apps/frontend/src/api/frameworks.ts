@@ -12,6 +12,8 @@ import type {
   FrameworkStats,
   FrameworkCreateRequest,
   FrameworkAssetCreateRequest,
+  VendorRatingSummary,
+  SubmitRatingPayload,
 } from '@/types/framework'
 import type { PaginatedResponse } from '@/types/api'
 
@@ -440,6 +442,16 @@ export async function getVendorDocs(frameworkId: string, memberId: string): Prom
   return res.data
 }
 
+export async function adminRegenerateBadge(frameworkId: string, memberId: string): Promise<{ badge_url: string | null }> {
+  const res = await client.post<{ badge_url: string | null }>(`/frameworks/${frameworkId}/invited-vendors/${memberId}/regenerate-badge`)
+  return res.data
+}
+
+export async function adminUpdateVendorSites(frameworkId: string, memberId: string, siteCodes: string[]): Promise<{ site_codes: string[] }> {
+  const res = await client.patch<{ site_codes: string[] }>(`/frameworks/${frameworkId}/invited-vendors/${memberId}/sites`, { site_codes: siteCodes })
+  return res.data
+}
+
 // ── Pre-Inspection ───────────────────────────────────────────────
 
 export interface PreInspectionItemPayload {
@@ -493,6 +505,12 @@ export interface ExtractedContract {
   description: string
   confidence: 'high' | 'medium' | 'low'
   raw_text_preview: string
+  // RAG / document storage fields
+  pdf_s3_key: string
+  pdf_url: string
+  full_text: string
+  markdown: string
+  meta: Record<string, unknown>
 }
 
 export async function extractContractPdf(file: File): Promise<ExtractedContract> {
@@ -501,5 +519,17 @@ export async function extractContractPdf(file: File): Promise<ExtractedContract>
   const res = await client.post<ExtractedContract>('/frameworks/extract-pdf', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
+  return res.data
+}
+
+// ── SP Ratings ───────────────────────────────────────────────────
+
+export async function getVendorRatings(frameworkId: string, memberId: string): Promise<VendorRatingSummary> {
+  const res = await client.get<VendorRatingSummary>(`/frameworks/${frameworkId}/invited-vendors/${memberId}/ratings`)
+  return res.data
+}
+
+export async function submitVendorRating(frameworkId: string, memberId: string, data: SubmitRatingPayload): Promise<{ avg_overall?: number; rating_count: number }> {
+  const res = await client.post(`/frameworks/${frameworkId}/invited-vendors/${memberId}/ratings`, data)
   return res.data
 }

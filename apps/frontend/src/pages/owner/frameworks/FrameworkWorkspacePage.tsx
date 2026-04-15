@@ -22,6 +22,7 @@ const NAV_ITEMS = [
   { label: 'SLA & Compliance',  icon: '📋', path: 'sla' },
   { label: 'Reports',           icon: '📈', path: 'reports' },
   { label: 'Settings',          icon: '⚙️', path: 'settings' },
+  { label: 'Help & Glossary',   icon: '❓', path: 'faq' },
 ]
 
 export default function FrameworkWorkspacePage() {
@@ -68,9 +69,9 @@ export default function FrameworkWorkspacePage() {
           {/* Header */}
           <div className="flex items-center gap-2 px-3 py-3 border-b border-gray-100">
             <button
-              onClick={() => navigate('/portfolio')}
+              onClick={() => navigate('/portfolio/frameworks')}
               className="flex items-center justify-center w-8 h-8 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition shrink-0"
-              title="Back to Portfolio"
+              title="Back to Framework Contracts"
             >
               ←
             </button>

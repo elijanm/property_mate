@@ -16,6 +16,10 @@ class FrameworkContractCreateRequest(BaseModel):
     region: str
     description: Optional[str] = None
     color: Optional[str] = "#D97706"
+    # PDF / RAG fields (populated when creating from extracted PDF)
+    contract_pdf_key: Optional[str] = None
+    contract_meta: Optional[dict] = None
+    contract_markdown: Optional[str] = None
 
 
 class FrameworkContractUpdateRequest(BaseModel):
@@ -27,6 +31,9 @@ class FrameworkContractUpdateRequest(BaseModel):
     description: Optional[str] = None
     status: Optional[str] = None
     color: Optional[str] = None
+    contract_pdf_key: Optional[str] = None
+    contract_meta: Optional[dict] = None
+    contract_markdown: Optional[str] = None
 
 
 class FrameworkSitePayload(BaseModel):
@@ -152,12 +159,12 @@ class FrameworkAssetResponse(BaseModel):
     site_code: str
     kva_rating: str
     engine_make: str
-    engine_model: str
-    serial_number: str
+    engine_model: Optional[str] = None
+    serial_number: Optional[str] = None
     manufacture_year: Optional[int] = None
     fuel_type: str
     region: str
-    physical_address: str
+    physical_address: Optional[str] = None
     gps_lat: Optional[float] = None
     gps_lng: Optional[float] = None
     site_contact_name: Optional[str] = None

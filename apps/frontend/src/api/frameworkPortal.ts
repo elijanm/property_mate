@@ -4,6 +4,12 @@ const BASE = '/framework-portal'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+export interface FrameworkSite {
+  site_code: string
+  site_name: string
+  region: string
+}
+
 export interface InviteInfo {
   id: string
   name: string
@@ -15,6 +21,7 @@ export interface InviteInfo {
   org_name: string
   status: string
   is_activated: boolean
+  available_sites: FrameworkSite[]
 }
 
 export interface VendorProfile {
@@ -29,6 +36,7 @@ export interface VendorProfile {
   specialization?: string
   regions?: string
   site_codes: string[]
+  home_address?: string
   status: 'invited' | 'pending_review' | 'active' | 'suspended'
   has_selfie: boolean
   has_id_front: boolean
@@ -137,6 +145,7 @@ export interface ActivatePayload {
   mobile: string
   site_codes: string[]
   specialization?: string
+  home_address?: string
   gps_lat?: number
   gps_lng?: number
 }
@@ -179,6 +188,7 @@ export async function updateMyProfile(data: Partial<{
   mobile: string
   specialization: string
   site_codes: string[]
+  home_address: string
   gps_lat: number
   gps_lng: number
 }>): Promise<VendorProfile> {
@@ -188,6 +198,34 @@ export async function updateMyProfile(data: Partial<{
 
 export async function regenerateBadge(): Promise<{ ok: boolean; badge_url?: string }> {
   const res = await client.post(`${BASE}/me/regenerate-badge`)
+  return res.data
+}
+
+export interface BadgeVerification {
+  valid: boolean
+  status: string
+  vendor_id: string
+  name: string
+  company: string
+  specialization: string
+  site_codes: string[]
+  badge_no: string
+  org_name: string
+  framework_name: string
+  contract_end: string
+  selfie_url?: string
+  active_work_orders: Array<{
+    id: string
+    work_order_number: string
+    title: string
+    status: string
+    planned_date: string
+    sites: string[]
+  }>
+}
+
+export async function verifyBadge(vendorId: string): Promise<BadgeVerification> {
+  const res = await client.get<BadgeVerification>(`${BASE}/verify/${vendorId}`)
   return res.data
 }
 
