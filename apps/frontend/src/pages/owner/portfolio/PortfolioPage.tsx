@@ -22,6 +22,15 @@ const CATEGORIES: Category[] = [
     stats: 'Manage properties',
   },
   {
+    id: 'framework_assets',
+    label: 'Framework Asset Management',
+    icon: '⚡',
+    description: 'Industrial asset maintenance contracts — generators, HVAC, elevators. PPM scheduling, GPS route planning, SLA tracking, and cost reporting.',
+    status: 'active',
+    path: '/portfolio/frameworks',
+    stats: 'Manage contracts',
+  },
+  {
     id: 'farming',
     label: 'Farming',
     icon: '🌾',

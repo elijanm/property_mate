@@ -395,3 +395,44 @@ def shipment_receiver_sign_html(
   This link is unique to you. Do not share it with others.
 </p>"""
     return _base("Confirm Your Delivery", body)
+
+
+def framework_vendor_invite_html(
+    contact_name: str,
+    company_name: str,
+    framework_name: str,
+    client_name: str,
+    org_name: str,
+    portal_url: str = "",
+    is_reinvite: bool = False,
+) -> str:
+    action = "re-invited" if is_reinvite else "invited"
+    cta = f"""
+<p style="text-align:center;margin:28px 0;">
+  <a href="{portal_url}"
+     style="display:inline-block;padding:14px 32px;background:#d97706;color:#fff;
+            font-weight:700;font-size:15px;border-radius:8px;text-decoration:none;">
+    {'Complete Your Profile →' if not is_reinvite else 'Set Up Your Portal →'}
+  </a>
+</p>
+<p style="font-size:12px;color:#9ca3af;text-align:center;">
+  Or copy this link: <span style="color:#d97706;">{portal_url}</span>
+</p>""" if portal_url else ""
+
+    body = f"""
+<h2>{'Reminder: ' if is_reinvite else ''}You've been {action} as a Service Provider</h2>
+<p>Dear <strong>{contact_name}</strong>,</p>
+<p><strong>{org_name}</strong> has {action} <strong>{company_name}</strong> to provide
+maintenance services under the following framework contract:</p>
+<p style="margin:16px 0;padding:14px 18px;background:#f9fafb;border-left:3px solid #d97706;border-radius:6px;">
+  <strong>Contract:</strong> {framework_name}<br>
+  <strong>Client:</strong> {client_name}
+</p>
+<p>To get started, please complete your service provider profile — upload your ID, take a selfie,
+and select the sites you'll be covering. You'll then receive your contractor badge.</p>
+{cta}
+<p style="margin-top:24px;color:#6b7280;font-size:13px;">
+  If you believe you received this in error, please disregard this message.
+</p>"""
+    subject = f"{'Reminder: ' if is_reinvite else ''}Service Provider Invitation — {framework_name}"
+    return _base(subject, body)

@@ -13,8 +13,8 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
-    "motor>=3.6.0",
-    "beanie>=1.27.0",
+    "motor>=3.6.0,<3.7",
+    "beanie>=1.27.0,<2.0",
     "redis[asyncio]>=5.2.0",
     "aio-pika>=9.5.0",
     "opensearch-py[async]>=2.7.0",
@@ -32,6 +32,7 @@ dependencies = [
     "email-validator>=2.2.0",
     "reportlab>=4.2.0",
     "openai>=1.0.0",
+    "pypdf>=4.0.0",
 ]
 
 [project.optional-dependencies]

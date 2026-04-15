@@ -66,9 +66,11 @@ apiClient.interceptors.response.use(
 
     if (error.response?.status !== 401 || original._retry) {
       const status = error.response?.status
-      // Show global toast for unexpected errors; skip 401 (handled by refresh)
-      // and 422 (form validation shown inline by components)
-      if (_globalErrorHandler && status !== 401 && status !== 422) {
+      // Show global toast for unexpected errors; skip:
+      //   401 — handled by refresh flow below
+      //   404 — not found, components render empty state inline
+      //   422 — form validation errors shown inline by components
+      if (_globalErrorHandler && status !== 401 && status !== 404 && status !== 422) {
         const msg =
           (error.response?.data as { error?: { message?: string } })?.error?.message ??
           (error.message === 'Network Error' ? 'Network error — check your connection.' : 'An unexpected error occurred.')

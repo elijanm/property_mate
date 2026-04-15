@@ -73,6 +73,34 @@ import VacancyLossPage from '@/pages/owner/properties/reports/VacancyLossPage'
 import ExpiryCalendarPage from '@/pages/owner/properties/reports/ExpiryCalendarPage'
 import PaymentScorecardPage from '@/pages/owner/properties/reports/PaymentScorecardPage'
 import DiscountImpactPage from '@/pages/owner/properties/reports/DiscountImpactPage'
+import FrameworksListPage from '@/pages/owner/frameworks/FrameworksListPage'
+import FrameworkWorkspacePage from '@/pages/owner/frameworks/FrameworkWorkspacePage'
+import FrameworkDashboardPage from '@/pages/owner/frameworks/FrameworkDashboardPage'
+import FrameworkAssetsPage from '@/pages/owner/frameworks/FrameworkAssetsPage'
+import FrameworkSchedulePage from '@/pages/owner/frameworks/FrameworkSchedulePage'
+import FrameworkWorkOrdersPage from '@/pages/owner/frameworks/FrameworkWorkOrdersPage'
+import FrameworkRoutePlannerPage from '@/pages/owner/frameworks/FrameworkRoutePlannerPage'
+import FrameworkInventoryPage from '@/pages/owner/frameworks/FrameworkInventoryPage'
+import FrameworkVendorsPage from '@/pages/owner/frameworks/FrameworkVendorsPage'
+import FrameworkSLAPage from '@/pages/owner/frameworks/FrameworkSLAPage'
+import FrameworkReportsPage from '@/pages/owner/frameworks/FrameworkReportsPage'
+import FrameworkSettingsPage from '@/pages/owner/frameworks/FrameworkSettingsPage'
+import FrameworkPortalAcceptPage from '@/pages/framework_portal/FrameworkPortalAcceptPage'
+import FrameworkPortalLoginPage from '@/pages/framework_portal/FrameworkPortalLoginPage'
+import FrameworkPortalLayout from '@/pages/framework_portal/FrameworkPortalLayout'
+import FrameworkPortalDashboard from '@/pages/framework_portal/FrameworkPortalDashboard'
+import FrameworkPortalWorkOrdersPage from '@/pages/framework_portal/FrameworkPortalWorkOrdersPage'
+import FrameworkPortalWorkOrderDetailPage from '@/pages/framework_portal/FrameworkPortalWorkOrderDetailPage'
+import FrameworkPortalTicketsPage from '@/pages/framework_portal/FrameworkPortalTicketsPage'
+import FrameworkPortalMetricsPage from '@/pages/framework_portal/FrameworkPortalMetricsPage'
+import FrameworkPortalProfilePage from '@/pages/framework_portal/FrameworkPortalProfilePage'
+import LandingPage from '@/pages/public/LandingPage'
+import PricingPage from '@/pages/public/PricingPage'
+import AboutPage from '@/pages/public/AboutPage'
+import BlogPage from '@/pages/public/BlogPage'
+import PrivacyPolicyPage from '@/pages/public/PrivacyPolicyPage'
+import CareersPage from '@/pages/public/CareersPage'
+import ChangelogPage from '@/pages/public/ChangelogPage'
 
 const roleHomePage: Record<string, string> = {
   owner: '/owner',
@@ -84,7 +112,7 @@ const roleHomePage: Record<string, string> = {
 
 function RoleRedirect() {
   const { user } = useAuth()
-  if (!user) return <Navigate to="/login" replace />
+  if (!user) return <LandingPage />
   const home = roleHomePage[user.role] ?? '/forbidden'
   return <Navigate to={home} replace />
 }
@@ -131,7 +159,16 @@ export default function App() {
   return (
     <AuthenticatedApp>
     <Routes>
-      {/* Public */}
+      {/* Public marketing */}
+      <Route path="/pricing"   element={<PricingPage />} />
+      <Route path="/about"     element={<AboutPage />} />
+      <Route path="/blog"      element={<BlogPage />} />
+      <Route path="/privacy"   element={<PrivacyPolicyPage />} />
+      <Route path="/terms"     element={<PrivacyPolicyPage />} />
+      <Route path="/careers"   element={<CareersPage />} />
+      <Route path="/changelog" element={<ChangelogPage />} />
+
+      {/* Auth */}
       <Route path="/login" element={<LoginPage />} />
       <Route path="/signup" element={<SignupPage />} />
       <Route path="/forbidden" element={<Forbidden />} />
@@ -295,6 +332,39 @@ export default function App() {
         }
       />
 
+      {/* Portfolio → Framework Asset Management */}
+      <Route
+        path="/portfolio/frameworks"
+        element={
+          <ProtectedRoute allowedRoles={[...PROPERTY_ROLES]}>
+            <OrgSetupGate>
+              <FrameworksListPage />
+            </OrgSetupGate>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/portfolio/frameworks/:frameworkId"
+        element={
+          <ProtectedRoute allowedRoles={[...PROPERTY_ROLES]}>
+            <OrgSetupGate>
+              <FrameworkWorkspacePage />
+            </OrgSetupGate>
+          </ProtectedRoute>
+        }
+      >
+        <Route index element={<FrameworkDashboardPage />} />
+        <Route path="assets" element={<FrameworkAssetsPage />} />
+        <Route path="schedule" element={<FrameworkSchedulePage />} />
+        <Route path="work-orders" element={<FrameworkWorkOrdersPage />} />
+        <Route path="route-planner" element={<FrameworkRoutePlannerPage />} />
+        <Route path="inventory" element={<FrameworkInventoryPage />} />
+        <Route path="vendors" element={<FrameworkVendorsPage />} />
+        <Route path="sla" element={<FrameworkSLAPage />} />
+        <Route path="reports" element={<FrameworkReportsPage />} />
+        <Route path="settings" element={<FrameworkSettingsPage />} />
+      </Route>
+
       {/* Legacy redirects — keep old /properties/* bookmarks working */}
       <Route path="/properties" element={<Navigate to="/portfolio/properties" replace />} />
       <Route path="/properties/new" element={<Navigate to="/portfolio/properties/new" replace />} />
@@ -386,6 +456,18 @@ export default function App() {
           </ProtectedRoute>
         }
       />
+
+      {/* Framework Service Provider Portal — standalone, no main auth */}
+      <Route path="/framework-portal/invite/:token" element={<FrameworkPortalAcceptPage />} />
+      <Route path="/framework-portal/login" element={<FrameworkPortalLoginPage />} />
+      <Route path="/framework-portal" element={<FrameworkPortalLayout />}>
+        <Route index element={<FrameworkPortalDashboard />} />
+        <Route path="work-orders" element={<FrameworkPortalWorkOrdersPage />} />
+        <Route path="work-orders/:workOrderId" element={<FrameworkPortalWorkOrderDetailPage />} />
+        <Route path="tickets" element={<FrameworkPortalTicketsPage />} />
+        <Route path="metrics" element={<FrameworkPortalMetricsPage />} />
+        <Route path="profile" element={<FrameworkPortalProfilePage />} />
+      </Route>
 
       {/* Root → role home */}
       <Route path="/" element={<RoleRedirect />} />

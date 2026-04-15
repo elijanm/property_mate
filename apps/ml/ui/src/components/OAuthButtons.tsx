@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Loader2 } from 'lucide-react'
 import { authApi } from '@/api/auth'
 
@@ -27,6 +27,17 @@ function GitHubIcon() {
 
 export default function OAuthButtons({ mode }: Props) {
   const [loadingProvider, setLoadingProvider] = useState<'google' | 'github' | null>(null)
+
+  // When the user presses Back from the OAuth provider page, the browser restores
+  // this page from bfcache with loadingProvider still set → spinner stuck.
+  // pageshow fires on bfcache restore (event.persisted === true); reset loading there.
+  useEffect(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) setLoadingProvider(null)
+    }
+    window.addEventListener('pageshow', onPageShow)
+    return () => window.removeEventListener('pageshow', onPageShow)
+  }, [])
 
   const handleOAuth = async (provider: 'google' | 'github') => {
     setLoadingProvider(provider)

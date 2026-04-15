@@ -38,6 +38,19 @@ from app.models.whatsapp_event import WhatsAppEvent
 from app.models.lease_template import LeaseTemplate
 from app.models.move_out import MoveOutInspection
 from app.models.cctv import CCTVCamera, CCTVEvent
+from app.models.framework import (
+    FrameworkContract,
+    FrameworkAsset,
+    FrameworkInvitedVendor,
+    MaintenanceSchedule,
+    WorkOrder,
+    SlaRecord,
+    SparePartsPricing,
+    SparePartsKit,
+    TransportCostEntry,
+    RateSchedule,
+    PartsCatalogItem,
+)
 from app.core.redis import init_redis, close_redis
 from app.core.rabbitmq import init_rabbitmq, close_rabbitmq
 from app.core.opensearch import init_opensearch, close_opensearch
@@ -59,6 +72,9 @@ async def lifespan(app: FastAPI):
         VendorProfile, VendorListing, VendorApplication, VendorContract, StockShipment, StoreLocation,
         WhatsAppInstance, WhatsAppEvent, LeaseTemplate, MoveOutInspection,
         CCTVCamera, CCTVEvent, AIConversation,
+        FrameworkContract, FrameworkAsset, MaintenanceSchedule, WorkOrder,
+        SlaRecord, SparePartsPricing, SparePartsKit, TransportCostEntry, RateSchedule, PartsCatalogItem,
+        FrameworkInvitedVendor,
     ])
     await init_redis(app)
     await init_rabbitmq(app)

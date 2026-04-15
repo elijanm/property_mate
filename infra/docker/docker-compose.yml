@@ -166,6 +166,11 @@ services:
     restart: unless-stopped
     ports:
       - "8010:8010"
+    # Explicit DNS so the container can reach Deepgram/Telnyx/ElevenLabs.
+    # Docker's default resolver can fail on hosts using systemd-resolved or dnsmasq.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     env_file:
       - ../../apps/voice-agent/.env
       - .env

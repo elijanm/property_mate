@@ -307,7 +307,10 @@ async def _generate_summary_and_sentiment(
     provider = cfg.get("llm_provider") or settings.LLM_PROVIDER
     api_key = cfg.get("llm_api_key") or settings.LLM_API_KEY
     model = cfg.get("llm_model") or settings.LLM_MODEL
-    base_url = cfg.get("llm_base_url") or settings.LLM_BASE_URL or "https://api.openai.com/v1"
+    # Strip whitespace — LLM_BASE_URL in .env is often set to "   " (spaces + inline comment)
+    # which is truthy but not a valid URL; fall back to the provider default in that case.
+    _raw_base = (cfg.get("llm_base_url") or settings.LLM_BASE_URL or "").strip()
+    base_url = _raw_base or "https://api.openai.com/v1"
 
     if provider == "anthropic":
         base_url = "https://api.anthropic.com/v1"
