@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import client from '@/api/client'
+import { portalLogin } from '@/api/frameworkPortal'
 import { TOKEN_KEY, USER_KEY } from '@/constants/storage'
 import { extractApiError } from '@/utils/apiError'
 
@@ -18,14 +18,9 @@ export default function FrameworkPortalLoginPage() {
     setError('')
     setLoading(true)
     try {
-      const res = await client.post('/auth/login', { email, password })
-      const { token, user } = res.data
-      if (user.role !== 'service_provider') {
-        setError('This portal is for service providers only. Use the main app to log in.')
-        return
-      }
+      const { token, name, status } = await portalLogin(email, password)
       localStorage.setItem(TOKEN_KEY, token)
-      localStorage.setItem(USER_KEY, JSON.stringify(user))
+      localStorage.setItem(USER_KEY, JSON.stringify({ role: 'service_provider', name, status }))
       navigate('/framework-portal')
     } catch (err) {
       setError(extractApiError(err).message)

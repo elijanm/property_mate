@@ -13,18 +13,15 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 
-from app.core.config import settings
 from app.core.logging import get_logger
 from app.dependencies.auth import CurrentUser, get_current_user, require_roles
 from app.models.framework import (
-    FrameworkAsset,
     FrameworkContract,
     FrameworkInvitedVendor,
     WorkOrder,
 )
-from app.models.user import User
 
 logger = get_logger(__name__)
 
@@ -35,9 +32,11 @@ portal_router = APIRouter(prefix="/framework-portal", tags=["framework-portal"])
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-async def _get_vendor_by_user(user_id: str) -> FrameworkInvitedVendor:
+async def _get_vendor(vendor_id: str) -> FrameworkInvitedVendor:
+    """Look up vendor by its own MongoDB id (stored as JWT sub)."""
+    from beanie import PydanticObjectId
     vendor = await FrameworkInvitedVendor.find_one(
-        FrameworkInvitedVendor.user_id == user_id,
+        FrameworkInvitedVendor.id == PydanticObjectId(vendor_id),
         FrameworkInvitedVendor.deleted_at == None,
     )
     if not vendor:
@@ -46,24 +45,13 @@ async def _get_vendor_by_user(user_id: str) -> FrameworkInvitedVendor:
 
 
 async def _s3_upload(key: str, data: bytes, content_type: str) -> None:
-    from app.core.s3 import get_s3_client
-    async with get_s3_client() as s3:
-        await s3.put_object(
-            Bucket=settings.s3_bucket,
-            Key=key,
-            Body=data,
-            ContentType=content_type,
-        )
+    from app.core.s3 import upload_file
+    await upload_file(key, data, content_type)
 
 
 async def _s3_presign(key: str) -> str:
-    from app.core.s3 import get_s3_client
-    async with get_s3_client() as s3:
-        return await s3.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": settings.s3_bucket, "Key": key},
-            ExpiresIn=3600,
-        )
+    from app.core.s3 import generate_presigned_url
+    return await generate_presigned_url(key)
 
 
 def _vendor_resp(v: FrameworkInvitedVendor) -> dict:
@@ -84,6 +72,8 @@ def _vendor_resp(v: FrameworkInvitedVendor) -> dict:
         "has_id_front": bool(v.id_front_key),
         "has_id_back": bool(v.id_back_key),
         "has_badge": bool(v.badge_key),
+        "has_cv": bool(v.cv_key),
+        "certificate_count": len(v.certificate_keys),
         "gps_lat": v.gps_lat,
         "gps_lng": v.gps_lng,
         "invited_at": v.invited_at.isoformat(),
@@ -154,7 +144,7 @@ class ActivateResponse(BaseModel):
 
 @public_router.post("/invite/{token}/activate", response_model=ActivateResponse)
 async def activate_invite(token: str, payload: ActivatePayload) -> ActivateResponse:
-    """Create a User account and link it to the vendor invite."""
+    """Set password directly on the vendor record — no separate User account needed."""
     from app.services.auth_service import hash_password, create_access_token
 
     vendor = await FrameworkInvitedVendor.find_one(
@@ -164,35 +154,10 @@ async def activate_invite(token: str, payload: ActivatePayload) -> ActivateRespo
     if not vendor:
         raise HTTPException(status_code=404, detail="Invitation not found or expired")
 
-    # Check if already activated
-    if vendor.user_id:
-        raise HTTPException(status_code=409, detail="This invitation has already been activated. Please log in.")
+    if vendor.portal_password_hash and vendor.activated_at:
+        raise HTTPException(status_code=409, detail="Already activated. Please log in.")
 
-    # Check email not already taken
-    existing = await User.find_one(User.email == vendor.email)
-    if existing:
-        # Link to existing user if they have no vendor profile yet
-        if not await FrameworkInvitedVendor.find_one(
-            FrameworkInvitedVendor.user_id == str(existing.id),
-            FrameworkInvitedVendor.deleted_at == None,
-        ):
-            vendor.user_id = str(existing.id)
-        else:
-            raise HTTPException(status_code=409, detail="An account with this email already exists.")
-    else:
-        # Create new User
-        user = User(
-            email=vendor.email,
-            hashed_password=hash_password(payload.password),
-            org_id=vendor.org_id,
-            role="service_provider",
-            first_name=vendor.contact_name.split()[0] if vendor.contact_name else "",
-            last_name=" ".join(vendor.contact_name.split()[1:]) if vendor.contact_name else "",
-            phone=payload.mobile,
-        )
-        await user.insert()
-        vendor.user_id = str(user.id)
-
+    vendor.portal_password_hash = hash_password(payload.password)
     vendor.mobile = payload.mobile
     vendor.site_codes = payload.site_codes
     if payload.specialization:
@@ -205,9 +170,8 @@ async def activate_invite(token: str, payload: ActivatePayload) -> ActivateRespo
     vendor.activated_at = datetime.utcnow()
     await vendor.save()
 
-    # Generate JWT for immediate portal access
     jwt_token = create_access_token(
-        user_id=vendor.user_id,
+        user_id=str(vendor.id),   # vendor id IS the subject
         org_id=vendor.org_id,
         role="service_provider",
     )
@@ -220,15 +184,60 @@ async def activate_invite(token: str, payload: ActivatePayload) -> ActivateRespo
     )
 
 
-@public_router.post("/invite/{token}/upload/{photo_type}")
-async def upload_kyc_photo(
+class PortalLoginPayload(BaseModel):
+    email: str
+    password: str
+
+
+class PortalLoginResponse(BaseModel):
+    token: str
+    vendor_id: str
+    name: str
+    status: str
+
+
+@public_router.post("/auth/login", response_model=PortalLoginResponse)
+async def portal_login(payload: PortalLoginPayload) -> PortalLoginResponse:
+    """Dedicated login for framework service providers — completely separate from main auth."""
+    from app.services.auth_service import verify_password, create_access_token
+
+    vendor = await FrameworkInvitedVendor.find_one(
+        FrameworkInvitedVendor.email == payload.email,
+        FrameworkInvitedVendor.deleted_at == None,
+    )
+    if not vendor or not vendor.portal_password_hash:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not verify_password(payload.password, vendor.portal_password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if vendor.status == "suspended":
+        raise HTTPException(status_code=403, detail="Your account has been suspended. Contact the framework manager.")
+
+    jwt_token = create_access_token(
+        user_id=str(vendor.id),
+        org_id=vendor.org_id,
+        role="service_provider",
+    )
+
+    return PortalLoginResponse(
+        token=jwt_token,
+        vendor_id=str(vendor.id),
+        name=vendor.contact_name,
+        status=vendor.status,
+    )
+
+
+_ALLOWED_PHOTO_TYPES = ("selfie", "id_front", "id_back")
+_ALLOWED_DOC_TYPES = ("cv", "certificate")
+
+@public_router.post("/invite/{token}/upload/{file_type}")
+async def upload_kyc_file(
     token: str,
-    photo_type: str,  # selfie | id_front | id_back
+    file_type: str,  # selfie | id_front | id_back | cv | certificate
     file: UploadFile = File(...),
 ) -> dict:
-    """Upload selfie or ID photos (allowed before full activation for UX flow)."""
-    if photo_type not in ("selfie", "id_front", "id_back"):
-        raise HTTPException(status_code=400, detail="photo_type must be selfie, id_front, or id_back")
+    """Upload KYC photos, CV, or certificates (allowed before full activation for UX flow)."""
+    if file_type not in (*_ALLOWED_PHOTO_TYPES, *_ALLOWED_DOC_TYPES):
+        raise HTTPException(status_code=400, detail=f"file_type must be one of: selfie, id_front, id_back, cv, certificate")
 
     vendor = await FrameworkInvitedVendor.find_one(
         FrameworkInvitedVendor.portal_token == token,
@@ -238,22 +247,26 @@ async def upload_kyc_photo(
         raise HTTPException(status_code=404, detail="Invitation not found")
 
     data = await file.read()
-    content_type = file.content_type or "image/jpeg"
-    ext = content_type.split("/")[-1].split("+")[0]
-    key = f"{vendor.org_id}/framework-vendors/{vendor.id}/{photo_type}.{ext}"
+    content_type = file.content_type or ("application/pdf" if file_type in ("cv", "certificate") else "image/jpeg")
+    ext = (file.filename or "").rsplit(".", 1)[-1] or content_type.split("/")[-1].split("+")[0]
+    key = f"{vendor.org_id}/framework-vendors/{vendor.id}/{file_type}_{uuid.uuid4().hex[:8]}.{ext}"
 
     await _s3_upload(key, data, content_type)
 
-    if photo_type == "selfie":
+    if file_type == "selfie":
         vendor.selfie_key = key
-    elif photo_type == "id_front":
+    elif file_type == "id_front":
         vendor.id_front_key = key
-    else:
+    elif file_type == "id_back":
         vendor.id_back_key = key
+    elif file_type == "cv":
+        vendor.cv_key = key
+    else:  # certificate
+        vendor.certificate_keys = [*vendor.certificate_keys, key]
     await vendor.save()
 
-    # Auto-generate badge if all KYC photos are present and vendor is active/pending_review
-    if vendor.selfie_key and vendor.id_front_key and vendor.id_back_key and vendor.user_id:
+    # Auto-generate badge if all KYC photos are present
+    if vendor.selfie_key and vendor.id_front_key and vendor.id_back_key and vendor.activated_at:
         asyncio.ensure_future(_generate_and_store_badge(vendor))
 
     return {"ok": True, "key": key}
@@ -378,7 +391,7 @@ def _build_badge_pdf(
 async def get_my_profile(
     current_user: CurrentUser = Depends(require_roles("service_provider")),
 ) -> dict:
-    vendor = await _get_vendor_by_user(current_user.user_id)
+    vendor = await _get_vendor(current_user.user_id)
     resp = _vendor_resp(vendor)
 
     # Add presigned URLs for photos
@@ -410,7 +423,7 @@ async def update_my_profile(
     payload: UpdateProfilePayload,
     current_user: CurrentUser = Depends(require_roles("service_provider")),
 ) -> dict:
-    vendor = await _get_vendor_by_user(current_user.user_id)
+    vendor = await _get_vendor(current_user.user_id)
     if payload.mobile is not None:
         vendor.mobile = payload.mobile
     if payload.specialization is not None:
@@ -434,7 +447,7 @@ async def upload_my_photo(
     if photo_type not in ("selfie", "id_front", "id_back"):
         raise HTTPException(status_code=400, detail="photo_type must be selfie, id_front, or id_back")
 
-    vendor = await _get_vendor_by_user(current_user.user_id)
+    vendor = await _get_vendor(current_user.user_id)
     data = await file.read()
     content_type = file.content_type or "image/jpeg"
     ext = content_type.split("/")[-1].split("+")[0]
@@ -490,7 +503,7 @@ async def list_my_work_orders(
     status: Optional[str] = None,
     current_user: CurrentUser = Depends(require_roles("service_provider")),
 ) -> dict:
-    vendor = await _get_vendor_by_user(current_user.user_id)
+    vendor = await _get_vendor(current_user.user_id)
 
     filters = [
         WorkOrder.org_id == vendor.org_id,
@@ -510,7 +523,7 @@ async def get_my_work_order(
     current_user: CurrentUser = Depends(require_roles("service_provider")),
 ) -> dict:
     from beanie import PydanticObjectId
-    vendor = await _get_vendor_by_user(current_user.user_id)
+    vendor = await _get_vendor(current_user.user_id)
 
     wo = await WorkOrder.find_one(
         WorkOrder.id == PydanticObjectId(work_order_id),
@@ -564,7 +577,7 @@ async def respond_to_work_order(
     current_user: CurrentUser = Depends(require_roles("service_provider")),
 ) -> dict:
     from beanie import PydanticObjectId
-    vendor = await _get_vendor_by_user(current_user.user_id)
+    vendor = await _get_vendor(current_user.user_id)
 
     wo = await WorkOrder.find_one(
         WorkOrder.id == PydanticObjectId(work_order_id),
@@ -629,7 +642,7 @@ async def submit_pre_inspection(
 ) -> dict:
     from beanie import PydanticObjectId
     from app.models.framework import PreInspection, PreInspectionItem
-    vendor = await _get_vendor_by_user(current_user.user_id)
+    vendor = await _get_vendor(current_user.user_id)
 
     wo = await WorkOrder.find_one(
         WorkOrder.id == PydanticObjectId(work_order_id),
@@ -676,7 +689,7 @@ async def submit_pre_inspection(
 async def list_my_tickets(
     current_user: CurrentUser = Depends(require_roles("service_provider")),
 ) -> dict:
-    vendor = await _get_vendor_by_user(current_user.user_id)
+    vendor = await _get_vendor(current_user.user_id)
     from app.models.ticket import Ticket
     tickets = await Ticket.find(
         Ticket.org_id == vendor.org_id,
@@ -707,7 +720,7 @@ async def list_my_tickets(
 async def get_my_metrics(
     current_user: CurrentUser = Depends(require_roles("service_provider")),
 ) -> dict:
-    vendor = await _get_vendor_by_user(current_user.user_id)
+    vendor = await _get_vendor(current_user.user_id)
     vendor_id = str(vendor.id)
 
     all_wos = await WorkOrder.find(

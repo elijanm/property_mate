@@ -1,6 +1,7 @@
 """Framework Asset Management API endpoints."""
 from __future__ import annotations
 
+import asyncio
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
@@ -749,6 +750,57 @@ async def remove_invited_vendor(
         raise HTTPException(status_code=404, detail="Invited vendor not found")
     member.deleted_at = datetime.utcnow()
     await member.save()
+
+
+# ── Invited Vendor KYC Docs (owner view) ──────────────────────────────────────
+
+@router.get(
+    "/{framework_id}/invited-vendors/{member_id}/docs",
+    dependencies=[Depends(require_roles("owner", "superadmin"))],
+)
+async def get_vendor_docs(
+    framework_id: str,
+    member_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    from beanie import PydanticObjectId
+    from app.core.s3 import generate_presigned_url
+
+    member = await FrameworkInvitedVendor.find_one(
+        FrameworkInvitedVendor.id == PydanticObjectId(member_id),
+        FrameworkInvitedVendor.org_id == current_user.org_id,
+        FrameworkInvitedVendor.framework_id == framework_id,
+        FrameworkInvitedVendor.deleted_at == None,
+    )
+    if not member:
+        raise HTTPException(status_code=404, detail="Invited vendor not found")
+
+    async def _url(key: Optional[str]) -> Optional[str]:
+        return await generate_presigned_url(key) if key else None
+
+    selfie_url, id_front_url, id_back_url, badge_url = await asyncio.gather(
+        _url(member.selfie_key),
+        _url(member.id_front_key),
+        _url(member.id_back_key),
+        _url(member.badge_key),
+    )
+
+    return {
+        "has_selfie": bool(member.selfie_key),
+        "has_id_front": bool(member.id_front_key),
+        "has_id_back": bool(member.id_back_key),
+        "has_badge": bool(member.badge_key),
+        "selfie_url": selfie_url,
+        "id_front_url": id_front_url,
+        "id_back_url": id_back_url,
+        "badge_url": badge_url,
+        "status": member.status,
+        "activated_at": member.activated_at.isoformat() if member.activated_at else None,
+        "gps_lat": member.gps_lat,
+        "gps_lng": member.gps_lng,
+        "mobile": member.mobile,
+        "site_codes": member.site_codes,
+    }
 
 
 # ── PDF Contract Extraction ───────────────────────────────────────────────────

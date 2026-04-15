@@ -504,9 +504,10 @@ class FrameworkInvitedVendor(Document):
     regions: Optional[str] = None           # comma-separated coverage regions
     site_codes: List[str] = Field(default_factory=list)   # sites they cover (from framework sites)
 
-    # Portal auth
+    # Portal auth — password stored directly on vendor (no separate User account)
     portal_token: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    user_id: Optional[str] = None           # linked User after activation
+    portal_password_hash: Optional[str] = None
+    user_id: Optional[str] = None           # legacy, no longer set on new activations
 
     # KYC / onboarding
     status: str = "invited"                  # invited | pending_review | active | suspended
@@ -516,6 +517,8 @@ class FrameworkInvitedVendor(Document):
     id_front_key: Optional[str] = None      # S3 key for ID front photo
     id_back_key: Optional[str] = None       # S3 key for ID back photo
     badge_key: Optional[str] = None         # S3 key for generated contractor badge PDF
+    cv_key: Optional[str] = None            # S3 key for CV/resume (PDF)
+    certificate_keys: List[str] = Field(default_factory=list)  # S3 keys for professional certificates
 
     invited_at: datetime = Field(default_factory=datetime.utcnow)
     reinvited_at: Optional[datetime] = None

@@ -142,6 +142,11 @@ export async function activateInvite(token: string, payload: ActivatePayload): P
   return res.data
 }
 
+export async function portalLogin(email: string, password: string): Promise<{ token: string; vendor_id: string; name: string; status: string }> {
+  const res = await client.post(`${BASE}/auth/login`, { email, password })
+  return res.data
+}
+
 export async function uploadInvitePhoto(token: string, photoType: 'selfie' | 'id_front' | 'id_back', file: File): Promise<void> {
   const form = new FormData()
   form.append('file', file)

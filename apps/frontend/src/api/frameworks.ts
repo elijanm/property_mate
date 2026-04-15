@@ -374,6 +374,8 @@ export interface InvitedVendor {
   regions?: string
   site_codes: string[]
   status: string
+  gps_lat?: number
+  gps_lng?: number
   invited_at: string
   reinvited_at?: string
   activated_at?: string
@@ -410,6 +412,28 @@ export async function reinviteVendor(frameworkId: string, memberId: string): Pro
 
 export async function removeInvitedVendor(frameworkId: string, memberId: string): Promise<void> {
   await client.delete(`/frameworks/${frameworkId}/invited-vendors/${memberId}`)
+}
+
+export interface VendorDocs {
+  has_selfie: boolean
+  has_id_front: boolean
+  has_id_back: boolean
+  has_badge: boolean
+  selfie_url?: string
+  id_front_url?: string
+  id_back_url?: string
+  badge_url?: string
+  status: string
+  activated_at?: string
+  gps_lat?: number
+  gps_lng?: number
+  mobile?: string
+  site_codes: string[]
+}
+
+export async function getVendorDocs(frameworkId: string, memberId: string): Promise<VendorDocs> {
+  const res = await client.get<VendorDocs>(`/frameworks/${frameworkId}/invited-vendors/${memberId}/docs`)
+  return res.data
 }
 
 // ── Pre-Inspection ───────────────────────────────────────────────
