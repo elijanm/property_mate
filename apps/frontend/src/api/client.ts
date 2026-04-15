@@ -70,7 +70,9 @@ apiClient.interceptors.response.use(
       //   401 — handled by refresh flow below
       //   404 — not found, components render empty state inline
       //   422 — form validation errors shown inline by components
-      if (_globalErrorHandler && status !== 401 && status !== 404 && status !== 422) {
+      // Also skip portal auth endpoints — errors shown inline in the login/verify form
+      const isPortalAuth = original.url?.includes('/framework-portal/auth/')
+      if (_globalErrorHandler && status !== 401 && status !== 404 && status !== 422 && !isPortalAuth) {
         const msg =
           (error.response?.data as { error?: { message?: string } })?.error?.message ??
           (error.message === 'Network Error' ? 'Network error — check your connection.' : 'An unexpected error occurred.')

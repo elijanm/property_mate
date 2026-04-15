@@ -436,3 +436,20 @@ and select the sites you'll be covering. You'll then receive your contractor bad
 </p>"""
     subject = f"{'Reminder: ' if is_reinvite else ''}Service Provider Invitation — {framework_name}"
     return _base(subject, body)
+
+
+def framework_portal_otp_html(contact_name: str, otp_code: str) -> str:
+    body = f"""
+<h2>Your Sign-In Code</h2>
+<p>Dear <strong>{contact_name}</strong>,</p>
+<p>Use the code below to sign in to your Service Provider Portal. It expires in <strong>10 minutes</strong>.</p>
+<p style="text-align:center;margin:32px 0;">
+  <span style="display:inline-block;padding:18px 40px;background:#fef3c7;border:2px solid #d97706;
+               border-radius:12px;font-size:36px;font-weight:800;letter-spacing:10px;color:#92400e;">
+    {otp_code}
+  </span>
+</p>
+<p style="font-size:13px;color:#6b7280;">
+  If you didn't request this code, you can safely ignore this email.
+</p>"""
+    return _base("Service Provider Portal — Sign-In Code", body)

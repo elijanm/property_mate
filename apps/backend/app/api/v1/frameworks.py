@@ -778,22 +778,31 @@ async def get_vendor_docs(
     async def _url(key: Optional[str]) -> Optional[str]:
         return await generate_presigned_url(key) if key else None
 
-    selfie_url, id_front_url, id_back_url, badge_url = await asyncio.gather(
+    cert_url_tasks = [_url(k) for k in member.certificate_keys]
+    results = await asyncio.gather(
         _url(member.selfie_key),
         _url(member.id_front_key),
         _url(member.id_back_key),
         _url(member.badge_key),
+        _url(member.cv_key),
+        *cert_url_tasks,
     )
+    selfie_url, id_front_url, id_back_url, badge_url, cv_url = results[:5]
+    certificate_urls = list(results[5:])
 
     return {
         "has_selfie": bool(member.selfie_key),
         "has_id_front": bool(member.id_front_key),
         "has_id_back": bool(member.id_back_key),
         "has_badge": bool(member.badge_key),
+        "has_cv": bool(member.cv_key),
+        "certificate_count": len(member.certificate_keys),
         "selfie_url": selfie_url,
         "id_front_url": id_front_url,
         "id_back_url": id_back_url,
         "badge_url": badge_url,
+        "cv_url": cv_url,
+        "certificate_urls": certificate_urls,
         "status": member.status,
         "activated_at": member.activated_at.isoformat() if member.activated_at else None,
         "gps_lat": member.gps_lat,

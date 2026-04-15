@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { getMyProfile, updateMyProfile, uploadMyPhoto } from '@/api/frameworkPortal'
+import { getMyProfile, updateMyProfile, uploadMyPhoto, regenerateBadge } from '@/api/frameworkPortal'
 import type { VendorProfile } from '@/api/frameworkPortal'
 import { extractApiError } from '@/utils/apiError'
 import { TOKEN_KEY, USER_KEY } from '@/constants/storage'
@@ -28,8 +28,11 @@ export default function FrameworkPortalProfilePage() {
   const selfieRef = useRef<HTMLInputElement>(null)
   const idFrontRef = useRef<HTMLInputElement>(null)
   const idBackRef = useRef<HTMLInputElement>(null)
+  const cvRef = useRef<HTMLInputElement>(null)
+  const certRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState<string | null>(null)
   const [gpsLoading, setGpsLoading] = useState(false)
+  const [regenerating, setRegenerating] = useState(false)
 
   useEffect(() => {
     getMyProfile().then(p => {
@@ -61,7 +64,7 @@ export default function FrameworkPortalProfilePage() {
     }
   }
 
-  async function handlePhotoUpload(type: 'selfie' | 'id_front' | 'id_back', file: File) {
+  async function handlePhotoUpload(type: 'selfie' | 'id_front' | 'id_back' | 'cv' | 'certificate', file: File) {
     setUploading(type)
     setError('')
     try {
@@ -129,23 +132,51 @@ export default function FrameworkPortalProfilePage() {
       {error && <p className="text-sm text-red-600 bg-red-50 rounded-xl px-3 py-2">{error}</p>}
 
       {/* Contractor Badge */}
-      {profile.has_badge && profile.badge_url && (
-        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-center gap-3">
+      <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
+        <div className="flex items-center gap-3">
           <span className="text-2xl">🪪</span>
           <div className="flex-1">
-            <div className="text-sm font-bold text-amber-800">Contractor Badge Ready</div>
-            <div className="text-xs text-amber-600">Download your official ID badge</div>
+            <div className="text-sm font-bold text-amber-800">Contractor Badge</div>
+            <div className="text-xs text-amber-600">
+              {profile.has_badge ? 'CR80 card size — ready to print' : 'Complete KYC to generate'}
+            </div>
           </div>
-          <a
-            href={profile.badge_url}
-            target="_blank" rel="noreferrer"
-            className="px-3 py-1.5 text-xs font-semibold text-white rounded-lg"
-            style={{ backgroundColor: ACCENT }}
-          >
-            Download
-          </a>
+          {profile.has_badge && profile.badge_url && (
+            <a
+              href={profile.badge_url}
+              target="_blank" rel="noreferrer"
+              className="px-3 py-1.5 text-xs font-semibold text-white rounded-lg"
+              style={{ backgroundColor: ACCENT }}
+            >
+              Download
+            </a>
+          )}
+          {profile.has_selfie && profile.has_id_front && profile.has_id_back && (
+            <button
+              onClick={async () => {
+                setRegenerating(true)
+                setError('')
+                try {
+                  const res = await regenerateBadge()
+                  const updated = await getMyProfile()
+                  setProfile(updated)
+                  if (res.badge_url) window.open(res.badge_url, '_blank')
+                  setSuccess('Badge regenerated!')
+                  setTimeout(() => setSuccess(''), 3000)
+                } catch (err) {
+                  setError(extractApiError(err).message)
+                } finally {
+                  setRegenerating(false)
+                }
+              }}
+              disabled={regenerating}
+              className="px-3 py-1.5 text-xs font-semibold border border-amber-300 text-amber-700 rounded-lg disabled:opacity-50"
+            >
+              {regenerating ? '…' : profile.has_badge ? 'Regenerate' : 'Generate'}
+            </button>
+          )}
         </div>
-      )}
+      </div>
 
       {/* Profile details */}
       <div className="bg-white rounded-2xl border border-gray-100 p-4">
@@ -265,6 +296,71 @@ export default function FrameworkPortalProfilePage() {
             capture="environment"
             onUpload={file => handlePhotoUpload('id_back', file)}
           />
+        </div>
+      </div>
+
+      {/* CV & Certificates */}
+      <div className="bg-white rounded-2xl border border-gray-100 p-4">
+        <h2 className="text-sm font-bold text-gray-900 mb-3">CV & Certificates</h2>
+        <div className="space-y-3">
+          {/* CV */}
+          <div className="flex items-center gap-3">
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg ${profile.has_cv ? 'bg-green-50' : 'bg-gray-50'}`}>
+              {profile.has_cv ? '✅' : '📄'}
+            </div>
+            <div className="flex-1">
+              <div className="text-sm font-medium text-gray-800">CV / Resume</div>
+              <div className={`text-xs ${profile.has_cv ? 'text-green-600' : 'text-gray-400'}`}>
+                {profile.has_cv ? 'Uploaded' : 'PDF or document'}
+              </div>
+            </div>
+            {profile.has_cv && profile.cv_url && (
+              <a href={profile.cv_url} target="_blank" rel="noreferrer" className="text-xs text-blue-500 border border-blue-100 px-2 py-1 rounded-lg">View</a>
+            )}
+            <button
+              onClick={() => cvRef.current?.click()}
+              disabled={uploading === 'cv'}
+              className={`text-xs px-3 py-1.5 rounded-lg border font-medium disabled:opacity-50 ${
+                profile.has_cv ? 'border-gray-200 text-gray-600' : 'border-amber-300 text-amber-700'
+              }`}
+            >
+              {uploading === 'cv' ? '…' : profile.has_cv ? 'Replace' : 'Upload'}
+            </button>
+            <input ref={cvRef} type="file" accept=".pdf,.doc,.docx,image/*" className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) handlePhotoUpload('cv', f) }} />
+          </div>
+
+          {/* Certificates */}
+          <div>
+            <div className="flex items-center gap-3 mb-2">
+              <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-lg">🏅</div>
+              <div className="flex-1">
+                <div className="text-sm font-medium text-gray-800">Certificates</div>
+                <div className="text-xs text-gray-400">
+                  {profile.certificate_count > 0 ? `${profile.certificate_count} uploaded` : 'None uploaded'}
+                </div>
+              </div>
+              <button
+                onClick={() => certRef.current?.click()}
+                disabled={uploading === 'certificate'}
+                className="text-xs px-3 py-1.5 rounded-lg border border-amber-300 text-amber-700 font-medium disabled:opacity-50"
+              >
+                {uploading === 'certificate' ? '…' : '+ Add'}
+              </button>
+              <input ref={certRef} type="file" accept=".pdf,.doc,.docx,image/*" className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) handlePhotoUpload('certificate', f) }} />
+            </div>
+            {profile.certificate_count > 0 && profile.certificate_urls && (
+              <div className="pl-13 space-y-1.5 ml-13" style={{ marginLeft: '3.25rem' }}>
+                {profile.certificate_urls.map((url, i) => (
+                  <a key={i} href={url} target="_blank" rel="noreferrer"
+                    className="flex items-center gap-2 px-3 py-2 bg-gray-50 rounded-lg text-xs text-blue-600 hover:bg-blue-50">
+                    📎 Certificate {i + 1}
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

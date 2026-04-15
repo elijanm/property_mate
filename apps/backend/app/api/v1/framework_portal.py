@@ -206,11 +206,11 @@ async def portal_login(payload: PortalLoginPayload) -> PortalLoginResponse:
         FrameworkInvitedVendor.deleted_at == None,
     )
     if not vendor or not vendor.portal_password_hash:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise HTTPException(status_code=400, detail="Invalid email or password")
     if not verify_password(payload.password, vendor.portal_password_hash):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise HTTPException(status_code=400, detail="Invalid email or password")
     if vendor.status == "suspended":
-        raise HTTPException(status_code=403, detail="Your account has been suspended. Contact the framework manager.")
+        raise HTTPException(status_code=400, detail="Your account has been suspended. Contact the framework manager.")
 
     jwt_token = create_access_token(
         user_id=str(vendor.id),
@@ -218,6 +218,106 @@ async def portal_login(payload: PortalLoginPayload) -> PortalLoginResponse:
         role="service_provider",
     )
 
+    return PortalLoginResponse(
+        token=jwt_token,
+        vendor_id=str(vendor.id),
+        name=vendor.contact_name,
+        status=vendor.status,
+    )
+
+
+class RequestOtpPayload(BaseModel):
+    email: str
+
+
+class VerifyOtpPayload(BaseModel):
+    email: str
+    otp: str
+
+
+@public_router.post("/auth/request-otp")
+async def request_portal_otp(payload: RequestOtpPayload) -> dict:
+    """Send a 6-digit OTP to the vendor's registered email."""
+    import random
+    from app.core.email import send_email, framework_portal_otp_html
+    from app.core.redis import get_redis_client
+
+    vendor = await FrameworkInvitedVendor.find_one(
+        FrameworkInvitedVendor.email == payload.email,
+        FrameworkInvitedVendor.deleted_at == None,
+    )
+    # Always respond "sent" to prevent email enumeration
+    if not vendor or vendor.status == "invited":
+        return {"ok": True}
+
+    otp = f"{random.randint(0, 999999):06d}"
+    key = f"portal_otp:{vendor.email}"
+    try:
+        redis = get_redis_client()
+        await redis.setex(key, 600, otp)
+    except Exception:
+        # Redis unavailable — store on vendor document as fallback (dev mode)
+        vendor.portal_otp = otp
+        vendor.portal_otp_expires = datetime.utcnow().timestamp() + 600
+        await vendor.save()
+
+    html = framework_portal_otp_html(contact_name=vendor.contact_name, otp_code=otp)
+    asyncio.ensure_future(
+        send_email(to=vendor.email, subject="Service Provider Portal — Sign-In Code", html=html)
+    )
+    logger.info("portal_otp_sent", email=vendor.email, otp=otp)  # dev convenience
+    return {"ok": True}
+
+
+@public_router.post("/auth/verify-otp", response_model=PortalLoginResponse)
+async def verify_portal_otp(payload: VerifyOtpPayload) -> PortalLoginResponse:
+    """Verify OTP and return a JWT token."""
+    from app.services.auth_service import create_access_token
+    from app.core.redis import get_redis_client
+
+    key = f"portal_otp:{payload.email}"
+
+    vendor = await FrameworkInvitedVendor.find_one(
+        FrameworkInvitedVendor.email == payload.email,
+        FrameworkInvitedVendor.deleted_at == None,
+    )
+    if not vendor:
+        raise HTTPException(status_code=400, detail="Invalid or expired code")
+
+    # Try Redis first, fall back to vendor document OTP
+    otp_valid = False
+    try:
+        redis = get_redis_client()
+        stored = await redis.get(key)
+        if stored and stored == payload.otp:
+            await redis.delete(key)
+            otp_valid = True
+    except Exception:
+        pass
+
+    if not otp_valid:
+        # Fallback: check OTP stored on vendor document
+        import time as _time
+        if (
+            getattr(vendor, "portal_otp", None) == payload.otp
+            and getattr(vendor, "portal_otp_expires", 0) > _time.time()
+        ):
+            vendor.portal_otp = None
+            vendor.portal_otp_expires = None
+            await vendor.save()
+            otp_valid = True
+
+    if not otp_valid:
+        raise HTTPException(status_code=400, detail="Invalid or expired code")
+
+    if vendor.status == "suspended":
+        raise HTTPException(status_code=400, detail="Your account has been suspended. Contact the framework manager.")
+
+    jwt_token = create_access_token(
+        user_id=str(vendor.id),
+        org_id=vendor.org_id,
+        role="service_provider",
+    )
     return PortalLoginResponse(
         token=jwt_token,
         vendor_id=str(vendor.id),
@@ -274,6 +374,17 @@ async def upload_kyc_file(
 
 # ── Badge generation ──────────────────────────────────────────────────────────
 
+async def _download_s3_bytes(key: Optional[str]) -> Optional[bytes]:
+    """Download a file from S3 and return raw bytes, or None on failure."""
+    if not key:
+        return None
+    try:
+        from app.core.s3 import download_file
+        return await download_file(key)
+    except Exception:
+        return None
+
+
 async def _generate_and_store_badge(vendor: FrameworkInvitedVendor) -> None:
     """Generate a contractor badge PDF and store it in S3."""
     try:
@@ -285,7 +396,10 @@ async def _generate_and_store_badge(vendor: FrameworkInvitedVendor) -> None:
         org = await Org.find_one(Org.org_id == vendor.org_id)
         org_name = (org.business.name if org and org.business else "PMS")
 
-        pdf_bytes = _build_badge_pdf(vendor, fw, org_name)
+        # Download selfie photo to embed in badge
+        selfie_bytes = await _download_s3_bytes(vendor.selfie_key)
+
+        pdf_bytes = _build_badge_pdf(vendor, fw, org_name, selfie_bytes=selfie_bytes)
         key = f"{vendor.org_id}/framework-vendors/{vendor.id}/badge.pdf"
         await _s3_upload(key, pdf_bytes, "application/pdf")
         vendor.badge_key = key
@@ -299,89 +413,195 @@ def _build_badge_pdf(
     vendor: FrameworkInvitedVendor,
     fw: Optional[FrameworkContract],
     org_name: str,
+    selfie_bytes: Optional[bytes] = None,
 ) -> bytes:
-    """Build a contractor ID badge PDF using reportlab."""
+    """
+    Build a contractor ID badge PDF — CR80 card size (85.6 × 54 mm), print-ready.
+    Includes the vendor's selfie photo and a QR code for verification.
+    """
     try:
-        from reportlab.lib.pagesizes import A6
         from reportlab.lib.units import mm
         from reportlab.lib.colors import HexColor, white, black
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.pdfgen import canvas as rl_canvas
     except ImportError:
-        # reportlab not installed — return empty bytes
         logger.warning("reportlab_not_installed", action="skip_badge_pdf")
         return b""
 
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=A6,
-        leftMargin=8 * mm,
-        rightMargin=8 * mm,
-        topMargin=8 * mm,
-        bottomMargin=8 * mm,
-    )
+    # CR80 standard ID card size
+    CARD_W = 85.6 * mm
+    CARD_H = 54.0 * mm
 
-    amber = HexColor("#D97706")
-    dark = HexColor("#111827")
-    gray = HexColor("#6B7280")
-    light_bg = HexColor("#FFFBEB")
+    AMBER = HexColor("#D97706")
+    AMBER_DARK = HexColor("#92400E")
+    AMBER_LIGHT = HexColor("#FFFBEB")
+    DARK = HexColor("#111827")
+    GRAY = HexColor("#6B7280")
+    WHITE = white
 
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("title", fontSize=13, textColor=white, fontName="Helvetica-Bold", alignment=1)
-    sub_style = ParagraphStyle("sub", fontSize=7, textColor=white, fontName="Helvetica", alignment=1)
-    label_style = ParagraphStyle("label", fontSize=6, textColor=gray, fontName="Helvetica")
-    value_style = ParagraphStyle("value", fontSize=9, textColor=dark, fontName="Helvetica-Bold")
-    small_style = ParagraphStyle("small", fontSize=7, textColor=gray, fontName="Helvetica")
-
-    badge_no = str(vendor.id)[-6:].upper()
-    sites_text = ", ".join(vendor.site_codes) if vendor.site_codes else "All Assigned Sites"
+    badge_no = f"SP-{str(vendor.id)[-8:].upper()}"
     contract_name = fw.name if fw else "Framework Contract"
-    client_name = fw.client_name if fw else ""
     contract_end = fw.contract_end if fw else "N/A"
+    specialization = vendor.specialization or "General Services"
+    sites_text = ", ".join(vendor.site_codes[:4]) if vendor.site_codes else "All Assigned Sites"
+    if vendor.site_codes and len(vendor.site_codes) > 4:
+        sites_text += f" +{len(vendor.site_codes) - 4}"
+    issued = datetime.utcnow().strftime("%d %b %Y")
 
-    header_table = Table(
-        [[Paragraph(org_name.upper(), title_style)],
-         [Paragraph("CONTRACTOR SERVICE PROVIDER", sub_style)]],
-        colWidths=[90 * mm],
-    )
-    header_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), amber),
-        ("ROWPADDING", (0, 0), (-1, -1), 6),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-    ]))
+    # Verification data for QR code
+    verify_payload = f"BADGE:{badge_no}|SP:{vendor.email}|ORG:{org_name}|ISSUED:{issued}"
 
-    detail_rows = [
-        [Paragraph("NAME", label_style), Paragraph(vendor.contact_name, value_style)],
-        [Paragraph("COMPANY", label_style), Paragraph(vendor.name, value_style)],
-        [Paragraph("BADGE NO.", label_style), Paragraph(f"SP-{badge_no}", value_style)],
-        [Paragraph("SPECIALIZATION", label_style), Paragraph(vendor.specialization or "General", value_style)],
-        [Paragraph("SITES COVERED", label_style), Paragraph(sites_text, small_style)],
-        [Paragraph("CONTRACT", label_style), Paragraph(f"{contract_name} | {client_name}", small_style)],
-        [Paragraph("VALID UNTIL", label_style), Paragraph(contract_end, value_style)],
-    ]
+    # Generate QR code as PNG bytes
+    qr_img_bytes: Optional[bytes] = None
+    try:
+        import qrcode  # type: ignore
+        qr = qrcode.QRCode(version=2, box_size=4, border=1)
+        qr.add_data(verify_payload)
+        qr.make(fit=True)
+        qr_pil = qr.make_image(fill_color="#92400E", back_color="#FFFBEB")
+        qr_buf = io.BytesIO()
+        qr_pil.save(qr_buf, format="PNG")
+        qr_img_bytes = qr_buf.getvalue()
+    except ImportError:
+        pass  # qrcode library not available — badge renders without QR
 
-    detail_table = Table(detail_rows, colWidths=[28 * mm, 62 * mm])
-    detail_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), light_bg),
-        ("ROWPADDING", (0, 0), (-1, -1), 4),
-        ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#E5E7EB")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-    ]))
+    # ── Fixed zone heights ────────────────────────────────────────────────────
+    HEADER_H = 11 * mm   # top amber band
+    FOOTER_H = 5  * mm   # bottom amber band
+    ACCENT_W = 2  * mm   # left amber stripe
+    # Content zone: x=[ACCENT_W .. CARD_W], y=[FOOTER_H .. CARD_H-HEADER_H]
+    CONTENT_TOP    = CARD_H - HEADER_H   # 43 mm from bottom
+    CONTENT_BOTTOM = FOOTER_H            #  5 mm from bottom
 
-    footer_table = Table(
-        [[Paragraph(f"Issued: {datetime.utcnow().strftime('%d %b %Y')}  |  For verification contact {org_name}", small_style)]],
-        colWidths=[90 * mm],
-    )
-    footer_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), amber),
-        ("ROWPADDING", (0, 0), (-1, -1), 4),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-    ]))
+    # ── Column geometry ───────────────────────────────────────────────────────
+    PHOTO_X = ACCENT_W + 1.5 * mm
+    PHOTO_W = 18 * mm
+    PHOTO_H = 28 * mm
+    PHOTO_Y = CONTENT_BOTTOM + 1 * mm   # sits just above footer
 
-    story = [header_table, Spacer(1, 4 * mm), detail_table, Spacer(1, 4 * mm), footer_table]
-    doc.build(story)
+    QR_SIZE = 16 * mm
+    QR_X    = CARD_W - QR_SIZE - 2 * mm
+    QR_Y    = CONTENT_BOTTOM + 1 * mm   # sits just above footer
+
+    TEXT_X  = PHOTO_X + PHOTO_W + 2.5 * mm
+    TEXT_MAX_X = QR_X - 1.5 * mm
+    TEXT_W  = TEXT_MAX_X - TEXT_X
+
+    buf = io.BytesIO()
+    c = rl_canvas.Canvas(buf, pagesize=(CARD_W, CARD_H))
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # LAYER 1: backgrounds (drawn first so content sits on top)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    # White card background
+    c.setFillColor(WHITE)
+    c.rect(0, 0, CARD_W, CARD_H, fill=1, stroke=0)
+
+    # Amber header band
+    c.setFillColor(AMBER)
+    c.rect(0, CARD_H - HEADER_H, CARD_W, HEADER_H, fill=1, stroke=0)
+
+    # Amber footer band
+    c.setFillColor(AMBER)
+    c.rect(0, 0, CARD_W, FOOTER_H, fill=1, stroke=0)
+
+    # Amber left accent stripe (content zone only)
+    c.setFillColor(AMBER)
+    c.rect(0, FOOTER_H, ACCENT_W, CONTENT_TOP - FOOTER_H, fill=1, stroke=0)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # LAYER 2: header text
+    # ═══════════════════════════════════════════════════════════════════════════
+    c.setFillColor(WHITE)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawCentredString(CARD_W / 2, CARD_H - 5 * mm, org_name.upper()[:40])
+    c.setFont("Helvetica", 5)
+    c.drawCentredString(CARD_W / 2, CARD_H - 9 * mm, "AUTHORISED CONTRACTOR  ·  SERVICE PROVIDER")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # LAYER 3: photo (left column)
+    # ═══════════════════════════════════════════════════════════════════════════
+    c.setFillColor(AMBER_LIGHT)
+    c.setStrokeColor(AMBER)
+    c.setLineWidth(0.8)
+    c.rect(PHOTO_X, PHOTO_Y, PHOTO_W, PHOTO_H, fill=1, stroke=1)
+
+    if selfie_bytes:
+        try:
+            from reportlab.lib.utils import ImageReader as _IR
+            img_reader = _IR(io.BytesIO(selfie_bytes))
+            c.drawImage(img_reader, PHOTO_X, PHOTO_Y, PHOTO_W, PHOTO_H,
+                        preserveAspectRatio=False, mask="auto")
+            # redraw border on top of image
+            c.setStrokeColor(AMBER)
+            c.setLineWidth(1.2)
+            c.rect(PHOTO_X, PHOTO_Y, PHOTO_W, PHOTO_H, fill=0, stroke=1)
+        except Exception:
+            c.setFillColor(AMBER)
+            c.setFont("Helvetica", 6)
+            c.drawCentredString(PHOTO_X + PHOTO_W / 2, PHOTO_Y + PHOTO_H / 2 - 1 * mm, "PHOTO")
+    else:
+        c.setFillColor(AMBER)
+        c.setFont("Helvetica", 6)
+        c.drawCentredString(PHOTO_X + PHOTO_W / 2, PHOTO_Y + PHOTO_H / 2 - 1 * mm, "PHOTO")
+
+    # Badge number — inside footer band under photo
+    c.setFillColor(WHITE)
+    c.setFont("Helvetica-Bold", 5)
+    c.drawCentredString(PHOTO_X + PHOTO_W / 2, 1.8 * mm, badge_no)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # LAYER 4: text fields (middle column)
+    # ═══════════════════════════════════════════════════════════════════════════
+    def draw_field(label: str, value: str, y: float, font_size: float = 7.0) -> None:
+        # label tiny gray
+        c.setFillColor(GRAY)
+        c.setFont("Helvetica", 4.5)
+        c.drawString(TEXT_X, y + font_size + 0.3, label.upper())
+        # value bold dark — truncate to fit
+        c.setFillColor(DARK)
+        c.setFont("Helvetica-Bold", font_size)
+        avg_char_w = font_size * 0.52
+        max_chars = max(1, int(TEXT_W / avg_char_w))
+        if len(value) > max_chars:
+            value = value[:max_chars - 1] + "…"
+        c.drawString(TEXT_X, y, value)
+
+    # Fields spaced evenly from top of content to above the QR zone
+    # Content top = CONTENT_TOP = 43mm, content bottom = FOOTER_H = 5mm
+    # Available height = 38mm; 6 fields with ~6mm each
+    F_TOP = CONTENT_TOP - 3 * mm   # 40 mm
+    draw_field("Name",           vendor.contact_name,        F_TOP - 0  * mm, 8.0)
+    draw_field("Company",        vendor.name,                F_TOP - 8  * mm, 6.5)
+    draw_field("Specialization", specialization,             F_TOP - 15 * mm, 6.0)
+    draw_field("Sites Covered",  sites_text,                 F_TOP - 21 * mm, 5.5)
+    draw_field("Contract",       contract_name[:32],         F_TOP - 27 * mm, 5.5)
+    draw_field("Valid Until",    contract_end,               F_TOP - 33 * mm, 6.5)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # LAYER 5: QR code (right column, above footer)
+    # ═══════════════════════════════════════════════════════════════════════════
+    if qr_img_bytes:
+        from reportlab.lib.utils import ImageReader as _IRqr
+        qr_reader = _IRqr(io.BytesIO(qr_img_bytes))
+        c.drawImage(qr_reader, QR_X, QR_Y, QR_SIZE, QR_SIZE, preserveAspectRatio=True)
+        # "SCAN TO VERIFY" label inside footer band
+        c.setFillColor(WHITE)
+        c.setFont("Helvetica", 3.8)
+        c.drawCentredString(QR_X + QR_SIZE / 2, 1.6 * mm, "SCAN TO VERIFY")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # LAYER 6: footer text (drawn on top of footer band)
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Footer text centred between badge_no area and QR label area
+    footer_text = f"Issued: {issued}  ·  This card is non-transferable"
+    c.setFillColor(WHITE)
+    c.setFont("Helvetica", 4)
+    # Centre in the middle section (between left photo and right QR)
+    mid_x = (PHOTO_X + PHOTO_W + QR_X) / 2
+    c.drawCentredString(mid_x, 1.8 * mm, footer_text)
+
+    c.save()
     return buf.getvalue()
 
 
@@ -404,6 +624,10 @@ async def get_my_profile(
             resp["id_back_url"] = await _s3_presign(vendor.id_back_key)
         if vendor.badge_key:
             resp["badge_url"] = await _s3_presign(vendor.badge_key)
+        if vendor.cv_key:
+            resp["cv_url"] = await _s3_presign(vendor.cv_key)
+        if vendor.certificate_keys:
+            resp["certificate_urls"] = await asyncio.gather(*[_s3_presign(k) for k in vendor.certificate_keys])
     except Exception:
         pass
 
@@ -438,20 +662,39 @@ async def update_my_profile(
     return _vendor_resp(vendor)
 
 
+@portal_router.post("/me/regenerate-badge")
+async def regenerate_badge(
+    current_user: CurrentUser = Depends(require_roles("service_provider")),
+) -> dict:
+    """Force-regenerate the contractor badge PDF (picks up latest selfie + data)."""
+    vendor = await _get_vendor(current_user.user_id)
+    if not (vendor.selfie_key and vendor.id_front_key and vendor.id_back_key):
+        raise HTTPException(status_code=400, detail="Complete KYC documents (selfie, ID front, ID back) are required before generating a badge")
+    await _generate_and_store_badge(vendor)
+    # Reload to get updated badge_key
+    vendor = await _get_vendor(current_user.user_id)
+    badge_url = await _s3_presign(vendor.badge_key) if vendor.badge_key else None
+    return {"ok": True, "badge_url": badge_url}
+
+
 @portal_router.post("/me/upload/{photo_type}")
 async def upload_my_photo(
     photo_type: str,
     file: UploadFile = File(...),
     current_user: CurrentUser = Depends(require_roles("service_provider")),
 ) -> dict:
-    if photo_type not in ("selfie", "id_front", "id_back"):
-        raise HTTPException(status_code=400, detail="photo_type must be selfie, id_front, or id_back")
+    if photo_type not in ("selfie", "id_front", "id_back", "cv", "certificate"):
+        raise HTTPException(status_code=400, detail="photo_type must be selfie, id_front, id_back, cv, or certificate")
 
     vendor = await _get_vendor(current_user.user_id)
     data = await file.read()
     content_type = file.content_type or "image/jpeg"
     ext = content_type.split("/")[-1].split("+")[0]
-    key = f"{vendor.org_id}/framework-vendors/{vendor.id}/{photo_type}.{ext}"
+    if photo_type == "certificate":
+        import time
+        key = f"{vendor.org_id}/framework-vendors/{vendor.id}/certificates/{int(time.time())}.{ext}"
+    else:
+        key = f"{vendor.org_id}/framework-vendors/{vendor.id}/{photo_type}.{ext}"
 
     await _s3_upload(key, data, content_type)
 
@@ -459,8 +702,12 @@ async def upload_my_photo(
         vendor.selfie_key = key
     elif photo_type == "id_front":
         vendor.id_front_key = key
-    else:
+    elif photo_type == "id_back":
         vendor.id_back_key = key
+    elif photo_type == "cv":
+        vendor.cv_key = key
+    else:
+        vendor.certificate_keys = [*vendor.certificate_keys, key]
     await vendor.save()
 
     if vendor.selfie_key and vendor.id_front_key and vendor.id_back_key:

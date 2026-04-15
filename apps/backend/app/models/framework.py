@@ -507,6 +507,8 @@ class FrameworkInvitedVendor(Document):
     # Portal auth — password stored directly on vendor (no separate User account)
     portal_token: str = Field(default_factory=lambda: str(uuid.uuid4()))
     portal_password_hash: Optional[str] = None
+    portal_otp: Optional[str] = None            # fallback OTP when Redis unavailable
+    portal_otp_expires: Optional[float] = None  # unix timestamp
     user_id: Optional[str] = None           # legacy, no longer set on new activations
 
     # KYC / onboarding

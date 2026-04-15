@@ -34,12 +34,16 @@ export interface VendorProfile {
   has_id_front: boolean
   has_id_back: boolean
   has_badge: boolean
+  has_cv: boolean
+  certificate_count: number
   gps_lat?: number
   gps_lng?: number
   selfie_url?: string
   id_front_url?: string
   id_back_url?: string
   badge_url?: string
+  cv_url?: string
+  certificate_urls?: string[]
   invited_at: string
   activated_at?: string
 }
@@ -147,6 +151,15 @@ export async function portalLogin(email: string, password: string): Promise<{ to
   return res.data
 }
 
+export async function requestPortalOtp(email: string): Promise<void> {
+  await client.post(`${BASE}/auth/request-otp`, { email })
+}
+
+export async function verifyPortalOtp(email: string, otp: string): Promise<{ token: string; vendor_id: string; name: string; status: string }> {
+  const res = await client.post(`${BASE}/auth/verify-otp`, { email, otp })
+  return res.data
+}
+
 export async function uploadInvitePhoto(token: string, photoType: 'selfie' | 'id_front' | 'id_back', file: File): Promise<void> {
   const form = new FormData()
   form.append('file', file)
@@ -173,7 +186,12 @@ export async function updateMyProfile(data: Partial<{
   return res.data
 }
 
-export async function uploadMyPhoto(photoType: 'selfie' | 'id_front' | 'id_back', file: File): Promise<void> {
+export async function regenerateBadge(): Promise<{ ok: boolean; badge_url?: string }> {
+  const res = await client.post(`${BASE}/me/regenerate-badge`)
+  return res.data
+}
+
+export async function uploadMyPhoto(photoType: 'selfie' | 'id_front' | 'id_back' | 'cv' | 'certificate', file: File): Promise<void> {
   const form = new FormData()
   form.append('file', file)
   await client.post(`${BASE}/me/upload/${photoType}`, form, {

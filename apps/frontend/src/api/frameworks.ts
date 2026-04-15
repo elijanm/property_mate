@@ -419,10 +419,14 @@ export interface VendorDocs {
   has_id_front: boolean
   has_id_back: boolean
   has_badge: boolean
+  has_cv: boolean
+  certificate_count: number
   selfie_url?: string
   id_front_url?: string
   id_back_url?: string
   badge_url?: string
+  cv_url?: string
+  certificate_urls: string[]
   status: string
   activated_at?: string
   gps_lat?: number
