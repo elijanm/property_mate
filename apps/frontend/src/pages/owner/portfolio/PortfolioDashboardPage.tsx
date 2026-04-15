@@ -3,7 +3,11 @@ import { useNavigate } from 'react-router-dom'
 import DashboardLayout from '@/layouts/DashboardLayout'
 import { listFrameworks, getFrameworkStats } from '@/api/frameworks'
 import { propertiesApi } from '@/api/properties'
+import { invoicesApi } from '@/api/invoices'
+import { generalTicketsApi } from '@/api/tickets'
 import type { FrameworkContract, FrameworkStats } from '@/types/framework'
+import type { InvoiceCounts } from '@/types/invoice'
+import type { TicketCounts } from '@/types/ticket'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -154,19 +158,25 @@ function periodLabel(period: Period, now: Date): string {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function PortfolioDashboardPage() {
-  const [frameworks, setFrameworks]   = useState<FrameworkContract[]>([])
-  const [fwStats, setFwStats]         = useState<Record<string, FrameworkStats>>({})
-  const [propCount, setPropCount]     = useState(0)
-  const [loading, setLoading]         = useState(true)
-  const [period, setPeriod]           = useState<Period>('monthly')
+  const [frameworks, setFrameworks]     = useState<FrameworkContract[]>([])
+  const [fwStats, setFwStats]           = useState<Record<string, FrameworkStats>>({})
+  const [propCount, setPropCount]       = useState(0)
+  const [invoiceCounts, setInvoiceCounts] = useState<InvoiceCounts | null>(null)
+  const [ticketCounts, setTicketCounts]   = useState<TicketCounts | null>(null)
+  const [loading, setLoading]           = useState(true)
+  const [period, setPeriod]             = useState<Period>('monthly')
 
   useEffect(() => {
     Promise.all([
       listFrameworks(),
       propertiesApi.list({ page_size: 100 } as any).catch(() => ({ items: [], total: 0 })),
-    ]).then(async ([fws, props]) => {
+      invoicesApi.getCounts().catch(() => null),
+      generalTicketsApi.getCounts().catch(() => null),
+    ]).then(async ([fws, props, invCounts, tkCounts]) => {
       setFrameworks(fws)
       setPropCount((props as any).total ?? 0)
+      setInvoiceCounts(invCounts)
+      setTicketCounts(tkCounts)
       const statsEntries = await Promise.all(
         fws.map(fw => getFrameworkStats(fw.id).then(s => [fw.id, s] as [string, FrameworkStats]))
       )
@@ -207,6 +217,26 @@ export default function PortfolioDashboardPage() {
   const periodNetFw = fwAnnualRevenue / divisor
 
   const risks: RiskItem[] = []
+
+  // ── Real estate risks ──
+  const overdueInvoices = invoiceCounts?.overdue ?? 0
+  const openTickets     = (ticketCounts?.open ?? 0) + (ticketCounts?.assigned ?? 0)
+  const inProgressTickets = ticketCounts?.in_progress ?? 0
+
+  if (overdueInvoices > 0)
+    risks.push({
+      label: `${overdueInvoices} overdue invoice${overdueInvoices > 1 ? 's' : ''}`,
+      detail: 'Rent arrears — tenants past due date',
+      severity: overdueInvoices > 5 ? 'high' : 'medium',
+    })
+  if (openTickets > 0)
+    risks.push({
+      label: `${openTickets} open maintenance ticket${openTickets > 1 ? 's' : ''}`,
+      detail: `${inProgressTickets} in progress — unresolved tenant issues`,
+      severity: openTickets > 10 ? 'high' : 'medium',
+    })
+
+  // ── Framework risks ──
   if (fwOverdue > 0)
     risks.push({ label: `${fwOverdue} overdue PPM visit${fwOverdue > 1 ? 's' : ''}`, detail: 'SLA breach likely → penalty risk', severity: 'high' })
   if (fwFaults > 0)
@@ -219,6 +249,10 @@ export default function PortfolioDashboardPage() {
   })
   if (expiringFw.length > 0)
     risks.push({ label: `${expiringFw.length} contract${expiringFw.length > 1 ? 's' : ''} expiring in 90 days`, detail: expiringFw.map(fw => fw.name).join(', '), severity: 'medium' })
+
+  // Sort: high → medium → low
+  const SEVERITY_ORDER = { high: 0, medium: 1, low: 2 }
+  risks.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
 
   // Drill-down tree
   const fwChildren: PortfolioNode[] = frameworks.map(fw => {
@@ -398,9 +432,12 @@ export default function PortfolioDashboardPage() {
                 )}
                 <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-3 gap-2">
                   {[
-                    { label: 'Overdue PPM',  value: fwOverdue, bad: fwOverdue > 0 },
-                    { label: 'Fault Assets', value: fwFaults,  bad: fwFaults > 0  },
-                    { label: 'Open WOs',     value: fwOpenWO,  bad: false          },
+                    { label: 'Overdue Rent',  value: overdueInvoices, bad: overdueInvoices > 0 },
+                    { label: 'Open Tickets',  value: openTickets,     bad: openTickets > 5     },
+                    { label: 'Overdue PPM',   value: fwOverdue,       bad: fwOverdue > 0       },
+                    { label: 'Fault Assets',  value: fwFaults,        bad: fwFaults > 0        },
+                    { label: 'Open WOs',      value: fwOpenWO,        bad: false               },
+                    { label: 'Expiring Ctr.', value: expiringFw.length, bad: expiringFw.length > 0 },
                   ].map(s => (
                     <div key={s.label} className="text-center">
                       <div className={`text-lg font-bold ${s.bad && s.value > 0 ? 'text-red-600' : 'text-gray-700'}`}>{s.value}</div>
